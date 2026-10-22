@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
 #include "vln_agent/tools/tool_plugin_base.hpp"

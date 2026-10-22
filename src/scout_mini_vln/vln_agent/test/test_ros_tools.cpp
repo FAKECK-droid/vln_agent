@@ -8,6 +8,7 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <sensor_msgs/msg/image.hpp>
 

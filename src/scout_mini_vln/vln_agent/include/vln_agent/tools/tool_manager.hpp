@@ -5,7 +5,12 @@
 #include <string>
 #include <vector>
 
-#include "vln_agent/tools/tool_context.hpp"
+#include "vln_agent/utils/json.hpp"
+
+namespace rclcpp
+{
+class Node;
+}
 
 namespace vln_agent
 {
@@ -26,7 +31,7 @@ public:
    * @brief 复用外部节点，管理器不持有节点所有权或启动 ROS 执行器。
    * @param node 须保持存活，且执行器应运行到 shutdown 返回。
    */
-  explicit ToolManager(const rclcpp::Node::SharedPtr & node);
+  explicit ToolManager(const std::shared_ptr<rclcpp::Node> & node);
   ~ToolManager();
 
   /**
@@ -38,6 +43,22 @@ public:
 
   /** @brief 按组及函数配置顺序返回启用函数的原生定义数组。 */
   Json getTools() const;
+
+  /** @brief 返回装载/关闭状态、并发/等待容量、调用数量及阻塞标志的副本。 */
+  Json getStatus() const;
+
+  /**
+   * @brief 一次性返回 waiting 和 running 数组，各自按提交序号排列。
+   * @return 调用 ID、名称、序号、blocking、状态及 wait_ms/run_ms；不包含参数和结果。
+   * @note 只保证取队列的 FIFO 顺序，线程实际进入插件和完成的顺序可以不同。
+   */
+  Json getQueueSnapshot() const;
+
+  /**
+   * @brief 返回单次调用元数据副本；未知 call_id 返回 null，不消费 future。
+   * @note finished 仅表示 future 已完成，业务成功与否仍从结果读取；记录保留到销毁。
+   */
+  Json getCallStatus(const std::string & call_id) const;
 
   /**
    * @brief 只提交完整响应中的 function_call，不等待执行结果。

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <set>
 #include <stdexcept>
@@ -117,6 +118,7 @@ struct SessionManager::Impl
     last_error = {{"code", code}, {"message", message}, {"event", event}};
     context_invalid = code == "previous_response_not_found";
     in_flight = false;
+    last_finished = Clock::now();
     send_requested = false;
     if (config.stream_output) {
       stream["state"] = "error";
@@ -134,6 +136,7 @@ struct SessionManager::Impl
       available = state.at("connected").get<bool>();
       if (!available && in_flight) {
         in_flight = false;
+        last_finished = Clock::now();
         send_requested = false;
         if (config.stream_output) {
           stream["state"] = "interrupted";
@@ -232,12 +235,14 @@ struct SessionManager::Impl
             finishText(response);
           }
           latest_response_id = id;
+          active_response_id = id;
+          last_finished = Clock::now();
           usage = response.value("usage", Json());
           response_slot = response;
           current_request = nullptr;
           in_flight = false;
         } else if (type == "error" || type == "response.failed" || type == "response.incomplete") {
-          const auto source = type == "error" ? event : event.at("response");
+          const auto & source = type == "error" ? event : event.at("response");
           const auto error = source.value("error", Json());
           const auto code = error.is_object() ?
             error.value("code", type) : type;
@@ -277,15 +282,16 @@ struct SessionManager::Impl
         send_requested = false;
         in_flight = true;
         last_started = now;
+        last_finished = {};
         ever_started = true;
         active_response_id.clear();
         compaction_items.clear();
         if (config.stream_output) {
           stream = {{"response_id", ""}, {"state", "generating"}, {"content", Json::array()}};
         }
-        const auto frame = current_request;
+        auto frame = current_request;
         lock.unlock();
-        transport.send(frame);
+        transport.send(std::move(frame));
         lock.lock();
         continue;
       }
@@ -326,6 +332,9 @@ struct SessionManager::Impl
         return;
       }
       closed = true;
+      if (in_flight) {
+        last_finished = Clock::now();
+      }
       send_requested = false;
     }
     condition.notify_all();
@@ -357,7 +366,7 @@ struct SessionManager::Impl
   std::uint64_t compaction_count{0};
   bool closed{false}, available{false}, in_flight{false}, send_requested{false};
   bool ever_started{false}, context_invalid{false};
-  Clock::time_point last_started{};
+  Clock::time_point last_started{}, last_finished{};  ///< 本轮起止时刻，用于稳定的耗时查询。
   ResponsesWsTransport transport;          ///< 网络状态机完全留在传输层。
   std::thread scheduler;
 };
@@ -378,6 +387,24 @@ void SessionManager::setTools(const Json & tools)
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->ensureOpen();
   impl_->tools = tools;
+}
+
+Json SessionManager::getTools() const
+{
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return impl_->tools;
+}
+
+Json SessionManager::getPendingInputs() const
+{
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return impl_->pending_input;
+}
+
+Json SessionManager::getCurrentRequest() const
+{
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return impl_->current_request;
 }
 
 void SessionManager::addInputs(const Json & input)
@@ -431,7 +458,20 @@ Json SessionManager::getRequestStatus() const
   Json status;
   {
     std::lock_guard<std::mutex> lock(impl_->mutex);
+    const auto now = Clock::now();
+    const auto ended = impl_->last_finished == Clock::time_point{} ? now : impl_->last_finished;
+    const auto elapsed = impl_->ever_started ?
+      std::chrono::duration_cast<std::chrono::milliseconds>(ended - impl_->last_started).count() : 0;
+    const auto rate_wait = impl_->ever_started ?
+      std::max<std::int64_t>(0, std::chrono::ceil<std::chrono::milliseconds>(
+        impl_->last_started + impl_->config.interval - now).count()) : 0;
+    const bool retry_required =
+      !impl_->closed && !impl_->in_flight && !impl_->current_request.is_null();
     status = {
+      {"current_response_id", impl_->active_response_id},
+      {"retry_required", retry_required},
+      {"can_retry", retry_required && !impl_->context_invalid},
+      {"request_elapsed_ms", elapsed}, {"rate_limit_remaining_ms", rate_wait},
       {"state", impl_->state()}, {"send_requested", impl_->send_requested},
       {"pending_input_count", impl_->pending_input.size()},
       {"current_input_count", impl_->current_request.is_null() ?

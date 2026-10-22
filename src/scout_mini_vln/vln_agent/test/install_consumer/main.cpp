@@ -1,5 +1,7 @@
 #include <iostream>
 
+#include <rclcpp/rclcpp.hpp>
+
 #include <vln_agent/tools/tool_manager.hpp>
 
 /** @brief 独立下游工程只链接安装导出目标，验证公共头和插件发现，不执行工具。 */

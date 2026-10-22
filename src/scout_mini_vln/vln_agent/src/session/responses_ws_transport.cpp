@@ -113,7 +113,7 @@ struct ResponsesWsTransport::Impl
     while (!done) {
       io.restart();
       io.run_for(std::chrono::milliseconds(10));
-      if (!done && (stopping.load() || interrupted || broken || Clock::now() >= deadline)) {
+      if (!done && (stopping.load() || broken || Clock::now() >= deadline)) {
         closeSockets();
         while (!done) {
           io.restart();
@@ -280,11 +280,10 @@ struct ResponsesWsTransport::Impl
     auto delay = options.reconnect_delay;
     while (!stopping.load()) {
       broken = false;
-      interrupted = false;
       try {
         state(retries == 0 ? "connecting" : "reconnecting", false);
         establish();
-        if (!stopping.load() && !broken && !interrupted) {
+        if (!stopping.load() && !broken) {
           ++generation;
           state("connected", true);
           delay = options.reconnect_delay;
@@ -295,7 +294,7 @@ struct ResponsesWsTransport::Impl
           }
         }
       } catch (const std::exception & error) {
-        if (!stopping.load() && !interrupted && !broken) {
+        if (!stopping.load() && !broken) {
           fail(phase, error.what());
         }
       }
@@ -332,7 +331,7 @@ struct ResponsesWsTransport::Impl
   EventHandler on_event;
   StateHandler on_state;
   std::atomic_bool stopping{false};          ///< 主线程与网络线程共用的关闭标志。
-  bool broken{false}, interrupted{false}, writing{false};  ///< 仅网络线程访问。
+  bool broken{false}, writing{false};         ///< 仅网络线程访问。
   std::uint64_t generation{0}, retries{0};   ///< 仅网络线程写入，公开值通过状态锁发布。
   mutable std::mutex status_mutex;
   Json status{{"state", "closed"}, {"connected", false}, {"connection_id", 0},
@@ -371,7 +370,7 @@ void ResponsesWsTransport::connect(
   impl_->thread = std::thread([this] {impl_->run();});
 }
 
-void ResponsesWsTransport::send(const Json & event)
+void ResponsesWsTransport::send(Json event)
 {
   std::lock_guard<std::mutex> lock(impl_->lifecycle_mutex);
   if (impl_->stopping.load()) {
@@ -383,7 +382,7 @@ void ResponsesWsTransport::send(const Json & event)
   const auto status = impl_->getStatus();
   const auto generation = status.at("connection_id").get<std::uint64_t>();
   const bool connected = status.at("connected").get<bool>();
-  net::post(impl_->io, [impl = impl_.get(), event, generation, connected] {
+  net::post(impl_->io, [impl = impl_.get(), event = std::move(event), generation, connected] {
       impl->write(event, generation, connected);
     });
 }
@@ -402,7 +401,6 @@ void ResponsesWsTransport::interrupt()
     return;
   }
   net::post(impl_->io, [impl = impl_.get()] {
-      impl->interrupted = true;
       impl->broken = true;
       impl->state("reconnecting", false);
       impl->closeSockets();

@@ -18,6 +18,12 @@ public:
 
   /** @brief 替换下次发送使用的原生 tools 数组，不触发发送。 */
   void setTools(const Json & tools);
+  /** @brief 返回下次发送将使用的工具定义副本。 */
+  Json getTools() const;
+  /** @brief 返回尚未发送的原生输入数组副本；查询不消费输入。 */
+  Json getPendingInputs() const;
+  /** @brief 返回在途或失败后保留的完整请求副本，没有当前请求时返回 null。 */
+  Json getCurrentRequest() const;
   /** @brief 追加一个原生 API 输入对象，或按元素追加 JSON 数组。 */
   void addInputs(const Json & input);
   /** @brief 按顺序整批追加输入，仅获取一次会话锁。 */
@@ -26,7 +32,11 @@ public:
   void request();
   /** @brief 非阻塞取走原始完整 response，尚未完成时返回 null。 */
   Json takeResponse();
-  /** @brief 返回请求状态、缓冲计数、会话错误及底层连接快照。 */
+  /**
+   * @brief 返回请求状态、响应 ID、重试标志、缓冲计数、会话错误及连接快照。
+   * @note request_elapsed_ms 从本轮发送计时，结束后冻结；rate_limit_remaining_ms 向上取整。
+   * @note can_retry 表示允许调用 request 登记重试，实际发送仍需等待连接和限频。
+   */
   Json getRequestStatus() const;
   /** @brief 返回最新完成链头、预算、最近 usage 和已观察到的压缩次数。 */
   Json getContextStatus() const;

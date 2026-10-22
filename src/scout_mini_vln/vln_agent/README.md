@@ -5,6 +5,7 @@ ROS 2 Humble 功能包，实现 docs/AGENT_PLAN.md 第二、三部分的工具�
 
 ## 组成
 
+- `ToolResult`：独立的业务结果数据类型，定义于 `tools/tool_result.hpp`。
 - `ToolPluginBase`：固定的 initialize / execute / shutdown 插件接口。
 - `SharedResources`：每个管理器独立的具名、带类型资源注册表。
 - `ToolManager`：装载定义和 pluginlib 插件、FIFO 调度、调用去重及逐调用 future。
@@ -43,6 +44,8 @@ tools.shutdown();
 ```
 
 构造函数仅保存节点的非拥有引用；宿主必须保证节点存活。
+`ToolManager` 和 `ToolContext` 的公共头只前置声明 ROS Node；创建节点或调用 ROS API
+的宿主/插件须自行包含 `<rclcpp/rclcpp.hpp>`。仅使用 `ToolResult` 不需要 ROS 头文件。
 `submit()` 接受 `status: completed` 的原始完整响应，按 output 顺序处理
 function_call，忽略 message、reasoning、compaction。
 没有函数调用时返回空数组。普通响应结构错误抛异常；
@@ -81,8 +84,29 @@ getTools 保留定义内容，按组与函数的配置顺序展平。
 
 async 是函数定义字段，blocking 是本地调度字段，二者独立。
 模型请求的 parallel_tool_calls 由 SessionManager 设置。
-队列保证 FIFO 取出和提交顺序，工作线程的实际开始及完成顺序可不同。
+固定数量的工作线程在同一把锁下直接按 FIFO 取任务，实际进入插件及完成的顺序可不同。
+工具层没有独立调度线程或中转队列；插件 execute 在队列锁之外运行。
 一个阻塞项不会等待此前所有非阻塞项结束；它自身完成即允许后续项调度。
+
+## 工具状态查询
+
+三个查询函数均返回 JSON 副本，不消费 future。客户端可定期读取摘要，需要详情时再读取队列或单次调用。
+
+| 方法 | 返回内容 |
+| --- | --- |
+| `getStatus()` | `state`（unloaded/ready/closing/closed）、`max_concurrent_calls`、`max_pending_calls`、`waiting_count`、`running_count`、`completed_count`、`call_count`、`blocking` |
+| `getQueueSnapshot()` | 同一时刻的 `waiting` 和 `running` 数组，各按提交序号排列；不含已完成调用 |
+| `getCallStatus(call_id)` | 等待、运行或已完成调用的元数据；未知 ID 返回 null |
+
+调用元数据包括 `call_id`、`name`、从零递增的 `sequence`、`blocking`、
+`state`（waiting/running/finished）、`wait_ms` 和 `run_ms`。
+等待时间从登记开始，执行开始或未执行就结束时冻结；运行时间从取出任务计至发布结果，
+从未开始的调用为零。finished 表示 future 已完成，包含拒绝、关闭和业务失败；
+业务结果仍通过句柄读取。未知工具的 blocking 默认为 false。
+结果查询不复制参数或图片，不把导航的物理任务状态当成函数执行状态。
+
+每次查询内部一致；分别调用摘要和队列接口期间可能发生任务切换。
+队列快照只扫描等待和运行项，不遍历历史结果。
 
 ## 导航与相机行为
 
@@ -151,6 +175,17 @@ floor(budget_tokens * compact_ratio)，服务端压缩后继续使用最新响�
 
 getRequestStatus() 返回 idle、waiting_interval、waiting_transport、generating、
 response_ready、error 或 closed，并附带底层 transport 快照。
+`current_response_id` 是本轮已收到的响应 ID（开始新一轮时清空，完成后保留）；
+`retry_required` 表示当前请求未完成、需要显式处理，`can_retry` 表示可调用 request() 登记重试。
+上下文失效时前者为 true、后者为 false。登记重试后，实际发送仍需等待连接、结果槽和限频。
+`request_elapsed_ms` 从发送开始计时，完成、错误、中断或关闭后冻结；
+`rate_limit_remaining_ms` 是距允许下次发送的剩余毫秒数，向上取整，最小为零。
+
+`getTools()` 返回下次发送使用的工具定义，`getPendingInputs()` 返回待发输入数组，
+`getCurrentRequest()` 返回在途或失败后保留的完整请求，没有时为 null。
+三者均为不消费内容的独立副本，完整输入可能包含图片，适合按需查看。
+发送线程以移动方式交接发送帧，仍保留 current_request 的独立快照供查询和重试。
+
 模型 error/failed/incomplete 和模型超时记录到 last_error；保留当前与待发输入并清除发送意图。
 再次 request() 才把未完成输入放回待发数组前部，按最新已完成链头重试。
 previous_response_not_found 保持上下文错误，宿主须决定如何重建会话。
@@ -169,6 +204,17 @@ shutdown() 先禁止新调度，再关闭传输并回收两个线程，可重复
 [服务端压缩](https://developers.openai.com/api/docs/guides/compaction)、
 [流式完成事件](https://developers.openai.com/api/reference/resources/responses/streaming-events)。
 
+## 本次复盘决策（2026-10-22）
+
+- 已确认实施：工具与会话查询、工作线程直接取 FIFO、删除传输层重复的 interrupted 标志、
+  拆分 ToolResult 和整理头文件依赖、移动发送帧与只读引用。
+- 按选择保留逐项解析并入队的 submit()。后续调用缺少 call_id/name 等结构错误仍可能
+  在前半批已登记后抛异常，且没有整批回滚；调用方应提交结构完整的响应。
+- 按选择保留统一报错：开启流式显示时，显示解析异常仍会让当前请求进入 INVALID_RESPONSE，
+  不单独隔离为显示错误。
+- 配置与输入类型检查、重复 ID 规则、关闭/连接代号检查、共享资源类型检查及 TLS 验证保留。
+  它们分别约束外部输入、并发生命周期、类型转换和网络连接，不属于重复状态判断。
+
 ## 构建与测试
 
 在开发机通过 `ssh jetson-orin` 执行：
@@ -184,11 +230,13 @@ colcon test-result --test-result-base build/vln_agent --verbose
 ```
 
 测试覆盖定义筛选、相对路径、配置注入、资源共享与隔离、装载事务、
-FIFO 阻塞语义、并发及等待容量、独立 future、去重、错误包装和关闭。
+FIFO 阻塞语义、并发及等待容量、独立 future、去重、错误包装和关闭，
+以及工具队列快照、完成状态、等待/运行耗时和查询副本隔离。
 ROS 测试使用独立 domain、回环假导航服务与合成图像，验证导航反馈、
 拒绝、取消到终态、历史隔离、JPEG 解码与相机关闭。
 会话测试使用进程内回环 WS/WSS 假服务，覆盖缓冲、限频、上下文续接、失败重试、
-网络重连、迟到响应隔离、流式显示、分帧、TLS 校验、保活与关闭。
+网络重连、迟到响应隔离、流式显示、分帧、TLS 校验、保活与关闭，
+以及会话内容查询、请求耗时冻结、限频剩余时间和重试标志。
 测试不连接模型，不启动底盘，不发布运动命令。
 测试临时配置保留在 build/vln_agent/test-fixtures，ROS 日志位于 build/vln_agent/ros-logs；
 测试插件仅在 BUILD_TESTING 开启时构建和注册，不在默认工具列表中。
@@ -222,3 +270,10 @@ session_consumer 只验证会话库的构造、状态访问和关闭，不提交
   动态依赖中没有 ROS 库，不提交模型请求。
 - 模型无限等待时 shutdown 回收测试通过，关闭耗时低于 500 ms；
   关闭前取消 WS 保活定时器，避免等待空闲定时器自然到期。
+- 本次复盘新增的队列/调用查询、内容副本、重试标志和耗时断言均通过；
+  `submit()` 的逐项入队和流式解析统一报错行为按选择保留。
+- 安装后的 `tool_result.hpp`、`tool_context.hpp`、`tool_plugin_base.hpp`、
+  `tool_manager.hpp` 在不添加 ROS include 路径的条件下单独编译通过。
+  使用节点/执行器的宿主、插件和 ROS 测试均显式包含所需 ROS 头。
+- 本次日志位于 `build/vln_agent/review-build.log`、`review-tests.log`、
+  `review-test-result.log` 和 `review-install-check.log`。

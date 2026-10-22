@@ -4,6 +4,7 @@
 #include <memory>
 #include <mutex>
 
+#include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/image.hpp>
 
 #include "vln_agent/tools/tool_plugin_base.hpp"

@@ -38,7 +38,7 @@ public:
     const std::string & base_url, const std::string & api_key,
     EventHandler on_event, StateHandler on_state);
   /** @brief 提交一帧；通道不可用或提交期间换代时丢弃该帧并通知状态，不排队重发。 */
-  void send(const Json & event);
+  void send(Json event);
   /** @brief 当前是否已经完成 WS 握手。 */
   bool connected() const;
   /** @brief 返回连接状态、连接代号和最近网络错误，不含密钥。 */

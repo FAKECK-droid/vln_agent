@@ -1,10 +1,12 @@
 #include "vln_agent/tools/tool_manager.hpp"
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <thread>
@@ -19,6 +21,7 @@
 namespace vln_agent
 {
 using utils::settingsOf;
+using Clock = std::chrono::steady_clock;
 
 /** @brief 将工具类型交给通用 JSON 包装函数。 */
 static Json wrapResult(const std::string & call_id, const ToolResult & result)
@@ -74,6 +77,9 @@ struct ToolManager::Impl
     Json arguments;
     std::promise<Json> promise;
     std::uint64_t sequence;                 ///< 按提交顺序分配的队列序号。
+    bool blocking{false};                   ///< 已知工具是否暂停后续派发。
+    Clock::time_point queued_at{Clock::now()};  ///< 登记时刻，计入提交中的参数解析时间。
+    Clock::time_point started_at{}, finished_at{};  ///< 未开始或未完成时为默认值。
   };
 
   explicit Impl(rclcpp::Node & node_ref) : node(node_ref) {}
@@ -153,7 +159,6 @@ struct ToolManager::Impl
     for (std::size_t i = 0; i < max_concurrent; ++i) {
       workers.emplace_back([this] {work();});
     }
-    scheduler = std::thread([this] {schedule();});
   }
 
   /** @brief 登记逐调用 future，队列错误直接完成对应 promise。 */
@@ -180,8 +185,11 @@ struct ToolManager::Impl
       call->sequence = next_sequence++;
       calls.emplace(call_id, call);
       handles.push_back(call->handle);
+      if (loaded && loaded->pool.count(name) != 0) {
+        call->blocking = loaded->pool.at(name).blocking;
+      }
       const auto fail = [&](const std::string & code, const std::string & message) {
-          call->promise.set_value(wrapResult(call_id, ToolResult::failure(code, message)));
+          complete(call, wrapResult(call_id, ToolResult::failure(code, message)));
         };
       if (closed || !loaded) {
         fail("TOOL_MANAGER_CLOSED", "工具管理器未装载或已经关闭");
@@ -209,27 +217,34 @@ struct ToolManager::Impl
     return handles;
   }
 
-  /** @brief 只保证 FIFO 取出及提交顺序；阻塞项完成前暂停后续提交。 */
-  void schedule()
+  /** @brief 持锁发布终态和结果；只由拒绝、关闭或执行完成路径调用一次。 */
+  void complete(const std::shared_ptr<Call> & call, Json output)
   {
-    std::unique_lock<std::mutex> lock(mutex);
-    while (true) {
-      condition.wait(lock, [this] {
-        return closed || (!pending.empty() && active < max_concurrent && !blocking);
-      });
-      if (closed) {
-        return;
-      }
-      auto call = pending.front();
-      pending.pop_front();
-      blocking = loaded->pool.at(call->handle.name).blocking;
-      ++active;
-      work_queue.push_back(std::move(call));
-      condition.notify_all();
-    }
+    call->finished_at = Clock::now();
+    ++completed;
+    call->promise.set_value(std::move(output));
   }
 
-  /** @brief 工作线程不持有队列锁执行插件，完成后立即发布本项结果。 */
+  /** @brief 在同一锁和时间基准下复制调用元数据；不读取或消费 future。 */
+  Json snapshot(const Call & call, Clock::time_point now) const
+  {
+    const auto end = call.finished_at == Clock::time_point{} ? now : call.finished_at;
+    const bool started = call.started_at != Clock::time_point{};
+    const auto wait_end = started ? call.started_at : end;
+    return {
+      {"call_id", call.handle.call_id}, {"name", call.handle.name},
+      {"sequence", call.sequence}, {"blocking", call.blocking},
+      {"state", call.finished_at != Clock::time_point{} ? "finished" : started ? "running" : "waiting"},
+      {"wait_ms", std::chrono::duration_cast<std::chrono::milliseconds>(
+          wait_end - call.queued_at).count()},
+      {"run_ms", started ? std::chrono::duration_cast<std::chrono::milliseconds>(
+          end - call.started_at).count() : 0}};
+  }
+
+  /**
+   * @brief 工作线程持锁按 FIFO 取任务，释放锁后执行插件。
+   * @note 阻塞项不等待此前调用结束，但完成前禁止任何线程取后续项。
+   */
   void work()
   {
     while (true) {
@@ -237,13 +252,16 @@ struct ToolManager::Impl
       Entry entry;
       {
         std::unique_lock<std::mutex> lock(mutex);
-        condition.wait(lock, [this] {return closed || !work_queue.empty();});
-        if (work_queue.empty()) {
+        condition.wait(lock, [this] {return closed || (!pending.empty() && !blocking);});
+        if (closed) {
           return;
         }
-        call = work_queue.front();
-        work_queue.pop_front();
+        call = pending.front();
+        pending.pop_front();
         entry = loaded->pool.at(call->handle.name);
+        blocking = call->blocking;
+        call->started_at = Clock::now();
+        running.emplace(call->sequence, call);
       }
       Json output;
       try {
@@ -264,8 +282,8 @@ struct ToolManager::Impl
           output = wrapResult(
             call->handle.call_id, ToolResult::failure("TOOL_MANAGER_CLOSED", "工具管理器正在关闭"));
         }
-        call->promise.set_value(std::move(output));
-        --active;
+        complete(call, std::move(output));
+        running.erase(call->sequence);
         if (entry.blocking) {
           blocking = false;
         }
@@ -284,25 +302,16 @@ struct ToolManager::Impl
         return;
       }
       closed = true;
-      const auto finish = [](const auto & queue) {
-          for (const auto & call : queue) {
-            call->promise.set_value(wrapResult(
-                call->handle.call_id,
-                ToolResult::failure("TOOL_MANAGER_CLOSED", "调用尚未执行，工具管理器已关闭")));
-          }
-        };
-      finish(pending);
-      finish(work_queue);
+      for (const auto & call : pending) {
+        complete(call, wrapResult(
+            call->handle.call_id,
+            ToolResult::failure("TOOL_MANAGER_CLOSED", "调用尚未执行，工具管理器已关闭")));
+      }
       pending.clear();
-      active -= work_queue.size();
-      work_queue.clear();
     }
     condition.notify_all();
     if (loaded) {
       loaded->stop();
-    }
-    if (scheduler.joinable()) {
-      scheduler.join();
     }
     for (auto & worker : workers) {
       worker.join();
@@ -325,16 +334,15 @@ struct ToolManager::Impl
   bool blocking{false};                    ///< 当前是否有未完成的阻塞调用。
   std::size_t max_concurrent{4};            ///< 活动执行上限。
   std::size_t max_pending{64};              ///< FIFO 等待队列上限。
-  std::size_t active{0};                    ///< 已分配到线程池的调用数。
+  std::size_t completed{0};                 ///< 已完成 future 的调用数，包含拒绝和关闭。
   std::uint64_t next_sequence{0};           ///< 当前管理器内的提交序号。
   std::unordered_map<std::string, std::shared_ptr<Call>> calls;  ///< call_id 去重记录。
-  std::deque<std::shared_ptr<Call>> pending;     ///< 尚未分配工作线程的调用。
-  std::deque<std::shared_ptr<Call>> work_queue;  ///< 已占执行槽的待运行调用。
-  std::thread scheduler;                    ///< FIFO 调度线程。
+  std::deque<std::shared_ptr<Call>> pending;  ///< 按提交顺序等待工作线程的调用。
+  std::map<std::uint64_t, std::shared_ptr<Call>> running;  ///< 按提交序号排列的活动调用。
   std::vector<std::thread> workers;          ///< 固定容量的工作线程池。
 };
 
-ToolManager::ToolManager(const rclcpp::Node::SharedPtr & node)
+ToolManager::ToolManager(const std::shared_ptr<rclcpp::Node> & node)
 : impl_(std::make_unique<Impl>(*node))
 {
 }
@@ -355,6 +363,39 @@ Json ToolManager::getTools() const
   return impl_->loaded ? impl_->loaded->tools : Json::array();
 }
 
+Json ToolManager::getStatus() const
+{
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  return {
+    {"state", impl_->closed ? (impl_->loaded ? "closing" : "closed") :
+        (impl_->loaded ? "ready" : "unloaded")},
+    {"max_concurrent_calls", impl_->max_concurrent}, {"max_pending_calls", impl_->max_pending},
+    {"waiting_count", impl_->pending.size()}, {"running_count", impl_->running.size()},
+    {"completed_count", impl_->completed}, {"call_count", impl_->calls.size()},
+    {"blocking", impl_->blocking}};
+}
+
+Json ToolManager::getQueueSnapshot() const
+{
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  const auto now = Clock::now();
+  Json waiting = Json::array(), running = Json::array();
+  for (const auto & call : impl_->pending) {
+    waiting.push_back(impl_->snapshot(*call, now));
+  }
+  for (const auto & item : impl_->running) {
+    running.push_back(impl_->snapshot(*item.second, now));
+  }
+  return {{"waiting", std::move(waiting)}, {"running", std::move(running)}};
+}
+
+Json ToolManager::getCallStatus(const std::string & call_id) const
+{
+  std::lock_guard<std::mutex> lock(impl_->mutex);
+  const auto call = impl_->calls.find(call_id);
+  return call == impl_->calls.end() ? Json() : impl_->snapshot(*call->second, Clock::now());
+}
+
 std::vector<ToolCallHandle> ToolManager::submit(const Json & response)
 {
   return impl_->submit(response);
@@ -366,4 +407,3 @@ void ToolManager::shutdown()
 }
 
 }  // namespace vln_agent
-

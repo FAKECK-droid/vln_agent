@@ -33,6 +33,12 @@ TEST(SessionManager, BuildsNativeRequestsWithoutImplicitInitialization)
   FixtureFiles files;
   SessionManager session(files.sessionConfig(server.url()));
   ready(session);
+  EXPECT_TRUE(session.getTools().empty());
+  EXPECT_TRUE(session.getPendingInputs().empty());
+  EXPECT_TRUE(session.getCurrentRequest().is_null());
+  EXPECT_EQ(session.getRequestStatus().at("request_elapsed_ms"), 0);
+  EXPECT_EQ(session.getRequestStatus().at("rate_limit_remaining_ms"), 0);
+  EXPECT_FALSE(session.getRequestStatus().at("retry_required").get<bool>());
   session.setTools(Json::array({{{"type", "function"}, {"name", "example"}}}));
   session.request();
   session.addInputs(message("系统规则", "system"));
@@ -78,15 +84,39 @@ TEST(SessionManager, BuffersNextInputsAndToolsUntilCompleteResultIsTaken)
   session.setTools(Json::array({{{"name", "old"}}}));
   session.addInputs(message("first"));
   session.request();
-  waitFor([&] {return server.requests().size() == 1;});
+  waitFor([&] {return session.getRequestStatus().at("current_response_id") == "r1";});
+  auto current = session.getCurrentRequest();
+  EXPECT_EQ(current, server.requests().at(0));
+  EXPECT_EQ(current.at("input"), Json::array({message("first")}));
   session.setTools(Json::array({{{"name", "new"}}}));
   session.addInputs(Json::array_t{message("second"), message("third")});
   session.request();
   session.request();
   EXPECT_EQ(session.getRequestStatus().at("pending_input_count"), 2);
+  auto pending = session.getPendingInputs();
+  auto tools = session.getTools();
+  EXPECT_EQ(pending, Json::array({message("second"), message("third")}));
+  EXPECT_EQ(tools, Json::array({{{"name", "new"}}}));
+  EXPECT_EQ(session.getCurrentRequest().at("tools").at(0).at("name"), "old");
+  const auto elapsed = session.getRequestStatus().at("request_elapsed_ms").get<int>();
+  current["input"].clear();
+  pending.clear();
+  tools.clear();
+  EXPECT_EQ(session.getCurrentRequest().at("input").size(), 1u);
+  EXPECT_EQ(session.getPendingInputs().size(), 2u);
+  EXPECT_EQ(session.getTools().size(), 1u);
+  EXPECT_FALSE(session.getRequestStatus().at("can_retry").get<bool>());
+  std::this_thread::sleep_for(15ms);
+  EXPECT_GE(session.getRequestStatus().at("request_elapsed_ms").get<int>(), elapsed + 10);
   server.release(0);
   waitFor([&] {return session.getRequestStatus().at("response_ready").get<bool>();});
+  const auto finished_elapsed = session.getRequestStatus().at("request_elapsed_ms");
+  EXPECT_TRUE(session.getCurrentRequest().is_null());
+  EXPECT_FALSE(session.getRequestStatus().at("retry_required").get<bool>());
+  EXPECT_EQ(session.getRequestStatus().at("current_response_id"), "r1");
+  EXPECT_EQ(session.getPendingInputs().size(), 2u);
   std::this_thread::sleep_for(30ms);
+  EXPECT_EQ(session.getRequestStatus().at("request_elapsed_ms"), finished_elapsed);
   EXPECT_EQ(server.requests().size(), 1u);
   EXPECT_EQ(session.getContextStatus().at("latest_response_id"), "r1");
   EXPECT_EQ(session.takeResponse().at("id"), "r1");
@@ -112,7 +142,10 @@ TEST(SessionManager, RateLimitWakesWithoutFurtherExternalCalls)
   take(session);
   session.addInputs(message("two"));
   session.request();
-  EXPECT_EQ(session.getRequestStatus().at("state"), "waiting_interval");
+  const auto waiting = session.getRequestStatus();
+  EXPECT_EQ(waiting.at("state"), "waiting_interval");
+  EXPECT_GT(waiting.at("rate_limit_remaining_ms").get<int>(), 0);
+  EXPECT_LE(waiting.at("rate_limit_remaining_ms").get<int>(), 250);
   // 只读取服务端观测，不调用任何能唤醒会话调度器的方法。
   waitFor([&] {return server.requests().size() == 2;});
   const auto starts = server.starts();
@@ -157,6 +190,10 @@ TEST(SessionManager, ModelErrorsKeepInputsAndRequireExplicitRetry)
     EXPECT_EQ(status.at("pending_input_count"), 1);
     EXPECT_EQ(status.at("current_input_count"), 1);
     EXPECT_FALSE(status.at("send_requested").get<bool>());
+    EXPECT_TRUE(status.at("retry_required").get<bool>());
+    EXPECT_TRUE(status.at("can_retry").get<bool>());
+    EXPECT_EQ(session.getCurrentRequest().at("input"), Json::array({message("failed")}));
+    EXPECT_EQ(session.getPendingInputs(), Json::array({message("later")}));
     EXPECT_EQ(status.at("last_error").at("event").at("type"), type);
     EXPECT_TRUE(status.at("transport").at("last_error").is_null());
     session.request();
@@ -187,7 +224,10 @@ TEST(SessionManager, MissingContextRemainsAnErrorWithoutSilentlyStartingNewChain
   std::this_thread::sleep_for(30ms);
   EXPECT_EQ(server.requests().size(), 2u);
   EXPECT_EQ(session.getContextStatus().at("latest_response_id"), "r1");
-  EXPECT_EQ(session.getRequestStatus().at("last_error").at("code"), "previous_response_not_found");
+  const auto status = session.getRequestStatus();
+  EXPECT_EQ(status.at("last_error").at("code"), "previous_response_not_found");
+  EXPECT_TRUE(status.at("retry_required").get<bool>());
+  EXPECT_FALSE(status.at("can_retry").get<bool>());
 }
 
 TEST(SessionManager, ReconnectKeepsConfirmedChainAndDoesNotReplayInterruptedRequest)
@@ -216,6 +256,9 @@ TEST(SessionManager, ReconnectKeepsConfirmedChainAndDoesNotReplayInterruptedRequ
            status.at("transport").at("connection_id").get<int>() >= 2;
   });
   EXPECT_TRUE(session.getRequestStatus().at("last_error").is_null());
+  EXPECT_TRUE(session.getRequestStatus().at("retry_required").get<bool>());
+  EXPECT_TRUE(session.getRequestStatus().at("can_retry").get<bool>());
+  EXPECT_EQ(session.getRequestStatus().at("current_response_id"), "r2");
   EXPECT_FALSE(session.getRequestStatus().at("transport").at("last_error").is_null());
   std::this_thread::sleep_for(30ms);
   EXPECT_EQ(server.requests().size(), 2u);
@@ -275,6 +318,13 @@ TEST(SessionManager, UnlimitedWaitCanBeClosedAndAllThreadsAreJoined)
   session.shutdown();
   EXPECT_EQ(session.getRequestStatus().at("state"), "closed");
   EXPECT_EQ(session.getRequestStatus().at("transport").at("state"), "closed");
+  EXPECT_FALSE(session.getRequestStatus().at("can_retry").get<bool>());
+  EXPECT_FALSE(session.getRequestStatus().at("retry_required").get<bool>());
+  EXPECT_TRUE(session.getCurrentRequest().is_null());
+  EXPECT_TRUE(session.getPendingInputs().empty());
+  const auto elapsed = session.getRequestStatus().at("request_elapsed_ms");
+  std::this_thread::sleep_for(15ms);
+  EXPECT_EQ(session.getRequestStatus().at("request_elapsed_ms"), elapsed);
   EXPECT_THROW(session.addInputs(message("closed")), std::logic_error);
 }
 

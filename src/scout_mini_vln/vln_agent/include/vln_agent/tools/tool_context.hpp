@@ -4,10 +4,13 @@
 #include <memory>
 #include <string>
 
-#include "vln_agent/utils/json.hpp"
-#include <rclcpp/rclcpp.hpp>
-
 #include "vln_agent/tools/shared_resources.hpp"
+#include "vln_agent/utils/json.hpp"
+
+namespace rclcpp
+{
+class Node;
+}
 
 namespace vln_agent
 {

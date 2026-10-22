@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <stdexcept>
 
+#include <rclcpp/rclcpp.hpp>
+
 namespace vln_agent::test
 {
 
@@ -63,7 +65,12 @@ TEST_F(ToolManagerTest, SelectsDefinitionsInConfigurationOrderAndInjectsSettings
   auto second = function("second");
   second["settings"] = {{"label", "002"}, {"ratio", 0.5}};
   ToolManager manager(node);
+  EXPECT_EQ(manager.getStatus().at("state"), "unloaded");
+  EXPECT_TRUE(manager.getCallStatus("missing").is_null());
+  EXPECT_TRUE(manager.getQueueSnapshot().at("waiting").empty());
   manager.load(config.config(Json::array({group(Json::array({second, function("first")}))})));
+  EXPECT_EQ(manager.getStatus().at("state"), "ready");
+  EXPECT_EQ(manager.getStatus().at("call_count"), 0);
   EXPECT_EQ(manager.getTools(), Json::array({definition("second"), definition("first")}));
   auto handles = manager.submit(response(Json::array({
         call("first", "a"), call("second", "b")})));
@@ -126,12 +133,47 @@ TEST_F(ToolManagerTest, BlockingCallPausesLaterDispatchWithoutWaitingForEarlierC
     EXPECT_EQ(probe().started.size(), 2u);
     EXPECT_EQ(std::count(probe().started.begin(), probe().started.end(), "c"), 0);
   }
+  const auto status = manager.getStatus();
+  EXPECT_EQ(status.at("max_concurrent_calls"), 2);
+  EXPECT_EQ(status.at("max_pending_calls"), 64);
+  EXPECT_EQ(status.at("waiting_count"), 1);
+  EXPECT_EQ(status.at("running_count"), 2);
+  EXPECT_EQ(status.at("completed_count"), 0);
+  EXPECT_EQ(status.at("call_count"), 3);
+  EXPECT_TRUE(status.at("blocking").get<bool>());
+  auto snapshot = manager.getQueueSnapshot();
+  ASSERT_EQ(snapshot.at("running").size(), 2u);
+  ASSERT_EQ(snapshot.at("waiting").size(), 1u);
+  EXPECT_EQ(snapshot.at("running")[0].at("call_id"), "a");
+  EXPECT_EQ(snapshot.at("running")[1].at("call_id"), "b");
+  EXPECT_EQ(snapshot.at("running")[0].at("sequence"), 0);
+  EXPECT_EQ(snapshot.at("running")[1].at("sequence"), 1);
+  EXPECT_EQ(snapshot.at("running")[1].at("state"), "running");
+  EXPECT_TRUE(snapshot.at("running")[1].at("blocking").get<bool>());
+  EXPECT_EQ(snapshot.at("waiting")[0].at("call_id"), "c");
+  EXPECT_EQ(snapshot.at("waiting")[0].at("state"), "waiting");
+  EXPECT_EQ(snapshot.at("waiting")[0].at("run_ms"), 0);
+  EXPECT_EQ(manager.getCallStatus("b").at("name"), "second");
+  EXPECT_EQ(handles[1].result.wait_for(0ms), std::future_status::timeout);
+  snapshot["running"].clear();
+  EXPECT_EQ(manager.getQueueSnapshot().at("running").size(), 2u);
   release("b");
   EXPECT_TRUE(payload(handles[1]).at("ok"));
   EXPECT_EQ(payload(handles[2]).at("id"), "c");
   EXPECT_EQ(handles[0].result.wait_for(0ms), std::future_status::timeout);
+  const auto finished = manager.getCallStatus("b");
+  EXPECT_EQ(finished.at("state"), "finished");
+  EXPECT_GE(finished.at("wait_ms").get<int>(), 0);
+  EXPECT_GE(finished.at("run_ms").get<int>(), 0);
+  EXPECT_FALSE(manager.getStatus().at("blocking").get<bool>());
+  std::this_thread::sleep_for(15ms);
+  EXPECT_EQ(manager.getCallStatus("b"), finished);
+  EXPECT_TRUE(payload(handles[1]).at("ok"));
   release("a");
   EXPECT_TRUE(payload(handles[0]).at("ok"));
+  EXPECT_EQ(manager.getStatus().at("completed_count"), 3);
+  EXPECT_TRUE(manager.getQueueSnapshot().at("running").empty());
+  EXPECT_TRUE(manager.getQueueSnapshot().at("waiting").empty());
 }
 
 TEST_F(ToolManagerTest, BoundsActiveExecutions)
@@ -170,6 +212,9 @@ TEST_F(ToolManagerTest, LimitsPendingQueueAndReturnsCorrelatedFailure)
         call("first", "b"), call("first", "c")})));
   EXPECT_EQ(payload(handles[1]).at("code"), "TOOL_QUEUE_FULL");
   EXPECT_EQ(payload(handles[2]).at("code"), "TOOL_QUEUE_FULL");
+  EXPECT_EQ(manager.getCallStatus("b").at("state"), "finished");
+  EXPECT_EQ(manager.getCallStatus("b").at("run_ms"), 0);
+  EXPECT_EQ(manager.getStatus().at("completed_count"), 2);
   release("a");
   EXPECT_TRUE(payload(handles[0]).at("ok"));
 }
@@ -215,6 +260,13 @@ TEST_F(ToolManagerTest, ShutdownCompletesRunningAndQueuedPromisesAndRetainsDedup
   EXPECT_EQ(payload(after[0]).at("code"), "TOOL_MANAGER_CLOSED");
   EXPECT_EQ(payload(after[1]), payload(handles[1]));
   EXPECT_TRUE(manager.getTools().empty());
+  EXPECT_EQ(manager.getStatus().at("state"), "closed");
+  EXPECT_EQ(manager.getStatus().at("call_count"), 3);
+  EXPECT_EQ(manager.getStatus().at("completed_count"), 3);
+  EXPECT_EQ(manager.getStatus().at("running_count"), 0);
+  EXPECT_EQ(manager.getStatus().at("waiting_count"), 0);
+  EXPECT_EQ(manager.getCallStatus("running").at("state"), "finished");
+  EXPECT_EQ(manager.getCallStatus("pending").at("run_ms"), 0);
   EXPECT_EQ(probe().resource_shutdowns, 1);
 }
 
