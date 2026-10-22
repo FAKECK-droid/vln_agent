@@ -1,0 +1,15 @@
+[
+  {
+    "type": "function",
+    "name": "capture_image",
+    "description": "读取相机最新帧，返回采样信息与原生 JPEG 图片内容项。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  }
+]

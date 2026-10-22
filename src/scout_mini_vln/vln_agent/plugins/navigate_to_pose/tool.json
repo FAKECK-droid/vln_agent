@@ -1,0 +1,77 @@
+[
+  {
+    "type": "function",
+    "name": "navigate_to_pose_start_navigation",
+    "description": "启动导航，目标被接受后返回任务 ID 和 running 状态；不会等待到达。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "frame_id": {
+          "type": "string",
+          "description": "目标所在坐标系，例如 map。"
+        },
+        "x": {
+          "type": "number",
+          "description": "目标 x 坐标，单位米。"
+        },
+        "y": {
+          "type": "number",
+          "description": "目标 y 坐标，单位米。"
+        },
+        "yaw": {
+          "type": "number",
+          "description": "目标朝向，单位弧度。"
+        }
+      },
+      "required": [
+        "frame_id",
+        "x",
+        "y",
+        "yaw"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "navigate_to_pose_get_feedback",
+    "description": "获取指定导航任务的最新反馈。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "启动导航返回的本地任务 ID。"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "navigate_to_pose_cancel_navigation",
+    "description": "请求取消指定导航任务，返回取消请求的处理结果。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "启动导航返回的本地任务 ID。"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

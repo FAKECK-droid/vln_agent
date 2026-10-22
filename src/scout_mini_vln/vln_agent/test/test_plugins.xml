@@ -1,0 +1,5 @@
+<library path="vln_agent_test_tools">
+  <class name="vln_agent_test/TestTool"
+         type="vln_agent::test::TestTool"
+         base_class_type="vln_agent::ToolPluginBase"/>
+</library>

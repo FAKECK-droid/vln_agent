@@ -1,0 +1,26 @@
+<class_libraries>
+  <library path="vln_agent_navigation_tools">
+    <class name="vln_agent/NavigateToPoseStartNavigation"
+           type="vln_agent::NavigateToPoseStartNavigation"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>启动导航，目标接受后立即返回。</description>
+    </class>
+    <class name="vln_agent/NavigateToPoseGetFeedback"
+           type="vln_agent::NavigateToPoseGetFeedback"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>查询共享导航任务。</description>
+    </class>
+    <class name="vln_agent/NavigateToPoseCancelNavigation"
+           type="vln_agent::NavigateToPoseCancelNavigation"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>请求取消共享导航任务。</description>
+    </class>
+  </library>
+  <library path="vln_agent_camera_tools">
+    <class name="vln_agent/CaptureImage"
+           type="vln_agent::CaptureImage"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>读取最新相机图像并返回 JPEG。</description>
+    </class>
+  </library>
+</class_libraries>
