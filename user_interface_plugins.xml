@@ -1,0 +1,7 @@
+<library path="vln_agent_ros_topic_interface">
+  <class name="vln_agent/RosTopicInterface"
+         type="vln_agent::RosTopicInterface"
+         base_class_type="vln_agent::UserInterfaceBase">
+    <description>JSON 汇总输出话题与原生 Responses 用户输入话题。</description>
+  </class>
+</library>

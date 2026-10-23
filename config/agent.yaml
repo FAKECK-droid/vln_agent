@@ -1,0 +1,71 @@
+tool_manager:
+  max_concurrent_calls: 4
+  max_pending_calls: 64
+  groups:
+    - id: navigate_to_pose
+      definition: ../plugins/tools/navigate_to_pose/tool.json
+      settings:
+        action_name: /navigate_to_pose
+      functions:
+        - name: navigate_to_pose_start_navigation
+          plugin: vln_agent/NavigateToPoseStartNavigation
+          blocking: true
+        - name: navigate_to_pose_get_feedback
+          plugin: vln_agent/NavigateToPoseGetFeedback
+          blocking: false
+        - name: navigate_to_pose_cancel_navigation
+          plugin: vln_agent/NavigateToPoseCancelNavigation
+          blocking: true
+    - id: capture_image
+      definition: ../plugins/tools/capture_image/tool.json
+      settings:
+        camera_topic: /camera/color/image_raw
+      functions:
+        - name: capture_image
+          plugin: vln_agent/CaptureImage
+          blocking: false
+          settings:
+            timeout_sec: 2.0
+
+
+session_manager:
+  base_url: "http://192.168.3.25:8317/v1"
+  api_key: ""  # 实际密钥请填写 config/agent.local.yaml（不提交）
+  model: "gpt-6-luna"
+  store: true
+  reasoning_effort: low
+  max_output_tokens: 8192
+  parallel_tool_calls: true
+  prompt_cache_key: "scout-mini-vln"
+  max_request_hz: 1.0
+  request_timeout_sec: 0
+  stream_output: true
+  context:
+    budget_tokens: 128000
+    compact_ratio: 0.8
+
+
+# 用户渠道分别选择传输字段；同步 exchange，无交互工作线程。
+user_interaction:
+  channels:
+    - id: ros_ui
+      plugin: vln_agent/RosTopicInterface
+      transmit:
+        request: true
+        response:
+          messages: true
+          function_calls: true
+          tool_outputs: true
+          stream: true
+        tools:
+          definitions: true
+          status: true
+          queue: true
+          finished_calls: true
+        session:
+          request_status: true
+          context_status: true
+      include_images: false
+      settings:
+        send_topic: /vln/user_output
+        receive_topic: /vln/user_input

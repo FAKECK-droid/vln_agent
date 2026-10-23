@@ -1,0 +1,12 @@
+# 独立组件链接验证：仅会话连接关闭的回环端口，不提交模型请求。
+session_manager:
+  base_url: http://127.0.0.1:1/v1
+  api_key: test-only
+  model: gpt-6-luna
+user_interaction:
+  channels:
+    - id: offline_ros
+      plugin: vln_agent/RosTopicInterface
+      settings:
+        send_topic: /vln_install_test/output
+        receive_topic: /vln_install_test/input

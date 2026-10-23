@@ -1,0 +1,5 @@
+<library path="vln_agent_test_interfaces">
+  <class name="vln_agent_test/RecordingInterface"
+         type="vln_agent::test::RecordingInterface"
+         base_class_type="vln_agent::UserInterfaceBase"/>
+</library>

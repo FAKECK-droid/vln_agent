@@ -1,0 +1,7 @@
+build/
+install/
+log/
+config/*.local.yaml
+*.tar.gz
+.venv*/
+__pycache__/
