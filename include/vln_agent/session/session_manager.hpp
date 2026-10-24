@@ -25,7 +25,7 @@ public:
   void addInputs(const Json::array_t & input_items);
   /** @brief 合并登记发送意图；错误或中断后的重试须显式调用本方法。 */
   void request();
-  /** @brief 非阻塞取走原始完整 response，尚未完成时返回 null。 */
+  /** @brief 非阻塞取走完整 response，并释放其流式文本；尚未完成时返回 null。 */
   Json takeResponse();
 
   /** 工具、状态、请求、输入查讯专用函数 */

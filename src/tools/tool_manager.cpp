@@ -32,7 +32,7 @@ static Json wrapResult(const std::string & call_id, const ToolResult & result)
   return utils::functionCallOutput(call_id, payload, result.images);
 }
 
-/** @brief 单个管理器的装载状态、调用去重记录和有界执行队列。 */
+/** @brief 单个管理器的装载状态、活动调用和有界执行队列。 */
 struct ToolManager::Impl
 {
   struct Entry
@@ -82,7 +82,7 @@ struct ToolManager::Impl
     std::uint64_t sequence;                 ///< 按提交顺序分配的队列序号。
     bool blocking{false};                   ///< 已知工具是否暂停后续派发。
     Clock::time_point queued_at{Clock::now()};  ///< 登记时刻，计入提交中的参数解析时间。
-    Clock::time_point started_at{}, finished_at{};  ///< 未开始或未完成时为默认值。
+    Clock::time_point started_at{};  ///< 尚未开始时为默认值。
   };
 
   explicit Impl(rclcpp::Node & node_ref) : node(node_ref) {}
@@ -220,28 +220,28 @@ struct ToolManager::Impl
     return handles;
   }
 
-  /** @brief 持锁发布终态和结果；只由拒绝、关闭或执行完成路径调用一次。 */
+  /** @brief 持锁移除活动调用并交付结果；结果仅由调用方 future 持有。 */
   void complete(const std::shared_ptr<Call> & call, Json output)
   {
-    call->finished_at = Clock::now();
     ++completed;
+    calls.erase(call->handle.call_id);
+    call->arguments = nullptr;
     call->promise.set_value(std::move(output));
   }
 
   /** @brief 在同一锁和时间基准下复制调用元数据；不读取或消费 future。 */
   Json snapshot(const Call & call, Clock::time_point now) const
   {
-    const auto end = call.finished_at == Clock::time_point{} ? now : call.finished_at;
     const bool started = call.started_at != Clock::time_point{};
-    const auto wait_end = started ? call.started_at : end;
+    const auto wait_end = started ? call.started_at : now;
     return {
       {"call_id", call.handle.call_id}, {"name", call.handle.name},
       {"sequence", call.sequence}, {"blocking", call.blocking},
-      {"state", call.finished_at != Clock::time_point{} ? "finished" : started ? "running" : "waiting"},
+      {"state", started ? "running" : "waiting"},
       {"wait_ms", std::chrono::duration_cast<std::chrono::milliseconds>(
           wait_end - call.queued_at).count()},
       {"run_ms", started ? std::chrono::duration_cast<std::chrono::milliseconds>(
-          end - call.started_at).count() : 0}};
+          now - call.started_at).count() : 0}};
   }
 
   /**
@@ -339,7 +339,7 @@ struct ToolManager::Impl
   std::size_t max_pending{64};              ///< FIFO 等待队列上限。
   std::size_t completed{0};                 ///< 已完成 future 的调用数，包含拒绝和关闭。
   std::uint64_t next_sequence{0};           ///< 当前管理器内的提交序号。
-  std::unordered_map<std::string, std::shared_ptr<Call>> calls;  ///< call_id 去重记录。
+  std::unordered_map<std::string, std::shared_ptr<Call>> calls;  ///< 仅等待/执行中的 call_id；完成即移除。
   std::deque<std::shared_ptr<Call>> pending;  ///< 按提交顺序等待工作线程的调用。
   std::map<std::uint64_t, std::shared_ptr<Call>> running;  ///< 按提交序号排列的活动调用。
   std::vector<std::thread> workers;          ///< 固定容量的工作线程池。

@@ -25,6 +25,9 @@ const std::vector<std::string> fields{
   "request", "response.messages", "response.function_calls", "response.tool_outputs",
   "response.stream", "tools.definitions", "tools.status", "tools.queue",
   "tools.finished_calls", "session.request_status", "session.context_status"};
+const std::vector<std::string> state_fields{
+  "request", "session.request_status", "session.context_status", "response.stream",
+  "tools.status", "tools.queue"};
 
 const Json * findPath(const Json & object, const std::string & path)
 {
@@ -103,24 +106,26 @@ Json displayCopy(const Json & source, bool images)
 struct ViewState
 {
   bool initialized{false}, definitions_sent{false};
-  Json last = Json::object();
-  std::map<std::string, std::string> texts;
+  Json last = Json::object();  // 仅当前展示状态，用于变化比较。
+  std::string stream_id;
+  std::map<std::pair<std::size_t, std::size_t>, std::string> texts;
 };
 
-/** @brief 同一个内容段的累计快照转成后缀，最终校准时也复用这一位置。 */
-void appendText(Json & messages, ViewState & view, const std::string & response_id,
+/** @brief 只读当前流式基线，待全体插件接收后才提交本次文字差量。 */
+void appendText(Json & messages, const ViewState & view, const std::string & response_id,
                 std::size_t output, std::size_t content, const std::string & type,
                 const std::string & text)
 {
-  const auto key = response_id + "/" + std::to_string(output) + "/" + std::to_string(content);
-  auto & previous = view.texts[key];
+  const std::string empty;
+  const auto found = view.texts.find({output, content});
+  const auto & previous = view.stream_id == response_id && found != view.texts.end() ?
+    found->second : empty;
   if (text == previous) {return;}
   const bool append = text.compare(0, previous.size(), previous) == 0;
   messages.push_back({
     {"response_id", response_id}, {"output_index", output}, {"content_index", content},
     {"type", type}, {"op", append ? "append" : "replace"},
     {"text", append ? text.substr(previous.size()) : text}});
-  previous = text;
 }
 }  // namespace
 
@@ -130,11 +135,9 @@ struct UserInteractionManager::Impl
   struct Channel {std::shared_ptr<UserInterfaceBase> plugin; std::size_t profile;};
   struct Batch
   {
-    std::shared_ptr<const Json> snapshot;
-    std::vector<ViewState> views;
+    std::vector<std::string> active_streams;
     std::vector<std::shared_ptr<const Json>> outgoing;
     std::vector<bool> accepted;
-    std::set<std::string> responses, results, watched, finished;
   };
 
   Impl(const std::shared_ptr<rclcpp::Node> & node_ref, UserInteractionSources refs)
@@ -195,12 +198,10 @@ struct UserInteractionManager::Impl
     if (!response.is_null() && (!response.is_object() ||
       response.at("status") != "completed" || !response.at("output").is_array()))
     {
-      throw std::invalid_argument("latest_response 必须为完整 completed response");
+      throw std::invalid_argument("new_response 必须为新增的完整 completed response");
     }
     auto batch = std::make_unique<Batch>();
     batch->accepted.resize(channels.size(), false);
-    batch->watched = watched;
-    batch->finished = finished;
     Json snapshot = Json::object();
     auto session = sources.session.lock();
     const bool need_session = wants("request") || wants("session.request_status") ||
@@ -227,97 +228,49 @@ struct UserInteractionManager::Impl
     }
 
     auto tools = sources.tools.lock();
-    const bool need_tools = wants("tools.status") || wants("tools.queue") ||
-      wants("tools.finished_calls");
-    if (need_tools && !tools) {
+    if ((wants("tools.status") || wants("tools.queue")) && !tools) {
       throw std::logic_error("所选字段需要有效的 ToolManager");
     }
     if (wants("tools.status")) {snapshot["tools"]["status"] = tools->getStatus();}
-    Json queue = Json::object();
-    std::set<std::string> active;
-    if (wants("tools.queue") || wants("tools.finished_calls")) {
-      queue = tools->getQueueSnapshot();
-      snapshot["tools"]["queue"] = queue;
-      for (const auto * group : {"waiting", "running"}) {
-        for (const auto & call : queue.at(group)) {
-          const auto id = call.at("call_id").get<std::string>();
-          active.insert(id);
-          if (!finished.count(id)) {batch->watched.insert(id);}
-        }
-      }
-    }
+    if (wants("tools.queue")) {snapshot["tools"]["queue"] = tools->getQueueSnapshot();}
 
-    const auto response_id = response.is_null() ? std::string() :
-      response.at("id").get<std::string>();
-    const bool fresh_response = !response_id.empty() && !responses.count(response_id);
-    if (fresh_response) {
-      batch->responses.insert(response_id);
-      for (const auto & item : response.at("output")) {
-        if (item.value("type", std::string()) == "function_call") {
-          const auto id = item.at("call_id").get<std::string>();
-          if (!finished.count(id)) {batch->watched.insert(id);}
-        }
-      }
-    }
-    Json new_outputs = Json::array();
+    // 完成事件由 Agent 本次传入，不向工具管理器查询已删除的历史记录。
+    Json terminal = Json::array();
     for (const auto & item : outputs) {
       if (item.at("type") != "function_call_output") {
         throw std::invalid_argument("tool_outputs 元素必须为 function_call_output");
       }
       const auto id = item.at("call_id").get<std::string>();
-      if (!results.count(id) && batch->results.insert(id).second) {
-        new_outputs.push_back(item);
-      }
-      if (!finished.count(id)) {batch->watched.insert(id);}
-    }
-    Json terminal = Json::array();
-    if (wants("tools.finished_calls")) {
-      for (auto it = batch->watched.begin(); it != batch->watched.end();) {
-        if (active.count(*it)) {++it; continue;}
-        const auto status = tools->getCallStatus(*it);
-        if (!status.is_null() && status.at("state") == "finished") {
-          terminal.push_back(status);
-          batch->finished.insert(*it);
-          it = batch->watched.erase(it);
-        } else {++it;}
+      if (wants("tools.finished_calls")) {
+        terminal.push_back({{"call_id", id}, {"state", "finished"}});
       }
     }
 
+    const bool has_response = !response.is_null();
+    const auto response_id = has_response ? response.at("id").get<std::string>() : std::string();
+    const auto stream_id = stream.is_null() ? std::string() :
+      stream.at("response_id").get<std::string>();
     const auto stamp = utils::utcNow();
     for (const auto & profile : profiles) {
-      auto view = profile.state;
+      const auto & view = profile.state;
       const auto & options = profile.options;
       Json packet = Json::object();
-      // 配置只选择固定字段，状态快照按字段替换；先过滤图片再比较。
-      for (const auto * path : {"request", "session.request_status", "session.context_status",
-        "response.stream", "tools.status", "tools.queue"})
-      {
+      for (const auto & path : state_fields) {
         if (!options.has(path)) {continue;}
         const auto current = findPath(snapshot, path);
         if (!current) {continue;}
         auto shown = displayCopy(*current, options.images);
         if (!view.initialized || !view.last.contains(path) || view.last.at(path) != shown) {
-          putPath(packet, path, shown);
-          view.last[path] = std::move(shown);
+          putPath(packet, path, std::move(shown));
         }
       }
       if (options.has("tools.definitions") && !view.definitions_sent) {
         packet["tools"]["definitions"] = definitions;
-        view.definitions_sent = true;
       }
 
       Json messages = Json::array();
       if (options.has("response.messages")) {
-        if (options.has("response.stream") && !stream.is_null()) {
-          const auto id = stream.at("response_id").get<std::string>();
-          for (const auto & part : stream.at("content")) {
-            if (responses.count(id)) {continue;}  // 完成响应不能被迟到的累计快照回退。
-            appendText(messages, view, id, part.at("output_index").get<std::size_t>(),
-              part.at("content_index").get<std::size_t>(), part.at("type").get<std::string>(),
-              part.at("text").get<std::string>());
-          }
-        }
-        if (fresh_response) {
+        if (has_response) {
           const auto & output = response.at("output");
           for (std::size_t i = 0; i < output.size(); ++i) {
             if (output[i].value("type", std::string()) != "message") {continue;}
@@ -331,27 +284,40 @@ struct UserInteractionManager::Impl
             }
           }
         }
+        // 同轮的完整结果优先；可同时显示下一轮已经开始的流式文本。
+        if (options.has("response.stream") && !stream_id.empty() &&
+          (!has_response || stream_id != response_id))
+        {
+          for (const auto & part : stream.at("content")) {
+            appendText(messages, view, stream_id, part.at("output_index").get<std::size_t>(),
+              part.at("content_index").get<std::size_t>(), part.at("type").get<std::string>(),
+              part.at("text").get<std::string>());
+          }
+        }
       }
       if (!messages.empty()) {packet["response"]["messages"] = std::move(messages);}
-      if (fresh_response && (options.has("response.messages") ||
+      if (has_response && (options.has("response.messages") ||
         options.has("response.function_calls") || options.has("response.stream")))
       {
         packet["response"]["id"] = response_id;
         packet["response"]["status"] = response.at("status");
       }
-      if (fresh_response && options.has("response.function_calls")) {
+      if (has_response && options.has("response.function_calls")) {
         Json calls = Json::array();
         for (const auto & item : response.at("output")) {
           if (item.value("type", std::string()) == "function_call") {calls.push_back(item);}
         }
         if (!calls.empty()) {packet["response"]["function_calls"] = std::move(calls);}
       }
-      if (options.has("response.tool_outputs") && !new_outputs.empty()) {
-        packet["response"]["tool_outputs"] = displayCopy(new_outputs, options.images);
+      if (options.has("response.tool_outputs") && !outputs.empty()) {
+        packet["response"]["tool_outputs"] = displayCopy(outputs, options.images);
       }
       if (options.has("tools.finished_calls") && !terminal.empty()) {
         packet["tools"]["finished_calls"] = terminal;
       }
+      const bool keep_stream = options.has("response.messages") &&
+        options.has("response.stream") && (!has_response || stream_id != response_id);
+      batch->active_streams.push_back(keep_stream ? stream_id : std::string());
       if (packet.empty()) {batch->outgoing.push_back(nullptr);}
       else {
         packet["type"] = "interaction_update";
@@ -360,10 +326,7 @@ struct UserInteractionManager::Impl
         packet["full"] = !view.initialized;
         batch->outgoing.push_back(std::make_shared<const Json>(std::move(packet)));
       }
-      view.initialized = true;
-      batch->views.push_back(std::move(view));
     }
-    batch->snapshot = std::make_shared<const Json>(std::move(snapshot));
     return batch;
   }
 
@@ -376,20 +339,40 @@ struct UserInteractionManager::Impl
       const auto outgoing = pending->accepted[i] ? nullptr :
         pending->outgoing.at(channel.profile);
       auto inputs = channel.plugin->exchange(outgoing);
-      pending->accepted[i] = true;  // 正常返回即接收；输入格式错误也不重发输出。
+      pending->accepted[i] = true;
       if (!inputs.is_array()) {
         throw std::invalid_argument("接口 exchange() 必须返回原生输入数组");
       }
       utils::appendInputs(input_buffer, inputs);
     }
-    // 所有插件正常接收后，才整体推进发送记录与文本位置。
+    // 批次只含本次差量；不复制完整 ViewState，也不保存完成响应或结果的历史。
     for (std::size_t i = 0; i < profiles.size(); ++i) {
-      profiles[i].state = std::move(pending->views[i]);
+      auto & view = profiles[i].state;
+      const auto & active_id = pending->active_streams[i];
+      if (view.stream_id != active_id) {
+        view.stream_id = active_id;
+        view.texts.clear();
+      }
+      const auto & packet = pending->outgoing[i];
+      if (!packet) {continue;}
+      for (const auto & path : state_fields) {
+        if (const auto value = findPath(*packet, path)) {view.last[path] = *value;}
+      }
+      if (findPath(*packet, "tools.definitions")) {view.definitions_sent = true;}
+      if (!active_id.empty()) {
+        if (const auto messages = findPath(*packet, "response.messages")) {
+          for (const auto & part : *messages) {
+            if (part.at("response_id") != active_id) {continue;}
+            auto & text = view.texts[{
+              part.at("output_index").get<std::size_t>(),
+              part.at("content_index").get<std::size_t>()}];
+            if (part.at("op") == "replace") {text = part.at("text").get<std::string>();}
+            else {text += part.at("text").get<std::string>();}
+          }
+        }
+      }
+      view.initialized = true;
     }
-    responses.insert(pending->responses.begin(), pending->responses.end());
-    results.insert(pending->results.begin(), pending->results.end());
-    watched = std::move(pending->watched);
-    finished = std::move(pending->finished);
     pending.reset();
     ++next_batch;
     Json inputs = Json::array();
@@ -405,6 +388,8 @@ struct UserInteractionManager::Impl
     channels.clear();
     pending.reset();
     profiles.clear();
+    input_buffer = Json::array();
+    definitions = Json::array();
     loader.reset();
   }
 
@@ -415,7 +400,6 @@ struct UserInteractionManager::Impl
   std::vector<Channel> channels;
   std::unique_ptr<Batch> pending;
   Json definitions = Json::array(), input_buffer = Json::array();
-  std::set<std::string> responses, results, watched, finished;
   std::uint64_t next_batch{1};
   bool loaded{false}, closed{false};
 };

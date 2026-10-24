@@ -156,7 +156,7 @@ int main(int argc, char ** argv)
         const auto request = session->getCurrentRequest();
         if (!request.is_null()) {sent_request = request;}
         executor.spin_some();
-        ui.exchange(latest, displayed_outputs);
+        ui.exchange();
         const auto response = session->takeResponse();
         if (!response.is_null()) {
           // 请求体没有认证头，保留原始往返便于定位代理或模型返回异常。
@@ -173,7 +173,7 @@ int main(int argc, char ** argv)
               "后续请求重复发送了初始口令");
           }
           latest = response;
-          ui.exchange(latest, displayed_outputs);
+          ui.exchange(latest);
           executor.spin_some();
           return response;
         }
@@ -193,6 +193,7 @@ int main(int argc, char ** argv)
     require(handles[0].name == "interaction_test_echo", "出现意外工具调用");
     require(handles[0].result.wait_for(5s) == std::future_status::ready, "测试函数未及时结束");
     displayed_outputs.push_back(handles[0].result.get());
+    ui.exchange(nullptr, displayed_outputs);
     const auto second = turn(displayed_outputs);
     turns.push_back(Json{{"response", second}, {"tool_outputs", displayed_outputs}});
     require(textOf(second).find(nonce) != std::string::npos, "工具结果续接后丢失初始上下文");
@@ -201,9 +202,9 @@ int main(int argc, char ** argv)
     turns.push_back(Json{{"response", third}});
     require(textOf(third).find(nonce) != std::string::npos, "第三轮增量输入丢失上下文");
 
-    // 连续重复提交同一 response/result，显示不应重复产生文本或函数调用。
+    // Agent 只交付新增事件；空轮询不应再次产生已经交付的内容。
     for (int i = 0; i < 3; ++i) {
-      ui.exchange(latest, displayed_outputs);
+      ui.exchange();
       executor.spin_some();
     }
     std::map<std::string, std::string> displayed_text;

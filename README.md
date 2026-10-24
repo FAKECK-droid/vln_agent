@@ -8,9 +8,9 @@ ROS 2 Humble 功能包，实现 docs/AGENT_PLAN.md 第二、三、四部分的�
 - `ToolResult`：独立的业务结果数据类型，定义于 `tools/tool_result.hpp`。
 - `ToolPluginBase`：固定的 initialize / execute / shutdown 插件接口。
 - `SharedResources`：每个管理器独立的具名、带类型资源注册表。
-- `ToolManager`：装载定义和 pluginlib 插件、FIFO 调度、调用去重及逐调用 future。
-- `plugins/navigate_to_pose`：启动、查询、取消三个插件共用一个 NavigationRuntime。
-- `plugins/capture_image`：订阅最新原始图像，返回 JPEG 图片与采样信息。
+- `ToolManager`：装载定义和 pluginlib 插件、FIFO 调度、活动调用去重及逐调用 future。
+- `plugins/tools/navigate_to_pose`：启动、查询、取消三个插件共用一个 NavigationRuntime。
+- `plugins/tools/capture_image`：订阅最新原始图像，返回 JPEG 图片与采样信息。
 - `SessionManager`：独立上下文链、两份输入缓冲、发送限频与单个完整结果槽。
 - `ResponsesWsTransport`：独立 WS/WSS 连接、认证、保活、网络超时和重连。
 - `src/utils/`：YAML/JSON 转换、输入数组操作、工具结果包装、Base64 编解码与 WS URL 解析。
@@ -51,8 +51,9 @@ function_call，忽略 message、reasoning、compaction。
 没有函数调用时返回空数组。普通响应结构错误抛异常；
 未知工具、参数解析失败、队列满和执行异常分别完成对应调用的失败结果。
 
-同一管理器内，重复 call_id 返回原句柄，即使重提参数不同也不会再次执行。
-去重记录和结果保留到管理器销毁；调用方负责收集和提交已就绪结果。
+同一活动 call_id 返回原句柄；函数完成后立即从 calls 移除，不保留完成结果或历史 ID。
+结果由调用方持有的 future 交付。Agent 负责保存历史、避免重复提交已完成调用，并在消费后释放自身句柄。
+pending 和 running 分别受配置容量限制，calls 只包含这两类活动调用。
 工具返回 `ToolResult{payload, images}`，payload 至少包含布尔值 ok 和 UTC 毫秒 time_stamp。
 管理器补齐结果缺少的 time_stamp 并生成 API 外层，不添加 source 或 pose。
 
@@ -96,13 +97,13 @@ async 是函数定义字段，blocking 是本地调度字段，二者独立。
 | --- | --- |
 | `getStatus()` | `state`（unloaded/ready/closing/closed）、`max_concurrent_calls`、`max_pending_calls`、`waiting_count`、`running_count`、`completed_count`、`call_count`、`blocking` |
 | `getQueueSnapshot()` | 同一时刻的 `waiting` 和 `running` 数组，各按提交序号排列；不含已完成调用 |
-| `getCallStatus(call_id)` | 等待、运行或已完成调用的元数据；未知 ID 返回 null |
+| `getCallStatus(call_id)` | 等待/运行中调用的元数据；已完成或未知 ID 返回 null |
 
 调用元数据包括 `call_id`、`name`、从零递增的 `sequence`、`blocking`、
-`state`（waiting/running/finished）、`wait_ms` 和 `run_ms`。
-等待时间从登记开始，执行开始或未执行就结束时冻结；运行时间从取出任务计至发布结果，
-从未开始的调用为零。finished 表示 future 已完成，包含拒绝、关闭和业务失败；
-业务结果仍通过句柄读取。未知工具的 blocking 默认为 false。
+`state`（waiting/running）、`wait_ms` 和 `run_ms`。
+等待时间从登记开始计算，执行开始后冻结；运行时间从取出任务计至查询时刻。
+完成后元数据即被删除，结果仍通过调用方句柄读取。
+call_count 是当前活动数量，completed_count 仅为固定大小的累计计数，不包含历史记录。
 结果查询不复制参数或图片，不把导航的物理任务状态当成函数执行状态。
 
 每次查询内部一致；分别调用摘要和队列接口期间可能发生任务切换。
@@ -115,7 +116,10 @@ async 是函数定义字段，blocking 是本地调度字段，二者独立。
 本地 task_id 与 API call_id 分开；查询和取消须使用启动返回的 task_id。
 查询成功时 ok 为 true，即使物理任务 status 为 failed。
 取消接受后为 canceling，只有最终 Action 结果才置为 canceled。
-终态记录保留到管理器关闭，新任务的回调不会覆盖旧任务。
+导航资源只保留一个当前任务或尚未交付的终态。
+终态首次经 get_feedback、cancel_navigation 或启动调用返回后即释放，之后查询返回 TASK_NOT_FOUND。
+未消费终态时启动新目标返回 NAVIGATION_RESULT_PENDING，避免覆盖待交付结果。
+历史导航记录由 Agent 保存；已释放任务的迟到回调不会修改新任务。
 
 相机无函数参数，首帧到达后使用最近收到的帧，不保证每次调用采到新帧。
 结果 payload 含 frame_id、time_stamp、width、height；真实时钟下另带 image_time_stamp，图片以原生
@@ -159,7 +163,8 @@ request() 合并发送意图，内部调度器在连接可用、上一轮结束�
 在途 current_request 保持不变；新输入持续进入 pending_input。
 发送时才读取工具列表和最新完成的 previous_response_id，不重复发送旧历史。
 
-takeResponse() 返回原始 event.response，尚无结果时返回 null。
+takeResponse() 返回原始 event.response，尚无结果时返回 null；
+取走完整结果后清空其流式正文与 ID，由 Agent 将这份结果作为新增事件交给界面。
 reasoning、compaction、usage 和扩展字段保留原样，流式函数参数不作为工具调用输出。
 stream_output 仅控制 getStreamSnapshot() 的本轮显示快照，关闭时返回 null；
 快照按 output_index/content_index 区分文本，不消费完整结果。
@@ -233,7 +238,7 @@ colcon test-result --test-result-base build/vln_agent --verbose
 FIFO 阻塞语义、并发及等待容量、独立 future、去重、错误包装和关闭，
 以及工具队列快照、完成状态、等待/运行耗时和查询副本隔离。
 ROS 测试使用独立 domain、回环假导航服务与合成图像，验证导航反馈、
-拒绝、取消到终态、历史隔离、JPEG 解码与相机关闭。
+拒绝、取消到终态、终态一次消费、JPEG 解码与相机关闭。
 会话测试使用进程内回环 WS/WSS 假服务，覆盖缓冲、限频、上下文续接、失败重试、
 网络重连、迟到响应隔离、流式显示、分帧、TLS 校验、保活与关闭，
 以及会话内容查询、请求耗时冻结、限频剩余时间和重试标志。
@@ -294,8 +299,8 @@ auto session = std::make_shared<vln_agent::SessionManager>(config_path);
 session->setTools(tools->getTools());
 vln_agent::UserInteractionManager interaction(node, {session, tools, {}});
 interaction.load(config_path);
-// 外部串行 spin_some()，把最新完整响应和已就绪函数结果交给界面。
-auto inputs = interaction.exchange(latest_response, tool_outputs);
+// 外部串行 spin_some()，本次只交付新增完成响应和新增就绪结果。
+auto inputs = interaction.exchange(new_response, new_tool_outputs);
 session->addInputs(inputs);
 // 是否 request() 仍由宿主决定。
 ```
@@ -308,8 +313,9 @@ std_msgs/msg/String.data 承载 JSON。输入须已经是原生 API 对象或其
 
 一轮按字段并集查询一次，工具定义只查询一次；每个渠道输出一个增量汇总 JSON。
 工具放在 plugins/tools，用户接口放在 plugins/interfaces。
-同配置插件共享 shared_ptr<const Json>，所有目标插件接收后才推进同一批次的去重基线；
-不同配置只产生筛选视图，接口不管理模型历史去重。
+同配置插件共享 shared_ptr<const Json>，所有目标插件接收后才提交本批文字和状态差量；
+不同配置只产生筛选视图。组件不保存完成历史或历史去重集合。
+Agent 只传新增完成事件；exchange() 成功后不能在空轮询中反复提交旧 response/result。
 接口正常返回即表示已接收输出。若接口抛异常，用相同参数再次 exchange()；
 先前已经接收者只收 nullptr，已收到的用户输入保留到本轮成功返回。
 管理器不启动线程；外部须串行安排接口回调、exchange() 和 shutdown()。
@@ -317,7 +323,9 @@ std_msgs/msg/String.data 承载 JSON。输入须已经是原生 API 对象或其
 展示协议含 type/batch_id/time_stamp/full 及启用的 request/response/tools/session。
 full=false 时，状态字段按键替换，缺省保持、null 清除；messages 按
 response_id/output_index/content_index 使用 append/replace。
-同一 response/call_id 不重复发，流式和最终文本共用文本位置。
+流式和最终文本共用当前响应的文本位置；完整结果交付后释放该位置。
+tools.finished_calls 根据本次 tool_outputs 生成 {call_id, state: "finished"} 通知，
+不查询已删除的工具历史，也不保留 name/wait_ms/run_ms 等终态记录。
 request 去掉重复 tools；definitions 单独缓存。include_images=false 时原生图片项变为
 omitted 标记。原始 API 对象不被修改，日期在展示副本中统一为 UTC 三位毫秒。
 
@@ -325,8 +333,9 @@ omitted 标记。原始 API 对象不被修改，日期在展示副本中统一�
 
 仓库根目录就是本功能包，保留此前提交历史；其他工作空间文件不属于此仓库。
 config/agent.yaml 是无密钥模板；实际配置保存在忽略的 config/agent.local.yaml。
-复制模板填写后，宿主把该实际配置路径传给各组件。部署工具将实际配置复制成
-开发板 config/agent.yaml，密钥不写入 Git，日志也不输出认证头。
+复制模板填写后，宿主把该实际配置路径传给各组件。
+源码经开发机 Git push、开发板 Git pull 更新；设备私有配置使用未跟踪的 agent.local.yaml，
+密钥不写入 Git，日志也不输出认证头。
 
 只有显式运行 live_interaction_test 才发真实 API 请求，不由默认 CTest 自动触发。
 本次用户授权使用开发板的回环/局域网反代，模型固定 gpt-6-luna：
@@ -365,3 +374,20 @@ live_runtime.local.yaml 含实际密钥，仅保存在构建目录，权限 0600
   完整回放 fixture 为同目录的 response.json；均不包含认证头。
   本次短对话没有触发服务端压缩，cached_tokens 为零，没有验证缓存命中。
 - 构建、回归、真实测试日志位于 build/vln_agent/interaction-*.log。
+
+## 组件数据所有权（2026-10-24）
+
+所有已完成输入、输出、调用历史及历史去重由尚未实现的高层 Agent 管理；本包不增加 Agent 主流程。
+
+- ToolManager 仅持有等待/运行调用；完成即释放内部 Call、参数和结果引用。
+  外部 future 在管理器销毁后仍可读取，最后一个调用方句柄释放后回收其结果。
+- UserInteractionManager 仅保留当前展示状态、当前流式文本及一个待交付差量批次。
+  不复制整份历史基线，不维护 responses/results/watched/finished 历史集合。
+- SessionManager 保留待发输入、在途或可重试请求、尚未取走的完整结果；
+  takeResponse() 清除对应流式正文。必要链头 ID、最近用量和固定大小统计属于当前会话状态。
+- NavigationRuntime 只保留一个活动/待消费任务，终态交付后删除。
+- 相机的最新帧、静态工具定义、当前错误及尚未交付的数据仍有用途，不属于已结束历史。
+- getCurrentRequest() 的值复制接口保持原样，本轮不实施请求共享快照优化。
+
+开发机 Humble Release 构建及本地回归通过；本地缺少已有真实响应 fixture，
+53 项 GTest 通过，1 项回放用例跳过。目标设备验证在推送及拉取后执行。

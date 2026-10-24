@@ -55,17 +55,17 @@ public:
   Json getQueueSnapshot() const;
 
   /**
-   * @brief 返回单次调用元数据副本；未知 call_id 返回 null，不消费 future。
-   * @note finished 仅表示 future 已完成，业务成功与否仍从结果读取；记录保留到销毁。
+   * @brief 返回等待/运行中调用元数据；已完成或未知 call_id 返回 null。
+   * @note 完成后立即移除内部记录；结果和历史由调用方持有的 future/Agent 管理。
    */
   Json getCallStatus(const std::string & call_id) const;
 
   /**
    * @brief 只提交完整响应中的 function_call，不等待执行结果。
    * @param response status 为 completed 的完整 Responses 响应。
-   * @return 按输出顺序排列的调用句柄；同一 call_id 复用原 future。
+   * @return 按输出顺序排列的调用句柄；同一活动 call_id 复用 future。
    * @throws std::exception 响应结构错误或没有可关联的 call_id/name。
-   * @note 调用错误通过各自 future 返回；去重记录保留到管理器销毁。
+   * @note 调用错误通过各自 future 返回；只对活动调用去重，完成后的重复提交由 Agent 避免。
    */
   std::vector<ToolCallHandle> submit(const Json & response);
 

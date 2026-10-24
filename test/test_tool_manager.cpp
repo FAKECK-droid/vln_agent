@@ -97,7 +97,7 @@ TEST_F(ToolManagerTest, SeparatesGroupsAndManagerInstances)
   EXPECT_NE(payload(a[0]).at("token_id"), payload(b[0]).at("token_id"));
 }
 
-TEST_F(ToolManagerTest, PublishesFastResultIndependentlyAndDeduplicatesCallIds)
+TEST_F(ToolManagerTest, PublishesFastResultAndDeduplicatesOnlyActiveCallIds)
 {
   ToolManager manager(node);
   manager.load(config.config(Json::array({group(Json::array({function("first")}))})));
@@ -161,13 +161,9 @@ TEST_F(ToolManagerTest, BlockingCallPausesLaterDispatchWithoutWaitingForEarlierC
   EXPECT_TRUE(payload(handles[1]).at("ok"));
   EXPECT_EQ(payload(handles[2]).at("id"), "c");
   EXPECT_EQ(handles[0].result.wait_for(0ms), std::future_status::timeout);
-  const auto finished = manager.getCallStatus("b");
-  EXPECT_EQ(finished.at("state"), "finished");
-  EXPECT_GE(finished.at("wait_ms").get<int>(), 0);
-  EXPECT_GE(finished.at("run_ms").get<int>(), 0);
+  EXPECT_TRUE(manager.getCallStatus("b").is_null());
+  EXPECT_EQ(manager.getStatus().at("call_count"), 1);
   EXPECT_FALSE(manager.getStatus().at("blocking").get<bool>());
-  std::this_thread::sleep_for(15ms);
-  EXPECT_EQ(manager.getCallStatus("b"), finished);
   EXPECT_TRUE(payload(handles[1]).at("ok"));
   release("a");
   EXPECT_TRUE(payload(handles[0]).at("ok"));
@@ -212,8 +208,8 @@ TEST_F(ToolManagerTest, LimitsPendingQueueAndReturnsCorrelatedFailure)
         call("first", "b"), call("first", "c")})));
   EXPECT_EQ(payload(handles[1]).at("code"), "TOOL_QUEUE_FULL");
   EXPECT_EQ(payload(handles[2]).at("code"), "TOOL_QUEUE_FULL");
-  EXPECT_EQ(manager.getCallStatus("b").at("state"), "finished");
-  EXPECT_EQ(manager.getCallStatus("b").at("run_ms"), 0);
+  EXPECT_TRUE(manager.getCallStatus("b").is_null());
+  EXPECT_EQ(manager.getStatus().at("call_count"), 1);
   EXPECT_EQ(manager.getStatus().at("completed_count"), 2);
   release("a");
   EXPECT_TRUE(payload(handles[0]).at("ok"));
@@ -243,7 +239,7 @@ TEST_F(ToolManagerTest, TurnsCallErrorsIntoIndividualResultsAndKeepsImagesNative
   EXPECT_EQ(output.at("output").at(1), image);
 }
 
-TEST_F(ToolManagerTest, ShutdownCompletesRunningAndQueuedPromisesAndRetainsDeduplication)
+TEST_F(ToolManagerTest, ShutdownReleasesAllCallsWhileExternalFuturesRemainReadable)
 {
   ToolManager manager(node);
   manager.load(config.config(Json::array({group(Json::array({function("first")}))}), 1));
@@ -258,16 +254,42 @@ TEST_F(ToolManagerTest, ShutdownCompletesRunningAndQueuedPromisesAndRetainsDedup
   const auto after = manager.submit(response(Json::array({
         call("first", "new"), call("first", "pending")})));
   EXPECT_EQ(payload(after[0]).at("code"), "TOOL_MANAGER_CLOSED");
-  EXPECT_EQ(payload(after[1]), payload(handles[1]));
+  EXPECT_EQ(payload(after[1]).at("code"), "TOOL_MANAGER_CLOSED");
   EXPECT_TRUE(manager.getTools().empty());
   EXPECT_EQ(manager.getStatus().at("state"), "closed");
-  EXPECT_EQ(manager.getStatus().at("call_count"), 3);
-  EXPECT_EQ(manager.getStatus().at("completed_count"), 3);
+  EXPECT_EQ(manager.getStatus().at("call_count"), 0);
+  EXPECT_EQ(manager.getStatus().at("completed_count"), 4);
   EXPECT_EQ(manager.getStatus().at("running_count"), 0);
   EXPECT_EQ(manager.getStatus().at("waiting_count"), 0);
-  EXPECT_EQ(manager.getCallStatus("running").at("state"), "finished");
-  EXPECT_EQ(manager.getCallStatus("pending").at("run_ms"), 0);
+  EXPECT_TRUE(manager.getCallStatus("running").is_null());
+  EXPECT_TRUE(manager.getCallStatus("pending").is_null());
   EXPECT_EQ(probe().resource_shutdowns, 1);
+}
+
+TEST_F(ToolManagerTest, CompletedImageResultsBelongToCallerAndDoNotAccumulate)
+{
+  ToolCallHandle retained;
+  const std::string image_url = "data:image/jpeg;base64," + std::string(256 * 1024, 'A');
+  {
+    ToolManager manager(node);
+    manager.load(config.config(Json::array({group(Json::array({function("first")}))})));
+    const Json image{{"type", "input_image"}, {"image_url", image_url}};
+    for (int i = 0; i < 100; ++i) {
+      const auto handles = manager.submit(response(Json::array({
+        call("first", "reused-id", {{"images", Json::array({image})}})})));
+      const auto & output = handles[0].result.get();
+      EXPECT_EQ(output.at("output")[1].at("image_url"), image_url);
+      EXPECT_TRUE(manager.getCallStatus("reused-id").is_null());
+      EXPECT_EQ(manager.getStatus().at("call_count"), 0);
+      EXPECT_TRUE(manager.getQueueSnapshot().at("waiting").empty());
+      EXPECT_TRUE(manager.getQueueSnapshot().at("running").empty());
+      if (i == 0) {retained = handles[0];}
+    }
+    EXPECT_EQ(manager.getStatus().at("completed_count"), 100);
+  }
+  // 管理器已经销毁，Agent 持有的结果仍可读取；由调用方释放最后的 future。
+  EXPECT_EQ(retained.result.get().at("output")[1].at("image_url"), image_url);
+  retained = {};
 }
 
 TEST_F(ToolManagerTest, IgnoresMessagesAndContextItemsAndRejectsIncompleteResponses)

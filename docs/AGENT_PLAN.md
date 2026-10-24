@@ -4,6 +4,10 @@
 
 高层流程改为 Agent 驱动，通过 Responses API 的 Function Calling 调用小车工具。本文作为新方案的输入输出基线；旧的自定义 navigator、模型交互 BT 节点规划不再作为新架构的设计依据。
 
+2026-10-24 数据归属更新：各组件只保存配置、当前状态及尚待执行/交付的数据。
+所有已结束输入、输出、调用历史和历史去重由高层 Agent 管理；本轮不实现其主流程。
+ToolManager 完成即移除活动记录，交互组件成功交付后不再接受旧完成事件的重复投递。
+
 ## 一、输入输出约束
 
 ### 1. 总体约定
@@ -303,7 +307,8 @@ YYYY-MM-DDTHH:mm:ss.SSSZ
 
 1. `NavigationRuntime` 创建并维护导航任务记录，以 `task_id` 为内部标志；`start_navigation` 返回该标志及启动结果，本次函数调用结束后小车继续导航。
 2. 模型后续通过导航工具的 `task_id` 参数调用 `get_feedback` 或 `cancel_navigation`。每次函数调用有新的 `call_id`，结果匹配各自的调用。
-3. ROS 回调只更新共享资源中的反馈和终态；后续查询工具从该资源读取结果。
+3. ROS 回调只更新唯一当前任务的反馈和终态；终态作为待交付结果保留到首次读取，
+随后释放。未读取终态时启动新任务返回 NAVIGATION_RESULT_PENDING，历史由 Agent 保存。
 4. 已完成的启动或查询调用不因导航状态变化而重复返回结果。主动状态、报错或调试消息由 EventManager 独立管理，不复用已结束调用的 `call_id`。
 5. `call_id` 用于 API 工具调用关联；`response_id` 由 SessionManager 管理模型上下文。ToolManager 不管理模型会话状态。
 
@@ -511,7 +516,9 @@ struct ToolCallHandle
 
 例如同时提交 A、B，B 先完成时 B 的 future 先就绪，A 继续执行；A 完成后，它的 future 再独立就绪。结果始终保留原始 `call_id`。[官方异步结果续接规则](https://developers.openai.com/api/docs/guides/async-tool-calling)
 
-调用方取得就绪 future 的 JSON 后，可直接通过 SessionManager 的 `addInputs()` 和 `request()` 提交；如何收集各组件输出留待 VLNAgent 主流程规划。
+调用方取得就绪 future 的 JSON 后，可直接通过 SessionManager 的 `addInputs()` 和 `request()` 提交。
+ToolManager 此时已移除内部 Call；仅等待/运行调用参与去重，已完成调用的重复投递由 Agent 避免。
+Agent 消费完结果后释放自身句柄；如何收集各组件输出留待 VLNAgent 主流程规划。
 
 ### 10. ToolManager 公共接口与目录
 
@@ -539,7 +546,7 @@ public:
 | `getTools()` | 取得模型所需的原生 `tools` 数组 |
 | `getStatus()` | 查询装载/关闭状态、执行容量、等待/运行/完成数量和阻塞标志 |
 | `getQueueSnapshot()` | 一次取得 waiting/running 调用数组；含 call_id/name/sequence/blocking/state/wait_ms/run_ms，不含参数和结果 |
-| `getCallStatus(call_id)` | 查询一个调用的元数据副本，未知 ID 返回 null；finished 只表示函数调用结束，不表示业务成功 |
+| `getCallStatus(call_id)` | 查询等待/运行中的调用元数据；完成或未知 ID 返回 null，完成结果仅由调用方 future 持有 |
 | `submit()` | 提交完整模型响应，立即取得每个函数调用独立的 handle/future |
 | `shutdown()` | 停止接收、结束工作、完成剩余 promise 并释放资源 |
 
@@ -785,7 +792,7 @@ WS 始终接收协议事件；“是否显示流式文本”与“是否接收�
 
 `takeResponse()` 返回的是原始完整 response 对象，包含 `id/status/output/usage` 等字段，不是 WS 事件外壳，也不只返回 `output`。函数调用分发由外部处理，SessionManager 不提取工具参数或执行函数。完整结果以终态事件里的对象为准，不通过拼接展示文本重建。[OpenAI 完成事件定义](https://developers.openai.com/api/reference/resources/responses/streaming-events)
 
-可视化采用一个简单的本轮文本快照，包含 `response_id`、显示状态和按 `output_index/content_index` 区分的已生成文本。UserInteractionManager 按插件配置在 exchange() 中查询 getStreamSnapshot()，再交给对应用户界面；新请求开始时替换会话快照，窗口历史显示由外部负责。流式文本仅用于显示，不能替代 Agent 调用 takeResponse() 获取完整 function_call 并交给 ToolManager。
+可视化采用一个简单的本轮文本快照，包含 `response_id`、显示状态和按 `output_index/content_index` 区分的已生成文本。UserInteractionManager 按插件配置在 exchange() 中查询 getStreamSnapshot()，再交给对应用户界面；完整响应被 takeResponse() 取走后清空流式正文，新请求建立新快照；历史由 Agent 保存。流式文本仅用于显示，不能替代 Agent 调用 takeResponse() 获取完整 function_call 并交给 ToolManager。
 
 这种显示方式可以保留：它只在内存中追加文本，不等待窗口处理、不调用 UI 回调，也不占用完整结果槽。关闭显示时跳过文本快照维护，WS 的读取、完成事件处理和调度规则保持一致。流式函数参数不提交其他组件，ToolManager 继续只接收完整 response。[OpenAI 流式文本事件](https://developers.openai.com/api/docs/guides/streaming-responses)
 
@@ -874,7 +881,7 @@ public:
 
   void load(const std::string & global_yaml_path);
 
-  Json exchange(const Json & latest_response = nullptr,
+  Json exchange(const Json & new_response = nullptr,
                 const Json & tool_outputs = Json::array());
 
   void shutdown();
@@ -885,8 +892,8 @@ public:
 | --- | --- |
 | 构造函数 | 保存节点和组件的弱引用；外部先创建并持有它们 |
 | load() | 装载配置与接口插件；ToolManager 已完成装载，工具定义按需只查询一次 |
-| latest_response | 最新一份 status 为 completed 的完整原始 response；可以传 null 或反复传同一份 |
-| tool_outputs | 原生 function_call_output 数组，来自外部已就绪的 future；可反复传同一结果 |
+| new_response | 本次新增的 completed 完整响应；无新增传 null，成功后不得重复投递 |
+| tool_outputs | 本次新增的 function_call_output 数组，来自外部已就绪 future；成功后不得重复投递 |
 | exchange() | 同步查询、传递增量汇总数据，直接合并各插件返回的原生 API 输入数组；无输入返回 [] |
 | shutdown() | 关闭接口插件并释放加载器；不关闭其他组件或外部 ROS 节点 |
 
@@ -933,7 +940,7 @@ public:
 ]
 ```
 
-调用方可直接使用 session.addInputs(interaction.exchange(latest_response, tool_outputs))；是否发起模型请求仍由外部决定，本次不设计 Agent 主循环。图片按原生 input_image 项提供，插件不再把 instruction 转成另一种内部输入记录。
+调用方可直接使用 session.addInputs(interaction.exchange(new_response, tool_outputs))；是否发起模型请求仍由外部决定，本次不设计 Agent 主循环。图片按原生 input_image 项提供，插件不再把 instruction 转成另一种内部输入记录。
 
 首版所有 exchange() 串行执行，不设计交互管理器或接口插件的工作线程、定时循环。ROS 回调与 exchange() 在同一外部线程串行执行；网络插件非阻塞地推进收发，不等待用户或模型。协议解析、JSON 序列化属于插件，业务输入结构不在管理器内部转换。
 
@@ -949,14 +956,14 @@ public:
 | 当前请求 | SessionManager::getCurrentRequest()，只查询在途或失败后保留的完整副本；不调用 getPendingInputs() |
 | 请求和连接状态 | SessionManager::getRequestStatus() 已含 transport，不再直接查询 ResponsesWsTransport |
 | 上下文、用量和压缩 | SessionManager::getContextStatus() |
-| 流式文本与状态 | SessionManager::getStreamSnapshot()；为 null 时最终文字仍可取自 latest_response |
-| 模型输出 | 从 latest_response 取得 id/status、message/function_call，不再消费另一份 response |
+| 流式文本与状态 | SessionManager::getStreamSnapshot()；为 null 时最终文字仍可取自 new_response |
+| 模型输出 | 从 new_response 取得 id/status、message/function_call，不再消费另一份 response |
 | 工具管理状态 | ToolManager::getStatus() |
 | 等待及执行中的工具 | ToolManager::getQueueSnapshot() 一次取得 waiting/running，不逐个查同一批调用 |
-| 已知调用终态 | 对已退出队列的已知 ID、或 tool_outputs 对应 ID，按需补查 getCallStatus()；已记录 finished 的调用不再轮询 |
+| 本次调用完成通知 | 从本次 tool_outputs 生成 {call_id, state: "finished"}，不查询已经释放的工具历史 |
 | 工具执行结果 | 使用 tool_outputs，不从 request.input 反查结果，不额外获取 future |
 
-getCallStatus() 的 finished 仅表示函数返回，成功与否从结果中的 ok 判断；物理导航仍可能 running。这里显示当前队列和已观察调用的终态，不建立完整执行日志。
+getCallStatus() 只返回活动调用；完成后为 null。完成通知仅表示函数返回，业务成功与否从结果中的 ok 判断；物理导航仍可能 running。需要历史终态元数据时由 Agent 保存。
 
 #### 19.2 共享待发送数据，全部接收后再标记
 
@@ -964,10 +971,10 @@ getCallStatus() 的 finished 仅表示函数返回，成功与否从结果中的
 
 本版改为一次组装、一批共享、全部目标插件接收后统一提交：
 
-1. 生成本批次的增量候选数据，只计算一次 response/tool 输出去重和文本差量；暂不修改全局已发送记录。
+1. 使用 Agent 本次交付的新增事件生成输出，计算当前流式文字差量；不复制完整历史基线，不建立历史 ID 集合。
 2. 用 shared_ptr<const Json> 保存不可变批次。transmit/include_images 配置相同的插件直接共享同一指针；配置不同的插件由管理器生成各自的只读筛选视图，同配置视图仍共享。
 3. 依次把视图传给插件 exchange()，并直接合并其返回的原生输入数组。插件不管理 response.id/call_id 去重，也不理解其他组件。
-4. 全部目标插件正常接收后，管理器统一推进 response.id、call_id、文本位置和状态比较基线，再释放本轮引用；插件仍持有的 shared_ptr 保证数据继续存活。
+4. 全部目标插件正常接收后，管理器提交本次文字和当前状态差量，清除已完成响应的文本位置，再释放本轮引用；插件仍持有的 shared_ptr 保证数据继续存活。
 5. 无新增输出时向插件传 nullptr，继续接收用户输入。
 
 只保留一个正在交付的批次，不维护批次队列。若一个插件尚未接收，管理器保留该批及一个当前批次的接收进度标记；之后仅给未接收者传这批输出，已接收者传 nullptr 以便继续收输入。全部接收后才生成下一批。这个标记只描述当前批次，不是每个插件各存一套历史 response/call_id 集合。
@@ -1029,16 +1036,18 @@ getCallStatus() 的 finished 仅表示函数返回，成功与否从结果中的
 
 这是用户展示协议，不是模型 API response 的改写版。配置只需要文本的插件不会接收其他分组。
 
-#### 19.4 统一增量与去重
+#### 19.4 当前差量与历史归属
 
-管理器维护一份共享的去重历史和差量基线，插件无需自行去重；这些记录在当前批次全部接收后统一推进。
+Agent 负责完成事件的去重和所有历史。组件只保留当前展示状态、当前流式文字及一个尚未交付的批次。
 
-- 相同 response.id 的完成通知和 function_call 只生成一次；工具结果按 call_id 生成一次。latest_response/tool_outputs 可重复作为参数传入。
-- 对已选择字段比较状态，只把变化放进新批次；图片过滤后未变的视图不重复传输。
-- 流式文本与完整 message 按 response_id/output_index/content_index 共用文本位置：相同内容不传，新后缀用 append，完成校准修改已有文字时用 replace。
-- 完整 response 到来时只补缺少的最终文字，不再复制一条流式已经显示过的最终消息。
-- response.stream 只传 response_id/state；文字放在 messages，避免累计 content 被传两份。usage 只取 session.context_status。
-- 不将 reasoning/compaction 项变成展示消息；工具结果保留原生 function_call_output 结构和统一时间戳，不重复转换成普通输入。
+- new_response/tool_outputs 成功交付后，下一次无新增事件时传 null/[]。接口失败时保留当前批次，使用相同参数重试，已接收插件不重复接收。
+- 对已选择字段比较当前状态，只传变化；批次只记录本次差量，不复制整个 ViewState 或所有旧调用 ID。
+- 流式和最终 message 按 response_id/output_index/content_index 比较当前文字：相同内容不传，新后缀用 append，校准时用 replace。
+- 完整响应交付后清空对应文本位置；不再保留已完成文本或响应/调用/结果历史集合。
+- response.stream 只传 response_id/state；文字放在 messages。usage 只取 session.context_status。
+- tools.finished_calls 只通知本次 tool_outputs 的 call_id/state；完整历史和终态元数据由 Agent 保存。
+- 不将 reasoning/compaction 项变成展示消息；工具结果保持原生 function_call_output 结构与 UTC 时间戳。
+- 在途请求查询仍使用 getCurrentRequest() 的值副本，共享快照优化暂不实施。
 
 ### 20. 各插件独立配置与图片开关
 
@@ -1091,7 +1100,7 @@ user_interaction:
         port: 9002
 ```
 
-各叶子开关和 include_images 默认 false。messages 控制文字，stream 控制中间文字与流式状态；stream 关闭或会话 stream_output 关闭时，可从 latest_response 显示最终文字。request、工具结果和错误详情中自带的文本由它们各自开关控制。
+各叶子开关和 include_images 默认 false。messages 控制文字，stream 控制中间文字与流式状态；stream 关闭或会话 stream_output 关闭时，可从 new_response 显示最终文字。request、工具结果和错误详情中自带的文本由它们各自开关控制。
 
 include_images 只影响该插件外发视图：true 保留已启用内容里的原生图片项；false 用 {"type":"input_image","omitted":true} 一类标记替代，不带 URL/file_id/Base64，元数据可保留。过滤复用于请求、工具结果、错误事件等嵌套原生图片项，不改原始批次、其他插件视图、模型数据或用户上传内容。
 

@@ -361,6 +361,10 @@ TEST(SessionManager, StreamDisplayAndCompactionDoNotConsumeOrRewriteCompleteResp
   EXPECT_EQ(session.getStreamSnapshot().at("state"), "completed");
   EXPECT_TRUE(session.getRequestStatus().at("response_ready").get<bool>());
   EXPECT_EQ(session.takeResponse(), full);
+  EXPECT_TRUE(session.getStreamSnapshot().at("content").empty());
+  EXPECT_EQ(session.getStreamSnapshot().at("response_id"), "");
+  EXPECT_EQ(session.getStreamSnapshot().at("state"), "idle");
+  EXPECT_EQ(session.getContextStatus().at("latest_response_id"), "r1");
   EXPECT_EQ(session.getContextStatus().at("compaction_count"), 1);
   EXPECT_EQ(session.getContextStatus().at("usage"), full.at("usage"));
 }

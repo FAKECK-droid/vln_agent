@@ -120,6 +120,7 @@ struct SessionManager::Impl
     in_flight = false;
     last_finished = Clock::now();
     send_requested = false;
+    compaction_items.clear();
     if (config.stream_output) {
       stream["state"] = "error";
     }
@@ -239,6 +240,7 @@ struct SessionManager::Impl
           last_finished = Clock::now();
           usage = response.value("usage", Json());
           response_slot = response;
+          compaction_items.clear();
           current_request = nullptr;
           in_flight = false;
         } else if (type == "error" || type == "response.failed" || type == "response.incomplete") {
@@ -347,8 +349,13 @@ struct SessionManager::Impl
     pending_input = Json::array();
     response_slot = nullptr;
     in_flight = false;
+    last_error = nullptr;
+    usage = nullptr;
+    latest_response_id.clear();
+    active_response_id.clear();
+    compaction_items.clear();
     if (config.stream_output) {
-      stream["state"] = "closed";
+      stream = {{"response_id", ""}, {"state", "closed"}, {"content", Json::array()}};
     }
   }
 
@@ -448,6 +455,9 @@ Json SessionManager::takeResponse()
     std::lock_guard<std::mutex> lock(impl_->mutex);
     result = std::move(impl_->response_slot);
     impl_->response_slot = nullptr;
+    if (!result.is_null() && impl_->config.stream_output) {
+      impl_->stream = {{"response_id", ""}, {"state", "idle"}, {"content", Json::array()}};
+    }
   }
   impl_->condition.notify_all();
   return result;

@@ -162,7 +162,7 @@ TEST_F(RosToolsTest, FailedInitializationStopsCallbackThreadsAndRollsBackPlugins
   }
 }
 
-TEST_F(RosToolsTest, SharesNavigationStateAndKeepsCanceledHistorySeparateFromNewGoal)
+TEST_F(RosToolsTest, SharesCurrentNavigationAndConsumesTerminalStateOnce)
 {
   createServer();
   ToolManager manager(client_node);
@@ -198,7 +198,8 @@ TEST_F(RosToolsTest, SharesNavigationStateAndKeepsCanceledHistorySeparateFromNew
   ASSERT_TRUE(eventually([&] {
       return feedback(manager, next.at("task_id")).at("status") == "succeeded";
     }));
-  EXPECT_EQ(feedback(manager, id).at("status"), "canceled");
+  EXPECT_EQ(feedback(manager, id).at("code"), "TASK_NOT_FOUND");
+  EXPECT_EQ(feedback(manager, next.at("task_id")).at("code"), "TASK_NOT_FOUND");
 }
 
 TEST_F(RosToolsTest, ReportsRejectionUnknownTaskAndFailedPhysicalResult)
@@ -214,14 +215,16 @@ TEST_F(RosToolsTest, ReportsRejectionUnknownTaskAndFailedPhysicalResult)
   const auto accepted = start(manager);
   ASSERT_TRUE(accepted.at("ok").get<bool>());
   goal(0)->abort(std::make_shared<Action::Result>());
+  // 未交付的终态仍有用途：先读取它，再允许启动下一个导航。
   ASSERT_TRUE(eventually([&] {
-      return feedback(manager, accepted.at("task_id")).at("status") == "failed";
+      return start(manager).value("code", std::string()) == "NAVIGATION_RESULT_PENDING";
     }));
-  EXPECT_TRUE(feedback(manager, accepted.at("task_id")).at("ok").get<bool>());
   const auto cancel = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
       {{"task_id", accepted.at("task_id")}}));
   EXPECT_TRUE(cancel.at("ok").get<bool>());
   EXPECT_EQ(cancel.at("status"), "failed");
+  EXPECT_EQ(feedback(manager, accepted.at("task_id")).at("code"), "TASK_NOT_FOUND");
+  EXPECT_EQ(feedback(manager, rejected.at("task_id")).at("code"), "TASK_NOT_FOUND");
 }
 
 TEST_F(RosToolsTest, UnavailableNavigationDoesNotCreateAnActiveTask)

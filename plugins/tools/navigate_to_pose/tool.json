@@ -2,7 +2,7 @@
   {
     "type": "function",
     "name": "navigate_to_pose_start_navigation",
-    "description": "启动导航，目标被接受后返回任务 ID 和 running 状态；不会等待到达。",
+    "description": "启动导航，目标被接受后返回任务 ID 和 running 状态；不会等待到达。 上次终态须先用 get_feedback 读取后才能启动新任务。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -37,7 +37,7 @@
   {
     "type": "function",
     "name": "navigate_to_pose_get_feedback",
-    "description": "获取指定导航任务的最新反馈。",
+    "description": "获取指定导航任务的最新反馈。 终态仅交付一次，读取后释放；历史由调用方保存。",
     "async": true,
     "strict": true,
     "parameters": {
