@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(vln_agent)
 
 find_package(ament_cmake REQUIRED)
+find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
 find_package(pluginlib REQUIRED)
@@ -70,7 +71,11 @@ add_library(vln_agent_ros_topic_interface SHARED
 target_link_libraries(vln_agent_ros_topic_interface vln_agent_utils)
 ament_target_dependencies(vln_agent_ros_topic_interface rclcpp std_msgs pluginlib)
 
-foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_navigation_tools vln_agent_camera_tools)
+add_executable(vln_agent_node src/vln_agent.cpp)
+target_link_libraries(vln_agent_node vln_agent_interaction)
+ament_target_dependencies(vln_agent_node rclcpp ament_index_cpp)
+
+foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_navigation_tools vln_agent_camera_tools vln_agent_node)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
 endforeach()
 pluginlib_export_plugin_description_file(vln_agent tool_plugins.xml)
@@ -85,6 +90,7 @@ install(TARGETS vln_agent_navigation_tools vln_agent_camera_tools vln_agent_ros_
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
+install(TARGETS vln_agent_node DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY plugins/ DESTINATION share/${PROJECT_NAME}/plugins
   FILES_MATCHING PATTERN "tool.json")
@@ -94,7 +100,6 @@ install(FILES README.md DESTINATION share/${PROJECT_NAME})
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
-  find_package(ament_index_cpp REQUIRED)
   add_library(vln_agent_test_tools SHARED test/test_tool.cpp)
   target_link_libraries(vln_agent_test_tools vln_agent_tools)
   pluginlib_export_plugin_description_file(vln_agent test/test_plugins.xml)
