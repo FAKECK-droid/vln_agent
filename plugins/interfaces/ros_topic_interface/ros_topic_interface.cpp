@@ -1,7 +1,6 @@
 #include "ros_topic_interface.hpp"
 
 #include <exception>
-#include <stdexcept>
 #include <string>
 #include <pluginlib/class_list_macros.hpp>
 
@@ -9,9 +8,6 @@ namespace vln_agent
 {
 void RosTopicInterface::initialize(const rclcpp::Node::SharedPtr & node, const Json & settings)
 {
-  if (publisher_) {
-    throw std::logic_error("RosTopicInterface 已初始化");
-  }
   inbox_ = std::make_shared<Inbox>();
   publisher_ = node->create_publisher<std_msgs::msg::String>(
     settings.value("send_topic", std::string("/vln/user_output")), 10);
@@ -30,10 +26,7 @@ void RosTopicInterface::initialize(const rclcpp::Node::SharedPtr & node, const J
 
 Json RosTopicInterface::exchange(const std::shared_ptr<const Json> & outgoing)
 {
-  if (!inbox_) {
-    throw std::logic_error("RosTopicInterface 尚未初始化或已关闭");
-  }
-  if (outgoing && !outgoing->empty()) {
+  if (outgoing) {
     std_msgs::msg::String message;
     message.data = outgoing->dump();
     publisher_->publish(message);

@@ -3,7 +3,6 @@
 #include <algorithm>
 #include <cstdint>
 #include <map>
-#include <set>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -162,12 +161,7 @@ struct UserInteractionManager::Impl
     try {
       loader = std::make_unique<pluginlib::ClassLoader<UserInterfaceBase>>(
         "vln_agent", "vln_agent::UserInterfaceBase");
-      std::set<std::string> ids;
       for (const auto & item : config["channels"]) {
-        const auto id = item["id"].as<std::string>();
-        if (id.empty() || !ids.insert(id).second) {
-          throw std::invalid_argument("用户渠道 id 为空或重复");
-        }
         const auto options = optionsOf(item);
         auto profile = std::find_if(profiles.begin(), profiles.end(),
           [&](const Profile & p) {return p.options.key() == options.key();});

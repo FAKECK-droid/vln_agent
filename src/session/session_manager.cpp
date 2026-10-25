@@ -34,9 +34,6 @@ struct SessionConfig
 SessionConfig readConfig(const std::string & path)
 {
   const auto yaml = YAML::LoadFile(path)["session_manager"];
-  if (!yaml.IsMap()) {
-    throw std::invalid_argument("缺少 session_manager 配置");
-  }
   SessionConfig config;
   config.base_url = yaml["base_url"].as<std::string>();
   config.api_key = yaml["api_key"].as<std::string>();

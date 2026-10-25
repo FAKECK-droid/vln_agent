@@ -117,9 +117,6 @@ struct ToolManager::Impl
       }
       const auto definition_path = base / group["definition"].as<std::string>();
       std::ifstream stream(definition_path);
-      if (!stream) {
-        throw std::runtime_error("无法读取工具定义: " + definition_path.string());
-      }
       const auto definitions = Json::parse(stream);
       if (!definitions.is_array()) {
         throw std::invalid_argument("工具定义必须为 function 数组");
@@ -140,16 +137,17 @@ struct ToolManager::Impl
       const auto group_settings = settingsOf(group);
       for (const auto & function : group["functions"]) {
         const auto name = function["name"].as<std::string>();
-        if (index.count(name) == 0 || candidate->pool.count(name) != 0) {
-          throw std::invalid_argument("函数映射不存在或全局重名: " + name);
+        if (candidate->pool.count(name) != 0) {
+          throw std::invalid_argument("函数全局重名: " + name);
         }
+        const auto & definition = index.at(name);
         auto plugin = candidate->loader->createSharedInstance(
           function["plugin"].as<std::string>());
         candidate->pool.emplace(name, Entry{plugin, function["blocking"].as<bool>(true)});
         plugin->initialize(
           ToolContext{node, candidate->resources, id, group_settings, candidate->stopping},
           settingsOf(function));
-        candidate->tools.push_back(index.at(name));
+        candidate->tools.push_back(definition);
       }
     }
 
