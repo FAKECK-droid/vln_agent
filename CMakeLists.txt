@@ -66,6 +66,10 @@ add_library(vln_agent_interaction SHARED
 target_link_libraries(vln_agent_interaction PUBLIC vln_agent_session vln_agent_tools)
 ament_target_dependencies(vln_agent_interaction PUBLIC rclcpp pluginlib)
 
+add_library(vln_agent_events SHARED src/events/event_manager.cpp)
+target_link_libraries(vln_agent_events PUBLIC vln_agent_utils Threads::Threads)
+ament_target_dependencies(vln_agent_events PUBLIC rclcpp std_msgs)
+
 add_library(vln_agent_ros_topic_interface SHARED
   plugins/interfaces/ros_topic_interface/ros_topic_interface.cpp)
 target_link_libraries(vln_agent_ros_topic_interface vln_agent_utils)
@@ -75,13 +79,13 @@ add_executable(vln_agent_node src/vln_agent.cpp)
 target_link_libraries(vln_agent_node vln_agent_interaction)
 ament_target_dependencies(vln_agent_node rclcpp ament_index_cpp)
 
-foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_navigation_tools vln_agent_camera_tools vln_agent_node)
+foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_navigation_tools vln_agent_camera_tools vln_agent_events vln_agent_node)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
 endforeach()
 pluginlib_export_plugin_description_file(vln_agent tool_plugins.xml)
 pluginlib_export_plugin_description_file(vln_agent user_interface_plugins.xml)
 
-install(TARGETS vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction
+install(TARGETS vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_events
   EXPORT export_vln_agent_tools
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
@@ -136,6 +140,13 @@ if(BUILD_TESTING)
   set_tests_properties(test_user_interaction_manager PROPERTIES ENVIRONMENT
     "ROS_DOMAIN_ID=174;ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/ros-logs")
 
+  ament_add_gtest(test_event_manager test/test_event_manager.cpp TIMEOUT 20)
+  target_link_libraries(test_event_manager vln_agent_events)
+  target_compile_definitions(test_event_manager PRIVATE
+    VLN_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+  set_tests_properties(test_event_manager PROPERTIES ENVIRONMENT
+    "ROS_DOMAIN_ID=176;ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/ros-logs")
+
   ament_add_gtest(test_utils test/test_utils.cpp TIMEOUT 15)
   target_link_libraries(test_utils vln_agent_utils)
   ament_add_gtest(test_session_manager test/test_session_manager.cpp TIMEOUT 45)
@@ -155,6 +166,6 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_targets(export_vln_agent_tools HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp pluginlib nlohmann_json yaml-cpp Threads)
+ament_export_dependencies(rclcpp std_msgs pluginlib nlohmann_json yaml-cpp Threads)
 ament_package()
 

@@ -1,6 +1,6 @@
 # Scout Mini Agent 规划
 
-日期：2026-10-23。本文分为输入输出约束、工具定义与管理、SessionManager 会话管理、用户交互管理、后续规划五部分。本次只完善规划；VLNAgent 主流程待相关组件完成后再设计。
+日期：2026-10-23；EventManager 规划更新：2026-10-28。本文分为输入输出约束、工具定义与管理、SessionManager 会话管理、用户交互管理、EventManager 机器事件管理、后续规划六部分。本次只完善 EventManager 及其交接约定，不修改组件源码或展开 VLNAgent 主流程。
 
 高层流程改为 Agent 驱动，通过 Responses API 的 Function Calling 调用小车工具。本文作为新方案的输入输出基线；旧的自定义 navigator、模型交互 BT 节点规划不再作为新架构的设计依据。
 
@@ -18,7 +18,7 @@ ToolManager 完成即移除活动记录，交互组件成功交付后不再接�
 - 函数定义设置 `async: true`，允许各调用结果独立回传；设置 `parallel_tool_calls: true` 允许同一响应包含多个函数，本地工具执行由 ToolManager 队列按阻塞策略调度。
 - 报错、调试、状态等主动消息由其他 ROS 节点或手动上报，交给 EventManager 自主管理。
 - ToolManager 负责函数定义、插件、共享资源、工具执行队列和逐调用 future；与 UserInteractionManager、SessionManager、EventManager 解耦。
-- 模型请求的拼装、两份输入缓冲和最高频率调度由 SessionManager 管理；VLNAgent 主流程和 EventManager 的内部设计暂不展开。
+- 模型请求的拼装、两份输入缓冲和最高频率调度由 SessionManager 管理；EventManager 在第五部分规划，VLNAgent 主流程本次不展开。
 - UserInteractionManager 统一负责用户输入输出，加载交互插件并通过 weak_ptr 查询其他组件；exchange() 直接合并插件返回的原生输入数组，并按各插件配置传递共享的增量汇总 JSON。它不接收机器人主动消息，不消费 Agent 的完整 response 或工具 future。
 
 `source` 和 `time_stamp` 是标准业务输入仅有的两个公共必填字段；`pose` 等都是可选业务字段，不是 Responses API 的顶层参数。模型、连接、上下文与缓存配置统一放入全局 YAML，由 SessionManager 读取。
@@ -34,7 +34,9 @@ ToolManager 完成即移除活动记录，交互组件成功交付后不再接�
 | `source` | 必填，`"user"` 或 `"robot"` | 输入来自用户还是小车 |
 | `time_stamp` | 必填，固定三位毫秒的 UTC 字符串 | 指令接收或事件发生的时刻，格式为 `YYYY-MM-DDTHH:mm:ss.SSSZ`，例如 `2026-10-21T06:00:00.000Z` |
 | `pose` | 可选，位姿对象或 `null` | 有相关位姿时由输入来源提供；用户输入无需携带或自动补齐 |
-| `instruction` | 可选，字符串 | 用户文字指令；具体业务按需要携带 |
+| `origin` | 机器 Event 必填，字符串 | 具体发布者，如 `/localization_monitor` 或 `/bt/main/InspectDoor`；与表示用户/机器类别的 `source` 区分 |
+| `text` | 可选，字符串 | 机器事件的文字说明 |
+| `instruction` | 可选 | 用户输入使用文字字符串；机器 Event 可使用 `{"function":"工具名"}` 请求调用函数，是否调用及调用顺序由模型自行决定，见第 26 节 |
 | `event` | 可选，字符串 | `status`：状态/观测；`error`：报错；`debug`：调试信息 |
 | `data` | 可选，对象 | 具体状态、错误或调试数据；业务扩展可放在这里 |
 | `images` | 有图片时填写，数组 | 每张图片的 `camera`、`time_stamp`；与后续原生图片项一一按顺序对应 |
@@ -63,6 +65,7 @@ ToolManager 完成即移除活动记录，交互组件成功交付后不再接�
 {
   "source": "robot",
   "time_stamp": "2026-10-21T06:01:00.000Z",
+  "origin": "/localization_monitor",
   "event": "error",
   "data": {
     "code": "LOCALIZATION_LOST",
@@ -71,7 +74,7 @@ ToolManager 完成即移除活动记录，交互组件成功交付后不再接�
 }
 ```
 
-状态与调试消息使用同样外壳，将 `event` 设为 `status` 或 `debug`，在 `data` 中放具体内容。这些消息由其他 ROS 节点或手动上报，交给 EventManager 接收和管理；其内部管理方式及输入队列衔接暂不展开。
+状态与调试消息使用同样外壳，将 `event` 设为 `status` 或 `debug`，在 `text/data` 中放具体内容。机器 Event 还要填写具体发布者 `origin`；普通用户输入不要求该字段。EventManager 的接收、缓存和交付见第五部分。
 
 #### 2.5 全部组件统一时间戳
 
@@ -343,7 +346,7 @@ flowchart LR
 
 ToolManager 只操作本地插件、共享资源、工具执行队列、future 和 JSON 数据。它不持有或调用 UserInteractionManager、SessionManager、EventManager，也不管理普通业务输入或主动事件。
 
-ToolManager 复用注入的 ROS 节点，不要求注册为 `rclcpp_components` 组件；插件也不访问模型会话或 VLNAgent 对象。SessionManager 的接口和调度在第三部分规划；用户输入输出由第四部分的 UserInteractionManager 统一管理，EventManager 的内部设计及 VLNAgent 主流程仍暂不展开。
+ToolManager 复用注入的 ROS 节点，不要求注册为 `rclcpp_components` 组件；插件也不访问模型会话或 VLNAgent 对象。SessionManager 的接口和调度在第三部分规划；用户输入输出由第四部分的 UserInteractionManager 统一管理，机器事件由第五部分的 EventManager 管理；本次不展开 VLNAgent 主流程。
 
 #### 7.1 固定插件接口
 
@@ -897,7 +900,7 @@ public:
 | exchange() | 同步查询、传递增量汇总数据，直接合并各插件返回的原生 API 输入数组；无输入返回 [] |
 | shutdown() | 关闭接口插件并释放加载器；不关闭其他组件或外部 ROS 节点 |
 
-response.output 中的 function_call 是模型发出的调用；真正执行结果在 ToolCallHandle::result 中，由外部作为 tool_outputs 传入。管理器不调用 takeResponse()、submit() 或 request()，不等待 future。EventManager 的内部接口尚未规划，本次不虚构查询，也不消费其事件。
+response.output 中的 function_call 是模型发出的调用；真正执行结果在 ToolCallHandle::result 中，由外部作为 tool_outputs 传入。管理器不调用 takeResponse()、submit() 或 request()，不等待 future。EventManager 的接口见第五部分；交互管理器不调用 takeEvents()，当前不增加机器事件的界面转发配置。
 
 ### 18. UserInterfaceBase 与原生输入
 
@@ -1285,8 +1288,169 @@ install(TARGETS vln_agent_ros_topic_interface LIBRARY DESTINATION lib)
 
 用户发送方把第 18 节的原生输入数组序列化到 receive_topic 的 data 中；插件每轮最多发布一条汇总消息，并取走接收缓冲返回。标准输入的两项公共必填字段及 UTC 毫秒格式由发送方保证，管理器不二次修补。
 
-## 五、后续规划范围
+## 五、EventManager 机器事件管理
 
-接下来完善 EventManager 等组件，再规划 VLNAgent 的组装和结果交接。用户输入输出由 UserInteractionManager 及接口插件统一承担，不再分设另一层用户输入管理组件。最高请求频率、两份请求数据及发送时机由 SessionManager 管理；本次不展开 Agent 主循环。
+### 23. 职责与事件边界
 
-2026-10-24：第四部分已在 vln_agent 中实现，并完成 Jetson 编译、离线回归及局域网反代下的 gpt-6-luna 真实交互测试；公共接口和验证命令见包根目录 README.md。EventManager 与 VLNAgent 主流程仍保留为后续范围。
+Event 是 ROS 节点或行为树节点主动发给模型的一条机器输入，也是 Responses `input[]` 中的一个元素。一个 Event 使用一条 `role: "user"` 的消息，`content` 第一项是业务 JSON 字符串，后面按需追加图片；多张图片仍属于同一个 Event。
+
+EventManager 负责接收、按到达顺序暂存和批量取出 Event，一次模型请求可以包含多个 Event，每条事件仍对应独立的 input 元素。它不调用 SessionManager、ToolManager 或 UserInteractionManager，不发起模型请求，也不执行事件中的命令请求。用户输入继续走用户交互接口；已有 function_call 的结果继续走独立的 function_call_output。
+
+首版复用一个 ROS 话题和直接添加接口，不增加事件插件、复杂事件类、优先级、历史去重、持久化或自动重试。生产者只在需要模型处理时上报，不在行为树每次 tick 或每帧传感器回调时重复发布同一状态。
+
+### 24. Event 的 JSON 约定
+
+以下字段位于第一项 `input_text.text` 内的业务 JSON 中：
+
+| 字段 | 约定 |
+| --- | --- |
+| `source` | 必填，固定 `"robot"`；沿用普通业务输入的来源类别 |
+| `time_stamp` | 必填，事件发生时刻，UTC 三位毫秒，例如 `2026-10-28T06:00:00.000Z` |
+| `origin` | Event 必填，具体发布者标识；ROS 节点用完整节点名，行为树节点用实例路径，例如 `/bt/main/InspectDoor` |
+| `text` | 可选，事件的文字内容；图片事件也可附带文字说明 |
+| `event` | 可选，沿用 `status/error/debug` 分类 |
+| `data` | 可选，结构化业务数据；`pose` 等仍按第一部分需要填写 |
+| `images` | 可选，图片元数据数组，与后续原生图片项按顺序对应 |
+| `instruction` | 可选，`{"function":"capture_image"}` 形式的函数调用请求；模型综合事件和上下文决定是否执行，不保证生成对应的 function_call |
+
+`source` 回答“用户还是机器”，`origin` 回答“具体哪个节点”。时间和来源由发布者填写；EventManager 保留原值。文字、图片和命令请求按实际需要组合，不要求事件必须带图片或命令请求。instruction.function 只是提供给模型的业务信息，不是本地执行命令或强制工具选择。
+
+业务 JSON 示例：
+
+```json
+{
+  "source": "robot",
+  "time_stamp": "2026-10-28T06:00:00.000Z",
+  "origin": "/bt/main/InspectDoor",
+  "event": "status",
+  "text": "已到达门口，请结合当前画面重新拍照检查。",
+  "images": [
+    {
+      "camera": "front",
+      "time_stamp": "2026-10-28T06:00:00.000Z"
+    }
+  ],
+  "instruction": {
+    "function": "capture_image"
+  }
+}
+```
+
+同一个 Event 实际提交和传输的原生格式如下；它本身就是一个 input 元素，不再套 event/payload 外壳：
+
+```json
+{
+  "role": "user",
+  "content": [
+    {
+      "type": "input_text",
+      "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-10-28T06:00:00.000Z\",\"origin\":\"/bt/main/InspectDoor\",\"event\":\"status\",\"text\":\"已到达门口，请结合当前画面重新拍照检查。\",\"images\":[{\"camera\":\"front\",\"time_stamp\":\"2026-10-28T06:00:00.000Z\"}],\"instruction\":{\"function\":\"capture_image\"}}"
+    },
+    {
+      "type": "input_image",
+      "image_url": "data:image/jpeg;base64,<图片Base64数据>",
+      "detail": "auto"
+    }
+  ]
+}
+```
+
+`images` 只放元数据，图片数据放原生 input_image。没有图片时省略 images 和图片内容项。不得把节点专用字段直接加到 API 消息外层。
+
+### 25. 公共接口、接收与暂存
+
+```cpp
+class EventManager
+{
+public:
+  explicit EventManager(const std::shared_ptr<rclcpp::Node> & node);
+  void load(const std::string & global_yaml_path);
+  void addEvents(const Json & events);
+  Json takeEvents();
+  Json getStatus() const;
+  void shutdown();
+};
+```
+
+| 接口 | 行为 |
+| --- | --- |
+| 构造函数 | 复用宿主 ROS 节点，内部保存 weak_ptr，不单独创建 ROS 节点或执行线程 |
+| `load()` | 读取 event_manager 配置段并建立一个接收订阅 |
+| `addEvents()` | 接收一个原生 Event 对象或 Event 数组，按元素顺序追加；同进程行为树节点可直接调用，ROS 订阅也复用此入口 |
+| `takeEvents()` | 非阻塞移出全部待交付事件，返回可直接追加到 input[] 的数组；无事件返回 [] |
+| `getStatus()` | 只返回 `{"state":"ready","pending_count":2}` 一类当前状态；状态为 unloaded/ready/closed，不复制事件、图片或已完成数据 |
+| `shutdown()` | 释放订阅和待交付数据；不负责关闭宿主 ROS 节点 |
+
+内部只保存一个 `Json pending_events = Json::array()`。addEvents() 复用 utils::appendInputs() 按顺序合并；takeEvents() 在同一锁内与空数组交换并返回，取出后内部恢复为空，不保留副本。只用一把 mutex 保护缓存和状态，以兼容 ROS 回调与同进程行为树上报；批量添加的事件保持连续、顺序不变，不新增后台消费线程、future 或完成历史。
+
+全局 YAML 增加一个配置段：
+
+```yaml
+event_manager:
+  receive_topic: /vln/robot_event
+```
+
+只提供一个接收 ROS 话题，首版类型为 std_msgs/msg/String，data 是第 24 节原生 Event 对象或 Event 数组的 JSON 文本。其他 ROS 节点或独立进程的行为树节点共用此话题发布，EventManager 解析后统一调用 addEvents()；同进程也可直接调用 addEvents()。话题采用可靠、volatile、KeepLast(10) 的 QoS，不重放旧事件。该话题只负责事件上报，不增加应答话题。
+
+发布者负责按约定准备字段、UTC 时间和图片。接收侧只做 JSON 解析；语法错误记录 ROS 日志并忽略该条，不增加逐字段 Schema 校验、自动补齐、图片解码或转换。订阅回调捕获独立 shared_ptr 缓冲状态，不捕获裸 this 或形成节点引用环；对象内部仍以 unique_ptr 管理 Impl。
+
+### 26. 批量事件与会话交接
+
+一次 ROS 消息可提交多个事件，一次 takeEvents() 也可汇集不同发布者的事件；它们作为同一请求的多个 input 元素发送，不合并成一条消息，也不形成嵌套数组。ROS 接收话题的 data 可以是以下数组的 JSON 字符串：
+
+```json
+[
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-10-28T06:00:00.000Z\",\"origin\":\"/localization_monitor\",\"text\":\"当前位置已更新。\",\"pose\":{\"frame_id\":\"map\",\"x\":1.2,\"y\":2.3,\"yaw\":0.5}}"
+      }
+    ]
+  },
+  {
+    "role": "user",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-10-28T06:00:00.100Z\",\"origin\":\"/bt/main/InspectDoor\",\"text\":\"已到达门口。\",\"instruction\":{\"function\":\"capture_image\"}}"
+      }
+    ]
+  }
+]
+```
+
+Agent 只负责取出和交接数组，复用现有会话接口：
+
+```cpp
+const auto inputs = events.takeEvents();  // [] 或多个原生 Event。
+session.addInputs(inputs);               // 逐元素追加到待发 input[]。
+session.request();                       // 空输入不产生请求，限频仍由会话层管理。
+```
+
+当前模型生成期间可以继续交付事件，由 SessionManager 拼装下一轮请求；不要求待发数组为空，也不要求上一轮完成后才能收取事件。取出后的事件由 Agent/SessionManager 负责交接和失败处理，EventManager 不重新保存或自动重投。
+
+instruction.function 仅表达发布者希望调用某个工具。Agent 和 EventManager 不解析它来直接执行函数，不设置强制 tool_choice，也不对多个命令请求做本地冲突仲裁。模型结合系统提示词、整批事件和上下文自行决定是否调用、调用哪些函数及输出排列顺序；可能只返回 message，也可能生成一个或多个 function_call。事件与工具调用不要求一一对应，事件排列也不构成工具执行依赖。
+
+ToolManager 保持现有实现：只处理模型实际生成的 function_call，按 output 中的顺序入队，再依据现有线程池和 blocking 配置调度。事件中的请求本身不进入工具执行队列，未被模型选择的请求不会由本地补执行。本节只规定数据交接，不展开 Agent 主循环。
+
+### 27. 文件范围
+
+```text
+include/vln_agent/events/event_manager.hpp
+src/events/event_manager.cpp
+config/agent.yaml                         # 新增 event_manager 段
+```
+
+以上为后续实现范围，本次只修改规划文件。SessionManager 复用现有 addInputs()/request()，不增加事件专用接口；ToolManager 的实现、队列、并发和 blocking 策略不修改。
+
+## 六、后续规划范围
+
+本次完成 EventManager 的规划，后续按第五部分实现，再完善 VLNAgent 的组装和结果交接。用户输入输出由 UserInteractionManager 及接口插件统一承担，机器事件由 EventManager 接收和交付。最高请求频率、两份请求数据及发送时机由 SessionManager 管理；本次不展开 Agent 主循环。
+
+2026-10-24：第四部分已在 vln_agent 中实现，并完成 Jetson 编译、离线回归及局域网反代下的 gpt-6-luna 真实交互测试；公共接口和验证命令见包根目录 README.md。当时 EventManager 与 VLNAgent 主流程仍保留为后续范围。
+
+2026-10-28：第五部分采用多事件批量输入和单个 ROS 接收话题；事件命令请求由模型自行判断，不新增强制 tool_choice 或 SessionManager 接口，不修改 ToolManager。本次未实现源码，先前提出的组件状态和错误格式统一方案也未纳入。
+
+2026-10-28 实现记录：第五部分已在独立 vln_agent_events 库中实现，包含单个 ROS 接收话题、addEvents()/takeEvents() 批量交付和状态查询。开发机 Release 编译、4 项事件测试及安装后独立链接验证通过；现有其他组件源码和 Agent 接入未修改，未在开发板编译测试。

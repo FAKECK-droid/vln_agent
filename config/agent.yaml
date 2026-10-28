@@ -69,3 +69,6 @@ user_interaction:
       settings:
         send_topic: /vln/user_output
         receive_topic: /vln/user_input
+
+event_manager:
+  receive_topic: /vln/robot_event

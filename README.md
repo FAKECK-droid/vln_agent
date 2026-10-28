@@ -1,6 +1,6 @@
 # vln_agent
 
-ROS 2 Humble 功能包，实现 docs/AGENT_PLAN.md 第二、三、四部分的工具层、会话层和用户交互层。
+ROS 2 Humble 功能包，实现 docs/AGENT_PLAN.md 第二至五部分的工具层、会话层、用户交互层和机器事件层。
 各层通过原生 JSON 由宿主衔接，不依赖 vln_behavior_tree，不创建 Agent 主循环。
 
 ## 组成
@@ -391,3 +391,60 @@ live_runtime.local.yaml 含实际密钥，仅保存在构建目录，权限 0600
 
 开发机 Humble Release 构建及本地回归通过；本地缺少已有真实响应 fixture，
 53 项 GTest 通过，1 项回放用例跳过。目标设备验证在推送及拉取后执行。
+
+## 机器事件层（2026-10-28）
+
+独立链接 `vln_agent::vln_agent_events`，包含
+`vln_agent/events/event_manager.hpp`。该库仅复用通用 JSON/YAML 和 ROS，
+不依赖或调用 SessionManager、ToolManager、UserInteractionManager，也未接入现有 Agent。
+
+```yaml
+event_manager:
+  receive_topic: /vln/robot_event
+```
+
+`load(config_path)` 只读取 event_manager 段；缺省使用 /vln/robot_event。
+一个 ROS 订阅接收 std_msgs/msg/String，data 为原生 Event 对象或对象数组的 JSON 文本，
+采用 reliable、volatile、KeepLast(10) QoS，由宿主执行器处理回调，不启动内部线程。
+
+```cpp
+#include <vln_agent/events/event_manager.hpp>
+
+vln_agent::EventManager events(node);  // 宿主持有 node。
+events.load(config_path);
+// 同进程可以直接上报；event 已是 role/content 原生消息。
+events.addEvents(event);              // 也可传 Json 数组。
+auto inputs = events.takeEvents();    // 一次取走全部，空时返回 []。
+// inputs 由宿主交给会话；EventManager 不持有会话或工具组件。
+events.shutdown();
+```
+
+每个 Event 是独立的 input[] 元素；content 第一项为 input_text，
+text 保存 source=robot、time_stamp、origin 及可选 text/data/instruction 的业务 JSON，
+后续可带原生 input_image。来源和 UTC 三位毫秒时间由发送者填写，
+组件保留全部内容，不补字段、不解码图片、不解释 instruction.function 或设置 tool_choice。
+命令是否生成工具调用由模型决定；详见 docs/AGENT_PLAN.md 第五部分。
+
+addEvents() 和 takeEvents() 使用同一把缓冲锁，整批保持连续顺序；
+takeEvents() 移出后内部立即清空，不保存完成历史或去重 ID。
+getStatus() 只返回 state（unloaded/ready/closed）和 pending_count。
+关闭后忽略新增事件，释放订阅和未交付数据，不关闭宿主节点。
+ROS 输入无法解析或不符合对象/数组形式时记录警告并跳过，不影响后续事件。
+
+开发机离线验证：
+
+```bash
+source /opt/ros/humble/setup.bash
+colcon build --packages-select vln_agent --cmake-args -DBUILD_TESTING=ON
+source install/setup.bash
+colcon test --packages-select vln_agent --ctest-args -R '^test_event_manager$' --output-on-failure
+```
+
+测试只使用本机 ROS 节点和合成 JSON，覆盖批量交付、文字/图片/命令原样保留、
+并发追加与消费、单话题接收、坏 JSON 后继续接收、默认话题及关闭释放；
+不访问模型服务或真实机器人。
+
+验证记录（2026-10-28）：开发机 ROS 2 Humble Release 编译通过；新增 4 项 EventManager 测试全部通过。
+完整离线回归 58 项 GTest 中 57 项通过，1 项已有真实响应回放因未提供 fixture 跳过，无失败。
+安装后的独立下游工程仅链接 vln_agent::vln_agent_events，编译运行通过；动态依赖中没有
+vln_agent_session、vln_agent_tools 或 vln_agent_interaction。未进行开发板或真实模型测试。
