@@ -44,6 +44,8 @@ void VLNAgent::init()
     std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
 
   auto node = shared_from_this();
+  event_manager_ = std::make_shared<EventManager>(node);
+  event_manager_->load(config_path);
   tool_manager_ = std::make_shared<ToolManager>(node);
   tool_manager_->load(config_path);
   session_manager_ = std::make_shared<SessionManager>(config_path);
@@ -74,6 +76,9 @@ void VLNAgent::addInputs(const Json & inputs)
 
 void VLNAgent::step()
 {
+  // 取走本轮机器事件，原样追加到会话；在途请求期间由会话保留为待发输入。
+  addInputs(event_manager_->takeEvents());
+
   // 取走模型响应
   outgoing_response_ = session_manager_->takeResponse();
 
@@ -134,6 +139,7 @@ void VLNAgent::run()
 
 void VLNAgent::shutdown()
 {
+  if (event_manager_) {event_manager_->shutdown();}
   if (user_interaction_manager_) {user_interaction_manager_->shutdown();}
   if (session_manager_) {session_manager_->shutdown();}
   if (tool_manager_) {tool_manager_->shutdown();}

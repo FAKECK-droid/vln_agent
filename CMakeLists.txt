@@ -76,7 +76,7 @@ target_link_libraries(vln_agent_ros_topic_interface vln_agent_utils)
 ament_target_dependencies(vln_agent_ros_topic_interface rclcpp std_msgs pluginlib)
 
 add_executable(vln_agent_node src/vln_agent.cpp)
-target_link_libraries(vln_agent_node vln_agent_interaction)
+target_link_libraries(vln_agent_node vln_agent_interaction vln_agent_events)
 ament_target_dependencies(vln_agent_node rclcpp ament_index_cpp)
 
 foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_navigation_tools vln_agent_camera_tools vln_agent_events vln_agent_node)

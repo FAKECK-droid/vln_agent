@@ -396,7 +396,9 @@ live_runtime.local.yaml 含实际密钥，仅保存在构建目录，权限 0600
 
 独立链接 `vln_agent::vln_agent_events`，包含
 `vln_agent/events/event_manager.hpp`。该库仅复用通用 JSON/YAML 和 ROS，
-不依赖或调用 SessionManager、ToolManager、UserInteractionManager，也未接入现有 Agent。
+不依赖或调用 SessionManager、ToolManager、UserInteractionManager。
+主 Agent 在 init() 中装载 EventManager，定频主循环把 takeEvents() 返回的整批事件原样交给
+SessionManager；模型正在响应时事件进入待发输入，关闭 Agent 时释放事件订阅。
 
 ```yaml
 event_manager:

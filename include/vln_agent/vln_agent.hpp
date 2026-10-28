@@ -5,6 +5,7 @@
 
 #include <rclcpp/rclcpp.hpp>
 
+#include "vln_agent/events/event_manager.hpp"
 #include "vln_agent/interaction/user_interaction_manager.hpp"
 #include "vln_agent/session/session_manager.hpp"
 #include "vln_agent/tools/tool_manager.hpp"
@@ -31,6 +32,7 @@ private:
   void addInputs(const Json & inputs);
   void shutdown();
 
+  std::shared_ptr<EventManager> event_manager_;
   std::shared_ptr<UserInteractionManager> user_interaction_manager_;
   std::shared_ptr<ToolManager> tool_manager_;
   std::shared_ptr<SessionManager> session_manager_;
