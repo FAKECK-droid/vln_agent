@@ -102,39 +102,22 @@ Json displayCopy(const Json & source, bool images)
   return result;
 }
 
-struct ViewState
-{
-  bool initialized{false}, definitions_sent{false};
-  Json last = Json::object();  // 仅当前展示状态，用于变化比较。
-  std::string stream_id;
-  std::map<std::pair<std::size_t, std::size_t>, std::string> texts;
-};
-
-/** @brief 只读当前流式基线，待全体插件接收后才提交本次文字差量。 */
-void appendText(Json & messages, const ViewState & view, const std::string & response_id,
+/** @brief 每次交付完整文本；已有客户端按相同位置执行 replace。 */
+void appendText(Json & messages, const std::string & response_id,
                 std::size_t output, std::size_t content, const std::string & type,
                 const std::string & text)
 {
-  const std::string empty;
-  const auto found = view.texts.find({output, content});
-  const auto & previous = view.stream_id == response_id && found != view.texts.end() ?
-    found->second : empty;
-  if (text == previous) {return;}
-  const bool append = text.compare(0, previous.size(), previous) == 0;
   messages.push_back({
     {"response_id", response_id}, {"output_index", output}, {"content_index", content},
-    {"type", type}, {"op", append ? "append" : "replace"},
-    {"text", append ? text.substr(previous.size()) : text}});
+    {"type", type}, {"op", "replace"}, {"text", text}});
 }
 }  // namespace
 
 struct UserInteractionManager::Impl
 {
-  struct Profile {Options options; ViewState state;};
   struct Channel {std::shared_ptr<UserInterfaceBase> plugin; std::size_t profile;};
   struct Batch
   {
-    std::vector<std::string> active_streams;
     std::vector<std::shared_ptr<const Json>> outgoing;
     std::vector<bool> accepted;
   };
@@ -146,7 +129,7 @@ struct UserInteractionManager::Impl
   bool wants(const std::string & field) const
   {
     return std::any_of(profiles.begin(), profiles.end(),
-      [&](const Profile & p) {return p.options.has(field);});
+      [&](const Options & p) {return p.has(field);});
   }
 
   void load(const std::string & path)
@@ -164,9 +147,9 @@ struct UserInteractionManager::Impl
       for (const auto & item : config["channels"]) {
         const auto options = optionsOf(item);
         auto profile = std::find_if(profiles.begin(), profiles.end(),
-          [&](const Profile & p) {return p.options.key() == options.key();});
+          [&](const Options & p) {return p.key() == options.key();});
         const auto index = static_cast<std::size_t>(std::distance(profiles.begin(), profile));
-        if (profile == profiles.end()) {profiles.push_back({options, {}});}
+        if (profile == profiles.end()) {profiles.push_back(options);}
         auto plugin = loader->createSharedInstance(item["plugin"].as<std::string>());
         channels.push_back({plugin, index});
         plugin->initialize(owner, utils::settingsOf(item));
@@ -245,20 +228,15 @@ struct UserInteractionManager::Impl
     const auto stream_id = stream.is_null() ? std::string() :
       stream.at("response_id").get<std::string>();
     const auto stamp = utils::utcNow();
-    for (const auto & profile : profiles) {
-      const auto & view = profile.state;
-      const auto & options = profile.options;
+    for (const auto & options : profiles) {
       Json packet = Json::object();
       for (const auto & path : state_fields) {
         if (!options.has(path)) {continue;}
         const auto current = findPath(snapshot, path);
         if (!current) {continue;}
-        auto shown = displayCopy(*current, options.images);
-        if (!view.initialized || !view.last.contains(path) || view.last.at(path) != shown) {
-          putPath(packet, path, std::move(shown));
-        }
+        putPath(packet, path, displayCopy(*current, options.images));
       }
-      if (options.has("tools.definitions") && !view.definitions_sent) {
+      if (options.has("tools.definitions")) {
         packet["tools"]["definitions"] = definitions;
       }
 
@@ -272,7 +250,7 @@ struct UserInteractionManager::Impl
             for (std::size_t j = 0; j < content.size(); ++j) {
               const auto type = content[j].value("type", std::string());
               if (type == "output_text" || type == "refusal") {
-                appendText(messages, view, response_id, i, j, type,
+                appendText(messages, response_id, i, j, type,
                   content[j].at(type == "refusal" ? "refusal" : "text").get<std::string>());
               }
             }
@@ -283,41 +261,40 @@ struct UserInteractionManager::Impl
           (!has_response || stream_id != response_id))
         {
           for (const auto & part : stream.at("content")) {
-            appendText(messages, view, stream_id, part.at("output_index").get<std::size_t>(),
+            appendText(messages, stream_id, part.at("output_index").get<std::size_t>(),
               part.at("content_index").get<std::size_t>(), part.at("type").get<std::string>(),
               part.at("text").get<std::string>());
           }
         }
       }
-      if (!messages.empty()) {packet["response"]["messages"] = std::move(messages);}
+      if (options.has("response.messages")) {packet["response"]["messages"] = std::move(messages);}
       if (has_response && (options.has("response.messages") ||
         options.has("response.function_calls") || options.has("response.stream")))
       {
         packet["response"]["id"] = response_id;
         packet["response"]["status"] = response.at("status");
       }
-      if (has_response && options.has("response.function_calls")) {
+      if (options.has("response.function_calls")) {
         Json calls = Json::array();
-        for (const auto & item : response.at("output")) {
-          if (item.value("type", std::string()) == "function_call") {calls.push_back(item);}
+        if (has_response) {
+          for (const auto & item : response.at("output")) {
+            if (item.value("type", std::string()) == "function_call") {calls.push_back(item);}
+          }
         }
-        if (!calls.empty()) {packet["response"]["function_calls"] = std::move(calls);}
+        packet["response"]["function_calls"] = std::move(calls);
       }
-      if (options.has("response.tool_outputs") && !outputs.empty()) {
+      if (options.has("response.tool_outputs")) {
         packet["response"]["tool_outputs"] = displayCopy(outputs, options.images);
       }
-      if (options.has("tools.finished_calls") && !terminal.empty()) {
+      if (options.has("tools.finished_calls")) {
         packet["tools"]["finished_calls"] = terminal;
       }
-      const bool keep_stream = options.has("response.messages") &&
-        options.has("response.stream") && (!has_response || stream_id != response_id);
-      batch->active_streams.push_back(keep_stream ? stream_id : std::string());
       if (packet.empty()) {batch->outgoing.push_back(nullptr);}
       else {
         packet["type"] = "interaction_update";
         packet["batch_id"] = next_batch;
         packet["time_stamp"] = stamp;
-        packet["full"] = !view.initialized;
+        packet["full"] = next_batch == 1;  // 兼容现有客户端：仅首次包标记新基线。
         batch->outgoing.push_back(std::make_shared<const Json>(std::move(packet)));
       }
     }
@@ -338,34 +315,6 @@ struct UserInteractionManager::Impl
         throw std::invalid_argument("接口 exchange() 必须返回原生输入数组");
       }
       utils::appendInputs(input_buffer, inputs);
-    }
-    // 批次只含本次差量；不复制完整 ViewState，也不保存完成响应或结果的历史。
-    for (std::size_t i = 0; i < profiles.size(); ++i) {
-      auto & view = profiles[i].state;
-      const auto & active_id = pending->active_streams[i];
-      if (view.stream_id != active_id) {
-        view.stream_id = active_id;
-        view.texts.clear();
-      }
-      const auto & packet = pending->outgoing[i];
-      if (!packet) {continue;}
-      for (const auto & path : state_fields) {
-        if (const auto value = findPath(*packet, path)) {view.last[path] = *value;}
-      }
-      if (findPath(*packet, "tools.definitions")) {view.definitions_sent = true;}
-      if (!active_id.empty()) {
-        if (const auto messages = findPath(*packet, "response.messages")) {
-          for (const auto & part : *messages) {
-            if (part.at("response_id") != active_id) {continue;}
-            auto & text = view.texts[{
-              part.at("output_index").get<std::size_t>(),
-              part.at("content_index").get<std::size_t>()}];
-            if (part.at("op") == "replace") {text = part.at("text").get<std::string>();}
-            else {text += part.at("text").get<std::string>();}
-          }
-        }
-      }
-      view.initialized = true;
     }
     pending.reset();
     ++next_batch;
@@ -390,7 +339,7 @@ struct UserInteractionManager::Impl
   std::weak_ptr<rclcpp::Node> node;
   UserInteractionSources sources;
   std::unique_ptr<pluginlib::ClassLoader<UserInterfaceBase>> loader;
-  std::vector<Profile> profiles;
+  std::vector<Options> profiles;
   std::vector<Channel> channels;
   std::unique_ptr<Batch> pending;
   Json definitions = Json::array(), input_buffer = Json::array();

@@ -63,13 +63,17 @@ TEST_F(InteractionTest, SharesImmutableBatchAndForwardsNativeInputsWithoutWrappi
   EXPECT_TRUE(std::regex_match(a[0]->at("time_stamp").get<std::string>(),
     std::regex(R"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)")));
   EXPECT_TRUE(ui.exchange().empty());
-  EXPECT_EQ(a.size(), 1u);
-  EXPECT_EQ(b.size(), 1u);
+  EXPECT_EQ(a.size(), 2u);
+  EXPECT_EQ(b.size(), 2u);
+  EXPECT_TRUE(a[1]->at("response").at("messages").empty());
+  EXPECT_TRUE(a[1]->at("response").at("function_calls").empty());
+  EXPECT_FALSE(a[1]->at("full").get<bool>());
   EXPECT_EQ(interfaceTraces().at("a").polls, 2);
   // 组件不保存已完成 ID；是否投递旧事件由 Agent 决定。
   ui.exchange(response);
-  EXPECT_EQ(a.size(), 2u);
-  EXPECT_EQ(a[1]->at("response").at("messages")[0].at("text"), "你好");
+  EXPECT_EQ(a.size(), 3u);
+  EXPECT_EQ(a[2]->at("response").at("messages")[0].at("text"), "你好");
+  EXPECT_EQ(a[2]->at("response").at("messages")[0].at("op"), "replace");
 }
 
 TEST_F(InteractionTest, AppliesPerChannelSelectionAndImageFilteringBeforeDelivery)
@@ -93,7 +97,8 @@ TEST_F(InteractionTest, AppliesPerChannelSelectionAndImageFilteringBeforeDeliver
   interfaceTraces().at("shown").packets.clear();
   EXPECT_TRUE(delivered.expired());
   ui.exchange();
-  EXPECT_EQ(interfaceTraces().at("hidden").packets.size(), 1u);
+  EXPECT_EQ(interfaceTraces().at("hidden").packets.size(), 2u);
+  EXPECT_TRUE(interfaceTraces().at("hidden").packets.back()->at("response").at("tool_outputs").empty());
 }
 
 TEST_F(InteractionTest, CommitsOnlyAfterAllChannelsAcceptAndDoesNotResendToEarlierChannel)
@@ -114,10 +119,10 @@ TEST_F(InteractionTest, CommitsOnlyAfterAllChannelsAcceptAndDoesNotResendToEarli
   EXPECT_EQ(first.get(), interfaceTraces().at("b").packets[0].get());
   EXPECT_EQ(first.get(), interfaceTraces().at("c").packets[0].get());
   ui.exchange();
-  EXPECT_EQ(interfaceTraces().at("c").packets.size(), 1u);
+  EXPECT_EQ(interfaceTraces().at("c").packets.size(), 2u);
 }
 
-TEST_F(InteractionTest, StreamAndFinalTextUseOnePositionButFinalOnlyChannelReceivesWholeText)
+TEST_F(InteractionTest, StreamRepeatsWholeTextAndFinalReplacesTheSamePosition)
 {
   const auto final = completed("stream1", "你好世界");
   WsFixture server([&](auto & peer, const Json &, std::size_t) {
@@ -139,23 +144,32 @@ TEST_F(InteractionTest, StreamAndFinalTextUseOnePositionButFinalOnlyChannelRecei
   ui.exchange();
   EXPECT_EQ(interfaceTraces().at("live").packets[0]->at("response").at("messages")[0].at("text"),
     "你好");
-  EXPECT_TRUE(interfaceTraces().at("final").packets.empty());
+  EXPECT_TRUE(interfaceTraces().at("final").packets[0]->at("response").at("messages").empty());
   ui.exchange();
-  EXPECT_EQ(interfaceTraces().at("live").packets.size(), 1u);
+  EXPECT_EQ(interfaceTraces().at("live").packets.size(), 2u);
+  EXPECT_EQ(interfaceTraces().at("live").packets[1]->at("response").at("messages")[0].at("text"),
+    "你好");
+  EXPECT_EQ(interfaceTraces().at("live").packets[1]->at("response").at("messages")[0].at("op"),
+    "replace");
   server.release(0);
   waitFor([&] {return session->getRequestStatus().at("response_ready").get<bool>();});
   const auto consumed = session->takeResponse();
   EXPECT_EQ(consumed, final);
   ui.exchange(consumed);
   const auto & live = interfaceTraces().at("live").packets;
-  ASSERT_EQ(live.size(), 2u);
-  EXPECT_EQ(live[1]->at("response").at("messages")[0].at("text"), "世界");
-  EXPECT_EQ(interfaceTraces().at("final").packets[0]->at("response").at("messages")[0].at("text"),
+  ASSERT_EQ(live.size(), 3u);
+  EXPECT_EQ(live[2]->at("response").at("messages")[0].at("text"), "你好世界");
+  EXPECT_EQ(live[2]->at("response").at("messages")[0].at("op"), "replace");
+  EXPECT_EQ(interfaceTraces().at("final").packets[2]->at("response").at("messages")[0].at("text"),
     "你好世界");
   // 响应已交给 Agent，会话和交互层均不再保留它的流式正文。
   EXPECT_TRUE(session->getStreamSnapshot().at("content").empty());
   ui.exchange();
-  EXPECT_EQ(live.size(), 2u);
+  EXPECT_EQ(live.size(), 4u);
+  EXPECT_TRUE(live.back()->at("response").at("messages").empty());
+  Json packets = Json::array();
+  for (const auto & packet : live) {packets.push_back(*packet);}
+  files.write("full_stream_packets.json", Json{{"packets", packets}}.dump(2));
   session->shutdown();
 }
 
@@ -218,7 +232,12 @@ TEST_F(InteractionTest, CompletedToolStatusAndOutputDoNotConsumeSharedFuture)
   EXPECT_EQ(handles[0].result.get(), output);
   EXPECT_TRUE(tools->getCallStatus(handles[0].call_id).is_null());
   ui.exchange();
-  EXPECT_EQ(interfaceTraces().at("tools").packets.size(), 1u);
+  EXPECT_EQ(interfaceTraces().at("tools").packets.size(), 2u);
+  const auto & idle = *interfaceTraces().at("tools").packets.back();
+  EXPECT_EQ(idle.at("tools").at("definitions"), packet.at("tools").at("definitions"));
+  EXPECT_TRUE(idle.at("tools").at("finished_calls").empty());
+  EXPECT_TRUE(idle.at("response").at("function_calls").empty());
+  EXPECT_TRUE(idle.at("response").at("tool_outputs").empty());
 }
 
 TEST_F(InteractionTest, RollbackClosesInitializedPluginsAndExpiredDependenciesAreReported)
@@ -272,6 +291,43 @@ TEST_F(InteractionTest, RosTopicPluginPublishesOneJsonAndReturnsReceivedNativeAr
   EXPECT_TRUE(ui.exchange().empty());
 }
 
+TEST_F(InteractionTest, LateRosSubscriberReceivesCompleteToolsAndStateOnNextExchange)
+{
+  const auto send_topic = "/interaction_late/output";
+  auto tools = std::make_shared<ToolManager>(node);
+  ConfigFile tool_config;
+  tool_config.write("tool.json", Json::array({definition("echo")}).dump());
+  const Json function{{"name", "echo"}, {"plugin", "vln_agent_test/TestTool"},
+    {"blocking", false}};
+  const Json group{{"id", "test"}, {"definition", "tool.json"},
+    {"functions", Json::array({function})}};
+  tools->load(tool_config.config(Json::array({group})));
+  UserInteractionManager ui(node, {{}, tools, {}});
+  ui.load(config(Json::array({Json{
+    {"plugin", "vln_agent/RosTopicInterface"},
+    {"transmit", {{"tools", {{"definitions", true}, {"status", true}, {"queue", true}}}}},
+    {"settings", {{"send_topic", send_topic}, {"receive_topic", "/interaction_late/input"}}}}})));
+  ui.exchange();  // 首次发布时尚无客户端；后接入者依靠下一帧完整快照。
+  Json received;
+  auto subscription = node->create_subscription<std_msgs::msg::String>(
+    send_topic, 10, [&](std_msgs::msg::String::ConstSharedPtr message) {
+      received = Json::parse(message->data);
+    });
+  ASSERT_TRUE(eventually([&] {
+    rclcpp::spin_some(node);
+    return subscription->get_publisher_count() > 0;
+  }));
+  ui.exchange();
+  ASSERT_TRUE(eventually([&] {rclcpp::spin_some(node); return !received.is_null();}));
+  const auto & snapshot = received.at("tools");
+  ASSERT_EQ(snapshot.at("definitions").size(), 1u);
+  EXPECT_EQ(snapshot.at("definitions")[0].at("name"), "echo");
+  EXPECT_EQ(snapshot.at("status").at("state"), "ready");
+  EXPECT_TRUE(snapshot.at("queue").at("waiting").empty());
+  EXPECT_TRUE(snapshot.at("queue").at("running").empty());
+  EXPECT_FALSE(received.at("full").get<bool>());
+}
+
 TEST_F(InteractionTest, ReplaysRecordedApiResponsesWithoutNetwork)
 {
   const auto * path = std::getenv("VLN_LIVE_FIXTURE");
@@ -287,7 +343,7 @@ TEST_F(InteractionTest, ReplaysRecordedApiResponsesWithoutNetwork)
     ui.exchange(turn.at("response"), turn.value("tool_outputs", Json::array()));
     const auto count = interfaceTraces().at("live-api").packets.size();
     ui.exchange();
-    EXPECT_EQ(interfaceTraces().at("live-api").packets.size(), count);
+    EXPECT_EQ(interfaceTraces().at("live-api").packets.size(), count + 1);
   }
   std::string text;
   std::size_t calls = 0, outputs = 0;

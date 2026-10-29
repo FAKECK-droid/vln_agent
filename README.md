@@ -344,19 +344,21 @@ std_msgs/msg/String.data 承载 JSON。输入须已经是原生 API 对象或其
 业务 JSON 只有 source/time_stamp 两项公共必填字段，pose 可省略。
 管理器不包装输入、不补字段，不读取 pending 输入，也不消费 response 或 future。
 
-一轮按字段并集查询一次，工具定义只查询一次；每个渠道输出一个增量汇总 JSON。
+一轮按字段并集查询一次，工具定义装载时只查询一次、之后每批重发；每个渠道输出一个完整当前状态汇总 JSON。
 工具放在 plugins/tools，用户接口放在 plugins/interfaces。
-同配置插件共享 shared_ptr<const Json>，所有目标插件接收后才提交本批文字和状态差量；
-不同配置只产生筛选视图。组件不保存完成历史或历史去重集合。
+同配置插件共享 shared_ptr<const Json>，所有目标插件接收后才释放本批快照；
+不同配置只产生筛选视图。组件不保存状态比较基线、流式后缀缓存、完成历史或历史去重集合。
 Agent 只传新增完成事件；exchange() 成功后不能在空轮询中反复提交旧 response/result。
 接口正常返回即表示已接收输出。若接口抛异常，用相同参数再次 exchange()；
 先前已经接收者只收 nullptr，已收到的用户输入保留到本轮成功返回。
 管理器不启动线程；外部须串行安排接口回调、exchange() 和 shutdown()。
 
 展示协议含 type/batch_id/time_stamp/full 及启用的 request/response/tools/session。
-full=false 时，状态字段按键替换，缺省保持、null 清除；messages 按
-response_id/output_index/content_index 使用 append/replace。
-流式和最终文本共用当前响应的文本位置；完整结果交付后释放该位置。
+每批重发全部已启用的工具定义、当前请求、工具状态/队列和会话状态，无变化也发送。
+为兼容现有 CLI，full 仅标记首批新基线，后续 false 不表示内容为差量。
+messages 每轮携带当前已生成的完整文本，按 response_id/output_index/content_index 使用 replace；
+无文本、调用或本批结果时，对应已启用数组仍发送 []。
+流式和最终文本共用当前响应的文本位置，不保留前一帧文本进行差分。
 tools.finished_calls 根据本次 tool_outputs 生成 {call_id, state: "finished"} 通知，
 不查询已删除的工具历史，也不保留 name/wait_ms/run_ms 等终态记录。
 request 去掉重复 tools；definitions 单独缓存。include_images=false 时原生图片项变为
@@ -415,8 +417,8 @@ SessionManager 仅额外保存下一轮请求仍需使用的有效上下文。
 
 - ToolManager 仅持有等待/运行调用；完成即释放内部 Call、参数和结果引用。
   外部 future 在管理器销毁后仍可读取，最后一个调用方句柄释放后回收其结果。
-- UserInteractionManager 仅保留当前展示状态、当前流式文本及一个待交付差量批次。
-  不复制整份历史基线，不维护 responses/results/watched/finished 历史集合。
+- UserInteractionManager 仅保留静态工具定义及一个待交付快照批次。
+  不保存前一帧状态或流式文本，不维护 responses/results/watched/finished 历史集合。
 - SessionManager 保留待发输入、在途或可重试请求、尚未取走的完整结果；
   takeResponse() 清除对应流式正文。本地模式还保留下一轮仍需重放的有效上下文，
   压缩替代的前缀会释放。必要链头 ID、最近用量和固定大小统计属于当前会话状态。

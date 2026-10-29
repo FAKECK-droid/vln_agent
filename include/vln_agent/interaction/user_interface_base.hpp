@@ -7,7 +7,7 @@ namespace rclcpp {class Node;}
 
 namespace vln_agent
 {
-/** @brief 用户渠道只接收增量输出，并返回已包装好的 Responses input[]。 */
+/** @brief 用户渠道接收当前状态的完整快照，并返回已包装好的 Responses input[]。 */
 class UserInterfaceBase
 {
 public:
