@@ -8,7 +8,7 @@
 namespace vln_agent
 {
 
-/** @brief 独立模型上下文链，串行发送、两份输入缓冲及单个完整结果槽。 */
+/** @brief 独立模型会话；支持服务端 ID 续接或本地有效上下文重放，串行发送。 */
 class SessionManager
 {
 public:
@@ -41,7 +41,7 @@ public:
    * @note can_retry 表示允许调用 request 登记重试，实际发送仍需等待连接和限频。
    */
   Json getRequestStatus() const;
-  /** @brief 返回最新完成链头、预算、最近 usage 和已观察到的压缩次数。 */
+  /** @brief 返回最新完成链头、模式、本地上下文项数、预算、usage 和压缩次数。 */
   Json getContextStatus() const;
   /** @brief 返回本轮显示文本快照；关闭显示时返回 null，不消费完整结果。 */
   Json getStreamSnapshot() const;

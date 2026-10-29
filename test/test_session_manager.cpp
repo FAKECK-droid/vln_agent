@@ -33,6 +33,8 @@ TEST(SessionManager, BuildsNativeRequestsWithoutImplicitInitialization)
   FixtureFiles files;
   SessionManager session(files.sessionConfig(server.url()));
   ready(session);
+  EXPECT_EQ(session.getContextStatus().at("mode"), "server");
+  EXPECT_EQ(session.getContextStatus().at("history_item_count"), 0);
   EXPECT_TRUE(session.getTools().empty());
   EXPECT_TRUE(session.getPendingInputs().empty());
   EXPECT_TRUE(session.getCurrentRequest().is_null());
@@ -401,6 +403,165 @@ TEST(SessionManager, InstancesAndConcurrentInputBatchesStayIndependent)
     EXPECT_EQ(input[i + 1].at("content").at(0).at("text"), text);
   }
   EXPECT_FALSE(second.requests().at(0).contains("previous_response_id"));
+}
+
+
+TEST(SessionManager, LocalHistoryReplaysNativeOutputsToolsAndImagesWithoutStoredIds)
+{
+  auto first = completed("r1");
+  first["output"].push_back(Json{{"type", "function_call"}, {"name", "echo"},
+    {"call_id", "c1"}, {"arguments", "{}"}, {"status", "completed"}});
+  WsFixture server([&](auto & peer, const Json &, std::size_t index) {
+      if (index == 1) {server.waitRelease(1);}
+      peer.send(Json{{"type", "response.completed"}, {"response",
+          index == 0 ? first : completed("r" + std::to_string(index + 1))}});
+    });
+  FixtureFiles files;
+  SessionManager session(files.sessionConfig(server.url(),
+    {{"store", true}, {"context", {{"local_history", true}, {"server_compaction", false}}}}));
+  const Json image{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}};
+  auto user = message("检查图像");
+  user["content"].push_back(image);
+  const Json initial = Json::array({message("系统规则", "system"), user});
+  session.addInputs(initial); session.request();
+  EXPECT_EQ(take(session), first);
+  Json history = initial;
+  utils::appendInputs(history, first.at("output"));
+  EXPECT_EQ(session.getContextStatus().at("mode"), "local");
+  EXPECT_EQ(session.getContextStatus().at("history_item_count"), history.size());
+  const auto result = utils::functionCallOutput("c1", Json{{"ok", true}}, {image});
+  session.addInputs(result); session.request();
+  waitFor([&] {return server.requests().size() == 2;});
+  session.addInputs(message("下一轮"));
+  session.request();
+  EXPECT_EQ(session.getPendingInputs(), Json::array({message("下一轮")}));
+  EXPECT_EQ(session.getContextStatus().at("history_item_count"), history.size());
+  server.release(1);
+  EXPECT_EQ(take(session), completed("r2"));
+  utils::appendInputs(history, result);
+  utils::appendInputs(history, completed("r2").at("output"));
+  EXPECT_EQ(take(session), completed("r3"));
+  const auto requests = server.requests();
+  ASSERT_EQ(requests.size(), 3u);
+  EXPECT_EQ(requests[0].at("input"), initial);
+  auto second_input = initial;
+  utils::appendInputs(second_input, first.at("output"));
+  utils::appendInputs(second_input, result);
+  EXPECT_EQ(requests[1].at("input"), second_input);
+  utils::appendInputs(history, message("下一轮"));
+  EXPECT_EQ(requests[2].at("input"), history);
+  for (const auto & request : requests) {
+    EXPECT_EQ(request.at("store"), false);
+    EXPECT_FALSE(request.contains("previous_response_id"));
+    EXPECT_FALSE(request.contains("context_management"));
+  }
+  session.shutdown();
+  EXPECT_EQ(session.getContextStatus().at("history_item_count"), 0);
+}
+
+TEST(SessionManager, LocalHistoryRetriesOnlyFreshInputsAndNeverCommitsPartialOutputs)
+{
+  for (const std::string type : {"error", "response.failed", "response.incomplete"}) {
+    WsFixture server([&](auto & peer, const Json &, std::size_t index) {
+        if (index == 1) {
+          server.waitRelease(1);
+          const Json error{{"code", "model_error"}, {"message", "测试失败"}};
+          if (type == "error") {
+            peer.send(Json{{"type", type}, {"error", error}});
+          } else {
+            peer.send(Json{{"type", type}, {"response", {{"id", "failed"}, {"error", error},
+              {"output", Json::array({message("不应保存的部分输出", "assistant")})}}}});
+          }
+        } else {
+          peer.send(Json{{"type", "response.completed"},
+            {"response", completed("r" + std::to_string(index + 1))}});
+        }
+      });
+    FixtureFiles files;
+    SessionManager session(files.sessionConfig(server.url(),
+      {{"context", {{"local_history", true}}}}));
+    session.addInputs(message("init", "system")); session.request(); take(session);
+    Json history = Json::array({message("init", "system")});
+    utils::appendInputs(history, completed("r1").at("output"));
+    session.addInputs(message("failed")); session.request();
+    waitFor([&] {return server.requests().size() == 2;});
+    session.addInputs(message("later"));
+    server.release(1);
+    waitFor([&] {return session.getRequestStatus().at("state") == "error";});
+    EXPECT_EQ(session.getContextStatus().at("history_item_count"), history.size());
+    EXPECT_TRUE(session.takeResponse().is_null());
+    session.request();
+    EXPECT_EQ(take(session).at("id"), "r3");
+    utils::appendInputs(history, Json::array({message("failed"), message("later")}));
+    const auto retry = server.requests().at(2);
+    EXPECT_EQ(retry.at("input"), history);
+    EXPECT_FALSE(retry.contains("previous_response_id"));
+  }
+}
+
+TEST(SessionManager, LocalHistoryReleasesPrefixReplacedByLatestCompaction)
+{
+  const Json first_compact{{"type", "compaction"}, {"id", "cp1"},
+    {"encrypted_content", "first-opaque-context"}};
+  const Json last_compact{{"type", "compaction"}, {"id", "cp2"},
+    {"encrypted_content", "latest-opaque-context"}};
+  auto response = completed("r1");
+  const auto after = response["output"][1];
+  response["output"] = Json::array({first_compact, last_compact, after});
+  WsFixture server([&](auto & peer, const Json &, std::size_t index) {
+      if (index == 0) {
+        peer.send(Json{{"type", "response.output_item.done"},
+          {"output_index", 1}, {"item", last_compact}});
+      }
+      peer.send(Json{{"type", "response.completed"},
+        {"response", index == 0 ? response : completed("r2")}});
+    });
+  FixtureFiles files;
+  SessionManager session(files.sessionConfig(server.url(),
+    {{"context", {{"local_history", true}, {"budget_tokens", 10000}, {"compact_ratio", 0.8}}}}));
+  session.addInputs(message("前缀系统提示词", "system")); session.request(); take(session);
+  EXPECT_EQ(session.getContextStatus().at("history_item_count"), 2);
+  EXPECT_EQ(session.getContextStatus().at("compaction_count"), 2);
+  session.addInputs(message("继续")); session.request(); take(session);
+  const auto requests = server.requests();
+  EXPECT_EQ(requests[0].at("context_management")[0].at("compact_threshold"), 8000);
+  EXPECT_EQ(requests[1].at("input"), Json::array({last_compact, after, message("继续")}));
+  EXPECT_FALSE(requests[1].contains("previous_response_id"));
+}
+
+TEST(SessionManager, LocalHistorySurvivesReconnectWithoutServerStoredContext)
+{
+  WsFixture server([&](auto & peer, const Json &, std::size_t index) {
+      if (index == 1) {
+        server.waitRelease(1);
+        peer.drop();
+      } else {
+        peer.send(Json{{"type", "response.completed"},
+          {"response", completed("r" + std::to_string(index + 1))}});
+      }
+    });
+  FixtureFiles files;
+  SessionManager session(files.sessionConfig(server.url(),
+    {{"context", {{"local_history", true}, {"server_compaction", false}}}}));
+  session.addInputs(message("init", "system")); session.request(); take(session);
+  session.addInputs(message("interrupted")); session.request();
+  waitFor([&] {return server.requests().size() == 2;});
+  session.addInputs(message("new"));
+  server.release(1);
+  waitFor([&] {
+    const auto status = session.getRequestStatus();
+    return status.at("retry_required").get<bool>() &&
+           status.at("transport").at("connected").get<bool>() &&
+           status.at("transport").at("connection_id").get<int>() >= 2;
+  });
+  EXPECT_EQ(server.requests().size(), 2u);
+  session.request();
+  EXPECT_EQ(take(session).at("id"), "r3");
+  Json expected = Json::array({message("init", "system")});
+  utils::appendInputs(expected, completed("r1").at("output"));
+  utils::appendInputs(expected, Json::array({message("interrupted"), message("new")}));
+  EXPECT_EQ(server.requests()[2].at("input"), expected);
+  EXPECT_FALSE(server.requests()[2].contains("previous_response_id"));
 }
 
 TEST(SessionManager, RejectsInvalidLocalConfigurationBeforeStartingThreads)

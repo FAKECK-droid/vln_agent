@@ -26,7 +26,7 @@ struct SessionConfig
   std::string base_url, api_key;
   Json fields;
   Clock::duration interval, timeout;
-  bool stream_output;
+  bool stream_output, local_history;
   std::uint64_t budget, threshold;
 };
 
@@ -40,6 +40,8 @@ SessionConfig readConfig(const std::string & path)
   const auto hz = yaml["max_request_hz"].as<double>(1.0);
   const auto timeout = yaml["request_timeout_sec"].as<double>(0.0);
   const auto context = yaml["context"];
+  config.local_history = context ? context["local_history"].as<bool>(false) : false;
+  const auto server_compaction = context ? context["server_compaction"].as<bool>(true) : true;
   config.budget = context ? context["budget_tokens"].as<std::uint64_t>(128000) : 128000;
   const auto ratio = context ? context["compact_ratio"].as<double>(0.8) : 0.8;
   const auto max_output = yaml["max_output_tokens"].as<int>(8192);
@@ -65,6 +67,8 @@ SessionConfig readConfig(const std::string & path)
     {"text", {{"format", {{"type", "text"}}}}},
     {"context_management", Json::array({
           {{"type", "compaction"}, {"compact_threshold", config.threshold}}})}};
+  if (config.local_history) {config.fields["store"] = false;}
+  if (!server_compaction) {config.fields.erase("context_management");}
   return config;
 }
 }  // namespace
@@ -103,7 +107,9 @@ struct SessionManager::Impl
     request["tools"] = tools;
     request["input"] = std::move(pending_input);
     pending_input = Json::array();
-    if (!latest_response_id.empty()) {
+    if (config.local_history) {
+      utils::prependArray(request["input"], local_context);
+    } else if (!latest_response_id.empty()) {
       request["previous_response_id"] = latest_response_id;
     }
     return request;
@@ -113,7 +119,7 @@ struct SessionManager::Impl
   void fail(const std::string & code, const std::string & message, const Json & event = nullptr)
   {
     last_error = {{"code", code}, {"message", message}, {"event", event}};
-    context_invalid = code == "previous_response_not_found";
+    context_invalid = !config.local_history && code == "previous_response_not_found";
     in_flight = false;
     last_finished = Clock::now();
     send_requested = false;
@@ -232,6 +238,16 @@ struct SessionManager::Impl
           if (config.stream_output) {
             finishText(response);
           }
+          if (config.local_history) {
+            // 只提交完整成功轮次；下一轮重放原生输出，包括工具调用和加密推理项。
+            local_context = std::move(current_request.at("input"));
+            utils::appendInputs(local_context, output);
+            auto & items = local_context.get_ref<Json::array_t &>();
+            const auto compact = std::find_if(items.rbegin(), items.rend(), [](const Json & item) {
+                return item.value("type", std::string()) == "compaction";
+              });
+            if (compact != items.rend()) {items.erase(items.begin(), compact.base() - 1);}
+          }
           latest_response_id = id;
           active_response_id = id;
           last_finished = Clock::now();
@@ -344,6 +360,7 @@ struct SessionManager::Impl
     std::lock_guard<std::mutex> lock(mutex);
     current_request = nullptr;
     pending_input = Json::array();
+    local_context = Json::array();
     response_slot = nullptr;
     in_flight = false;
     last_error = nullptr;
@@ -364,6 +381,7 @@ struct SessionManager::Impl
   Json current_request;                    ///< 当前已发送快照，失败后保留用于显式恢复。
   Json pending_input = Json::array();       ///< 持续追加的下一轮输入，不是请求队列。
   Json response_slot;                      ///< 唯一完整结果槽。
+  Json local_context = Json::array();       ///< 本地模式的有效上下文；压缩后释放被替代前缀。
   Json last_error, usage, stream;           ///< 会话错误、最近用量和可选显示。
   std::string latest_response_id, active_response_id;
   std::set<std::string> compaction_items;   ///< 本轮已观察到的压缩项，避免流式/终态双计数。
@@ -434,7 +452,12 @@ void SessionManager::request()
       return;
     }
     if (!impl_->in_flight && !impl_->current_request.is_null()) {
-      utils::prependArray(impl_->pending_input, impl_->current_request.at("input"));
+      auto & input = impl_->current_request.at("input");
+      if (impl_->config.local_history) {
+        // 当前请求已经包含已提交上下文；仅把失败轮的新输入放回待发缓冲。
+        input.erase(input.begin(), input.begin() + impl_->local_context.size());
+      }
+      utils::prependArray(impl_->pending_input, input);
       impl_->current_request = nullptr;
       impl_->last_error = nullptr;
     }
@@ -496,6 +519,8 @@ Json SessionManager::getContextStatus() const
   std::lock_guard<std::mutex> lock(impl_->mutex);
   return {
     {"latest_response_id", impl_->latest_response_id},
+    {"mode", impl_->config.local_history ? "local" : "server"},
+    {"history_item_count", impl_->local_context.size()},
     {"budget_tokens", impl_->config.budget}, {"compact_threshold", impl_->config.threshold},
     {"usage", impl_->usage}, {"compaction_count", impl_->compaction_count}};
 }

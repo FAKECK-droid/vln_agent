@@ -131,6 +131,37 @@ shutdown 停止入队，立即完成未执行调用，通知插件和共享资�
 导航关闭时尽力请求取消本客户端目标，不把取消请求当作物理停止确认；
 服务端失联或目标回复超时时会记录警告。真实导航必须由外部导航栈和急停机制保证安全。
 
+## 上下文保存方式
+
+在全局 YAML 的 session_manager.context 中添加可选开关：
+
+```yaml
+session_manager:
+  context:
+    local_history: true       # 默认 false：使用原有 previous_response_id 续接
+    server_compaction: false  # 默认 true；模型不支持服务端压缩时关闭
+    budget_tokens: 128000
+    compact_ratio: 0.8
+```
+
+- local_history=false 保持原有行为：只发送新增 input，并引用最近完成的 response ID。
+- local_history=true 在 SessionManager 内存中保留已成功轮次的输入及完整 output，
+  每轮发送有效上下文加新增 input，不传 previous_response_id，并强制 store=false。
+  message、function_call、工具结果、图片以及服务端返回的加密推理项均按原生格式保留；
+  Agent、工具和用户接口的调用方式保持一致。
+- 完整响应成功后才提交上下文，失败或断线的部分输出不加入；显式重试只恢复本轮新增输入，
+  不重复拼入已经提交的历史。pending 始终只包含尚未发送的新输入。
+- server_compaction=true 时沿用 context_management 压缩请求。本地模式收到 compaction 项后，
+  保留最后一个压缩项及其后续内容，释放被其替代的前缀；不在本机生成摘要或解密。
+  关闭此项后不发送 context_management，也不会自动裁剪本地上下文。
+- 本地保存仅持续到当前 SessionManager 关闭，不落盘、不跨进程恢复。
+  budget_tokens 仍用于计算服务端压缩阈值，不是本地 token 硬上限。
+- getContextStatus() 增加 mode（server/local）和 history_item_count，
+  其他已有字段不变。只有启用本地模式才保存继续请求所需的有效上下文。
+
+实现依据：[无存储推理上下文](https://developers.openai.com/api/docs/guides/reasoning#preserve-reasoning-without-stored-responses)、
+[服务端压缩与本地输入链](https://developers.openai.com/api/docs/guides/compaction)。
+
 ## 会话层接入
 
 下游链接 `vln_agent::vln_agent_session`，头文件位于
@@ -161,7 +192,8 @@ session.shutdown();
 整批只加一次锁，保持相邻顺序。仅添加输入或更新工具不会发送请求。
 request() 合并发送意图，内部调度器在连接可用、上一轮结束、结果已取走并满足限频后发送。
 在途 current_request 保持不变；新输入持续进入 pending_input。
-发送时才读取工具列表和最新完成的 previous_response_id，不重复发送旧历史。
+发送时才读取工具列表；默认模式使用最新完成的 previous_response_id，
+本地模式则把已提交有效上下文拼入 input。
 
 takeResponse() 返回原始 event.response，尚无结果时返回 null；
 取走完整结果后清空其流式正文与 ID，由 Agent 将这份结果作为新增事件交给界面。
@@ -175,7 +207,8 @@ getContextStatus() 报告最近原始 usage 和已观察到的压缩次数，不
 max_request_hz 按相邻发送开始时刻限制频率，定时条件变量自行唤醒。
 request_timeout_sec 为零时允许无限等待模型；网络阶段有独立超时和保活。
 WS 请求采用 response.create，context_management.compact_threshold 为
-floor(budget_tokens * compact_ratio)，服务端压缩后继续使用最新响应 ID。
+floor(budget_tokens * compact_ratio)。压缩后，默认模式继续使用最新响应 ID，
+本地模式重放最新压缩项及其后内容。
 配置预算是应用策略，不代表模型的硬上限。
 
 getRequestStatus() 返回 idle、waiting_interval、waiting_transport、generating、
@@ -192,8 +225,8 @@ response_ready、error 或 closed，并附带底层 transport 快照。
 发送线程以移动方式交接发送帧，仍保留 current_request 的独立快照供查询和重试。
 
 模型 error/failed/incomplete 和模型超时记录到 last_error；保留当前与待发输入并清除发送意图。
-再次 request() 才把未完成输入放回待发数组前部，按最新已完成链头重试。
-previous_response_not_found 保持上下文错误，宿主须决定如何重建会话。
+再次 request() 才把未完成的新输入放回待发数组前部，按当前模式重试。
+默认模式遇到 previous_response_not_found 保持上下文错误，宿主须决定如何重建会话。
 网络故障只记录在 transport.last_error，底层重连不会重放业务请求；
 若中断了在途请求，恢复后也须显式 request()。
 模型超时主动轮换底层连接，防止旧请求的迟到事件污染下一轮。
@@ -377,14 +410,16 @@ live_runtime.local.yaml 含实际密钥，仅保存在构建目录，权限 0600
 
 ## 组件数据所有权（2026-10-24）
 
-所有已完成输入、输出、调用历史及历史去重由尚未实现的高层 Agent 管理；本包不增加 Agent 主流程。
+已结束的归档历史及历史去重由高层 Agent 管理。启用 local_history 时，
+SessionManager 仅额外保存下一轮请求仍需使用的有效上下文。
 
 - ToolManager 仅持有等待/运行调用；完成即释放内部 Call、参数和结果引用。
   外部 future 在管理器销毁后仍可读取，最后一个调用方句柄释放后回收其结果。
 - UserInteractionManager 仅保留当前展示状态、当前流式文本及一个待交付差量批次。
   不复制整份历史基线，不维护 responses/results/watched/finished 历史集合。
 - SessionManager 保留待发输入、在途或可重试请求、尚未取走的完整结果；
-  takeResponse() 清除对应流式正文。必要链头 ID、最近用量和固定大小统计属于当前会话状态。
+  takeResponse() 清除对应流式正文。本地模式还保留下一轮仍需重放的有效上下文，
+  压缩替代的前缀会释放。必要链头 ID、最近用量和固定大小统计属于当前会话状态。
 - NavigationRuntime 只保留一个活动/待消费任务，终态交付后删除。
 - 相机的最新帧、静态工具定义、当前错误及尚未交付的数据仍有用途，不属于已结束历史。
 - getCurrentRequest() 的值复制接口保持原样，本轮不实施请求共享快照优化。
