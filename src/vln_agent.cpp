@@ -113,6 +113,12 @@ void VLNAgent::step()
   {
     session_manager_->request();
   }
+
+  if (!status.at("last_error").is_null()){
+    RCLCPP_ERROR(get_logger(), "会话请求失败: %s",
+      status.at("last_error").dump().c_str());
+  }
+
 }
 
 void VLNAgent::run()
