@@ -81,7 +81,7 @@ void VLNAgent::step()
 
   // 取走模型响应
   outgoing_response_ = session_manager_->takeResponse();
-
+  
   // 交付模型工具调用
   if (!outgoing_response_.is_null()) {
     auto calls = tool_manager_->submit(outgoing_response_);
