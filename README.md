@@ -345,7 +345,8 @@ std_msgs/msg/String.data 承载 JSON。输入须已经是原生 API 对象或其
 管理器不包装输入、不补字段，不读取 pending 输入，也不消费 response 或 future。
 
 一轮按字段并集查询一次，工具定义装载时只查询一次、之后每批重发；每个渠道输出一个完整当前状态汇总 JSON。
-工具放在 plugins/tools，用户接口放在 plugins/interfaces。
+工具源文件放在 plugins/tools，用户接口源文件放在 plugins/interfaces。
+插件头文件统一放在 include/vln_agent/plugins，子目录结构与 plugins 下的源文件一致。
 同配置插件共享 shared_ptr<const Json>，所有目标插件接收后才释放本批快照；
 不同配置只产生筛选视图。组件不保存状态比较基线、流式后缀缓存、完成历史或历史去重集合。
 Agent 只传新增完成事件；exchange() 成功后不能在空轮询中反复提交旧 response/result。

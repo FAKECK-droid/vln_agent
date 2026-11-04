@@ -557,7 +557,7 @@ ToolManager 提供工具定义、调用结果和只读状态查询。用户输�
 
 #### 10.2 插件分组目录与对象生命周期
 
-plugins 下统一分为 tools 和 interfaces 两类目录。共享同一资源的函数插件和资源类全部放在 tools 下同一个组目录，共用 tool.json；用户交互插件放在 interfaces 下各自目录。独立工具也使用独立组目录，不另建业务 shared/ 目录：
+plugins 下统一分为 tools 和 interfaces 两类源文件目录；头文件统一放在 include/vln_agent/plugins 下，并保持相同的子目录结构。共享同一资源的函数插件和资源类使用同一个 tools 组目录，共用 tool.json；用户交互插件使用 interfaces 下各自目录。独立工具也使用独立组目录，不另建业务 shared/ 目录：
 
 ```text
 vln_agent/
@@ -566,28 +566,34 @@ vln_agent/
     tool_context.hpp
     tool_manager.hpp
     shared_resources.hpp
+  include/vln_agent/plugins/
+    tools/
+      navigate_to_pose/
+        navigation_runtime.hpp
+        navigate_to_pose_start_navigation.hpp
+        navigate_to_pose_get_feedback.hpp
+        navigate_to_pose_cancel_navigation.hpp
+      capture_image/
+        capture_image.hpp
+    interfaces/
+      ros_topic_interface/
+        ros_topic_interface.hpp
   src/tools/
     tool_manager.cpp
     shared_resources.cpp
   plugins/
     tools/
       navigate_to_pose/
-        navigation_runtime.hpp
         navigation_runtime.cpp
-        navigate_to_pose_start_navigation.hpp
         navigate_to_pose_start_navigation.cpp
-        navigate_to_pose_get_feedback.hpp
         navigate_to_pose_get_feedback.cpp
-        navigate_to_pose_cancel_navigation.hpp
         navigate_to_pose_cancel_navigation.cpp
         tool.json
       capture_image/
-        capture_image.hpp
         capture_image.cpp
         tool.json
     interfaces/
       ros_topic_interface/
-        ros_topic_interface.hpp
         ros_topic_interface.cpp
   tool_plugins.xml
   config/agent.yaml
@@ -1122,6 +1128,20 @@ vln_agent/
       user_interaction_manager.hpp
     utils/
       time.hpp
+    plugins/
+      tools/
+        navigate_to_pose/
+          navigation_runtime.hpp
+          navigate_to_pose_start_navigation.hpp
+          navigate_to_pose_get_feedback.hpp
+          navigate_to_pose_cancel_navigation.hpp
+        capture_image/
+          capture_image.hpp
+      interfaces/
+        ros_topic_interface/
+          ros_topic_interface.hpp
+        websocket_interface/
+          websocket_interface.hpp
   src/
     interaction/
       user_interaction_manager.cpp
@@ -1130,25 +1150,18 @@ vln_agent/
   plugins/
     tools/
       navigate_to_pose/
-        navigation_runtime.hpp
         navigation_runtime.cpp
-        navigate_to_pose_start_navigation.hpp
         navigate_to_pose_start_navigation.cpp
-        navigate_to_pose_get_feedback.hpp
         navigate_to_pose_get_feedback.cpp
-        navigate_to_pose_cancel_navigation.hpp
         navigate_to_pose_cancel_navigation.cpp
         tool.json
       capture_image/
-        capture_image.hpp
         capture_image.cpp
         tool.json
     interfaces/
       ros_topic_interface/
-        ros_topic_interface.hpp
         ros_topic_interface.cpp
       websocket_interface/
-        websocket_interface.hpp
         websocket_interface.cpp
   tool_plugins.xml
   user_interface_plugins.xml
@@ -1165,7 +1178,7 @@ shutdown() 停止新 exchange()，先关闭、释放接口插件，再释放加�
 
 接收话题发送方直接提供一个原生 API 输入对象或其数组，其中业务 JSON 的 source/time_stamp 已准备好。插件只解析 JSON 并追加，不将普通文字自动包装成模型消息，不修改已有字段。
 
-plugins/interfaces/ros_topic_interface/ros_topic_interface.hpp：
+include/vln_agent/plugins/interfaces/ros_topic_interface/ros_topic_interface.hpp：
 
 ```cpp
 #pragma once
@@ -1204,7 +1217,7 @@ private:
 plugins/interfaces/ros_topic_interface/ros_topic_interface.cpp：
 
 ```cpp
-#include "ros_topic_interface.hpp"
+#include "vln_agent/plugins/interfaces/ros_topic_interface/ros_topic_interface.hpp"
 
 #include <exception>
 #include <string>

@@ -1,4 +1,4 @@
-#include "capture_image.hpp"
+#include "vln_agent/plugins/tools/capture_image/capture_image.hpp"
 
 #include <chrono>
 #include <stdexcept>

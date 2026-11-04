@@ -1,4 +1,4 @@
-#include "ros_topic_interface.hpp"
+#include "vln_agent/plugins/interfaces/ros_topic_interface/ros_topic_interface.hpp"
 
 #include <exception>
 #include <string>

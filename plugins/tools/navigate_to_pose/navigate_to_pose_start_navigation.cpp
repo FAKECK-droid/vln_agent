@@ -1,8 +1,8 @@
-#include "navigate_to_pose_start_navigation.hpp"
+#include "vln_agent/plugins/tools/navigate_to_pose/navigate_to_pose_start_navigation.hpp"
 
 #include <pluginlib/class_list_macros.hpp>
 
-#include "navigation_runtime.hpp"
+#include "vln_agent/plugins/tools/navigate_to_pose/navigation_runtime.hpp"
 
 namespace vln_agent
 {
