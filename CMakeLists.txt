@@ -15,8 +15,7 @@ find_package(nav2_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-find_package(cv_bridge REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgcodecs)
+find_package(rgbd_image_queue REQUIRED)
 
 add_library(vln_agent_utils SHARED
   src/utils/time.cpp
@@ -57,9 +56,8 @@ target_link_libraries(vln_agent_navigation_tools vln_agent_tools)
 ament_target_dependencies(vln_agent_navigation_tools rclcpp_action nav2_msgs action_msgs)
 
 add_library(vln_agent_camera_tools SHARED plugins/tools/capture_image/capture_image.cpp)
-target_link_libraries(vln_agent_camera_tools vln_agent_tools ${OpenCV_LIBS})
-target_include_directories(vln_agent_camera_tools PRIVATE ${OpenCV_INCLUDE_DIRS})
-ament_target_dependencies(vln_agent_camera_tools sensor_msgs cv_bridge)
+target_link_libraries(vln_agent_camera_tools vln_agent_tools)
+ament_target_dependencies(vln_agent_camera_tools rgbd_image_queue)
 
 add_library(vln_agent_interaction SHARED
   src/interaction/user_interaction_manager.cpp)
@@ -114,10 +112,9 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_tool_manager ament_index_cpp)
 
   ament_add_gtest(test_ros_tools test/test_ros_tools.cpp TIMEOUT 50)
-  target_link_libraries(test_ros_tools vln_agent_tools ${OpenCV_LIBS})
-  target_include_directories(test_ros_tools PRIVATE ${OpenCV_INCLUDE_DIRS})
+  target_link_libraries(test_ros_tools vln_agent_tools)
   ament_target_dependencies(test_ros_tools
-    rclcpp_action nav2_msgs action_msgs sensor_msgs ament_index_cpp)
+    rclcpp_action nav2_msgs action_msgs sensor_msgs rgbd_image_queue ament_index_cpp)
   add_library(vln_agent_ws_fixture STATIC test/ws_fixture.cpp)
   target_link_libraries(vln_agent_ws_fixture PUBLIC
     vln_agent_session Boost::boost OpenSSL::SSL OpenSSL::Crypto)
@@ -166,6 +163,6 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_targets(export_vln_agent_tools HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs pluginlib nlohmann_json yaml-cpp Threads)
+ament_export_dependencies(rclcpp std_msgs pluginlib nlohmann_json yaml-cpp Threads rgbd_image_queue)
 ament_package()
 

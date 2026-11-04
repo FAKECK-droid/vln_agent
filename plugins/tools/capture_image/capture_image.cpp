@@ -1,12 +1,11 @@
 #include "vln_agent/plugins/tools/capture_image/capture_image.hpp"
 
 #include <chrono>
-#include <stdexcept>
+#include <cstdint>
+#include <future>
+#include <map>
 #include <string>
-#include <vector>
 
-#include <cv_bridge/cv_bridge.h>
-#include <opencv2/imgcodecs.hpp>
 #include <pluginlib/class_list_macros.hpp>
 
 #include "vln_agent/tools/ros_callbacks.hpp"
@@ -26,74 +25,60 @@ void CaptureImage::initialize(const ToolContext & context, const Json & settings
   context.node.get_parameter_or("use_sim_time", simulated, false);
   real_stamps_ = !simulated;
   timeout_sec_ = settings.value("timeout_sec", 2.0);
-  if (timeout_sec_ <= 0) {
-    throw std::invalid_argument("相机 timeout_sec 必须大于零");
-  }
   callbacks_ = std::make_unique<ToolCallbacks>(context.node);
-  state_ = std::make_shared<State>();
-  rclcpp::SubscriptionOptions options;
-  options.callback_group = callbacks_->group();
-  subscription_ = context.node.create_subscription<sensor_msgs::msg::Image>(
-    context.group_settings.at("camera_topic").get<std::string>(), rclcpp::SensorDataQoS(),
-    [state = state_](sensor_msgs::msg::Image::ConstSharedPtr image) {
-      {
-        std::lock_guard<std::mutex> lock(state->mutex);
-        state->latest = std::move(image);
-      }
-      state->condition.notify_all();
-    }, options);
+  client_ = context.node.create_client<GetImage>(
+    context.group_settings.at("service_name").get<std::string>(),
+    rmw_qos_profile_services_default, callbacks_->group());
 }
 
-ToolResult CaptureImage::execute(const Json &)
+ToolResult CaptureImage::execute(const Json & arguments)
 {
-  sensor_msgs::msg::Image::ConstSharedPtr image;
-  {
-    std::unique_lock<std::mutex> lock(state_->mutex);
-    if (!state_->condition.wait_for(lock, std::chrono::duration<double>(timeout_sec_),
-        [this] {return state_->closed || state_->latest != nullptr;}))
-    {
-      return ToolResult::failure("IMAGE_TIMEOUT", "等待相机首帧超时");
-    }
-    if (state_->closed) {
-      return ToolResult::failure("TOOL_MANAGER_CLOSED", "相机工具已经关闭");
-    }
-    image = state_->latest;
+  static const std::map<std::string, std::uint8_t> operations{
+    {"latest", GetImage::Request::LATEST_COLOR},
+    {"index", GetImage::Request::QUEUE_COLOR},
+    {"age", GetImage::Request::QUEUE_COLOR_AT_AGE}};
+  auto request = std::make_shared<GetImage::Request>();
+  request->operation = operations.at(arguments.at("mode").get<std::string>());
+  request->detail = arguments.at("detail").get<std::uint32_t>();
+
+  const auto timeout = std::chrono::duration<double>(timeout_sec_);
+  if (!client_->wait_for_service(timeout)) {
+    return ToolResult::failure("IMAGE_SERVICE_UNAVAILABLE", "取图服务不可用");
   }
-  const auto frame = cv_bridge::toCvShare(image, "bgr8");
-  std::vector<unsigned char> jpeg;
-  if (!cv::imencode(".jpg", frame->image, jpeg)) {
-    return ToolResult::failure("IMAGE_ENCODING_FAILED", "无法将图像编码为 JPEG");
+  auto future = client_->async_send_request(request);
+  if (future.wait_for(timeout) != std::future_status::ready) {
+    client_->remove_pending_request(future);
+    return ToolResult::failure("IMAGE_SERVICE_TIMEOUT", "等待取图服务响应超时");
   }
+  const auto response = future.get();
+  if (!response->success) {
+    return ToolResult::failure("IMAGE_UNAVAILABLE", response->message);
+  }
+
+  const auto & image = response->color;
   Json payload{{"ok", true}, {"time_stamp", utils::utcNow()},
-    {"frame_id", image->header.frame_id}, {"width", image->width}, {"height", image->height}};
-  if (real_stamps_ && (image->header.stamp.sec != 0 || image->header.stamp.nanosec != 0)) {
+    {"frame_id", image.header.frame_id}, {"format", image.format},
+    {"pair_id", response->pair_id}, {"queue_index", response->queue_index},
+    {"queue_size", response->queue_size}, {"image_age_sec", response->image_age_sec},
+    {"age_error_sec", response->age_error_sec}, {"exceeded_max_age", response->exceeded_max_age}};
+  if (real_stamps_ && (image.header.stamp.sec != 0 || image.header.stamp.nanosec != 0)) {
     payload["image_time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
-      std::chrono::seconds(image->header.stamp.sec) +
-      std::chrono::nanoseconds(image->header.stamp.nanosec)));
+      std::chrono::seconds(image.header.stamp.sec) +
+      std::chrono::nanoseconds(image.header.stamp.nanosec)));
   }
-  return {
-    payload,
-    {{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64," + utils::encodeBase64(jpeg)},
-      {"detail", "auto"}}}};
+  const std::string mime = image.format.find("png") != std::string::npos ?
+    "image/png" : "image/jpeg";
+  return {payload,
+    {{{"type", "input_image"}, {"image_url", "data:" + mime + ";base64," +
+        utils::encodeBase64(image.data)}, {"detail", "auto"}}}};
 }
 
 void CaptureImage::shutdown() noexcept
 {
-  if (!state_) {
-    return;
-  }
-  {
-    std::lock_guard<std::mutex> lock(state_->mutex);
-    if (state_->closed) {
-      return;
-    }
-    state_->closed = true;
-  }
-  state_->condition.notify_all();
-  callbacks_->shutdown();
+  if (callbacks_) {callbacks_->shutdown();}
+  if (client_) {client_->prune_pending_requests();}
 }
 
 }  // namespace vln_agent
 
 PLUGINLIB_EXPORT_CLASS(vln_agent::CaptureImage, vln_agent::ToolPluginBase)
-

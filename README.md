@@ -10,7 +10,7 @@ ROS 2 Humble 功能包，实现 docs/AGENT_PLAN.md 第二至五部分的工具�
 - `SharedResources`：每个管理器独立的具名、带类型资源注册表。
 - `ToolManager`：装载定义和 pluginlib 插件、FIFO 调度、活动调用去重及逐调用 future。
 - `plugins/tools/navigate_to_pose`：启动、查询、取消三个插件共用一个 NavigationRuntime。
-- `plugins/tools/capture_image`：订阅最新原始图像，返回 JPEG 图片与采样信息。
+- `plugins/tools/capture_image`：调用 GetImage 服务读取最新或历史彩色压缩图，原样返回图片与采样信息。
 - `SessionManager`：独立上下文链、两份输入缓冲、发送限频与单个完整结果槽。
 - `ResponsesWsTransport`：独立 WS/WSS 连接、认证、保活、网络超时和重连。
 - `src/utils/`：YAML/JSON 转换、输入数组操作、工具结果包装、Base64 编解码与 WS URL 解析。
@@ -80,8 +80,22 @@ getTools 保留定义内容，按组与函数的配置顺序展平。
 | blocking | true | 本项返回前不再调度后续项，先前非阻塞项继续运行 |
 | 导航组 action_name | /navigate_to_pose | Nav2 NavigateToPose Action 名称 |
 | 导航组 shutdown_timeout_sec | 2.0 | 关闭时等待未确认目标回复的上限，须非负 |
-| 相机组 camera_topic | 必填 | sensor_msgs/msg/Image 话题，使用 SensorDataQoS |
-| 相机函数 timeout_sec | 2.0 | 首帧等待上限，须大于零 |
+| 相机组 service_name | 必填 | rgbd_image_queue/srv/GetImage 服务，模板为 /rgbd_image_queue/get_image |
+| 相机函数 timeout_sec | 2.0 | 服务发现和响应等待各自的时限，秒 |
+
+capture_image 仅读取彩色图，模型参数示例：
+
+- 最新图：{"mode":"latest","detail":0}。
+- 从新到旧第 3 张历史图：{"mode":"index","detail":2}。
+- 最接近 1500 毫秒前的历史图：{"mode":"age","detail":1500}。
+
+工具只做服务调用和 Base64 封装，直接使用服务返回的 JPEG/PNG 压缩字节，
+不订阅图像、不缓存历史、不编解码；没有 width/height 字段。
+结果包含 pair_id、queue_index、queue_size、image_age_sec、age_error_sec 和 exceeded_max_age，
+可据此判断实际命中的图像及其陈旧程度。
+服务取不到图时返回 IMAGE_UNAVAILABLE 和原始 message，不自动重试或改取其他帧。
+响应超时会移除客户端挂起请求；shutdown 释放剩余挂起请求。
+部署时先启动 rgbd_image_queue 的图像队列服务。
 
 async 是函数定义字段，blocking 是本地调度字段，二者独立。
 模型请求的 parallel_tool_calls 由 SessionManager 设置。
@@ -121,9 +135,10 @@ call_count 是当前活动数量，completed_count 仅为固定大小的累计�
 未消费终态时启动新目标返回 NAVIGATION_RESULT_PENDING，避免覆盖待交付结果。
 历史导航记录由 Agent 保存；已释放任务的迟到回调不会修改新任务。
 
-相机无函数参数，首帧到达后使用最近收到的帧，不保证每次调用采到新帧。
-结果 payload 含 frame_id、time_stamp、width、height；真实时钟下另带 image_time_stamp，图片以原生
-input_image 的 data:image/jpeg;base64 URL 返回，不把图片放入 payload。
+相机函数使用 mode/detail 选择最新或历史彩色图，由 GetImage 服务决定实际命中的帧。
+结果 payload 含 frame_id、format、time_stamp 及服务返回的配对、索引和年龄信息；
+真实时钟下另带 image_time_stamp，图片以原生 input_image 的
+data:image/jpeg;base64 或 data:image/png;base64 URL 返回。
 
 shutdown 停止入队，立即完成未执行调用，通知插件和共享资源退出，
 回收执行线程后释放插件及加载器，不 detach 线程。
@@ -260,7 +275,7 @@ shutdown() 先禁止新调度，再关闭传输并回收两个线程，可重复
 ```bash
 source /opt/ros/humble/setup.bash
 cd /home/yan/ros2_ws
-MAKEFLAGS=-j2 colcon build --packages-select vln_agent --executor sequential \
+MAKEFLAGS=-j2 colcon build --packages-up-to vln_agent --executor sequential \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON
 source install/setup.bash
 colcon test --packages-select vln_agent --event-handlers console_direct+
@@ -270,8 +285,8 @@ colcon test-result --test-result-base build/vln_agent --verbose
 测试覆盖定义筛选、相对路径、配置注入、资源共享与隔离、装载事务、
 FIFO 阻塞语义、并发及等待容量、独立 future、去重、错误包装和关闭，
 以及工具队列快照、完成状态、等待/运行耗时和查询副本隔离。
-ROS 测试使用独立 domain、回环假导航服务与合成图像，验证导航反馈、
-拒绝、取消到终态、终态一次消费、JPEG 解码与相机关闭。
+ROS 测试使用独立 domain、回环假导航服务与 GetImage 假服务，验证导航反馈、
+拒绝、取消到终态、终态一次消费、最新/索引/时间取图、压缩字节原样传递、服务超时与关闭。
 会话测试使用进程内回环 WS/WSS 假服务，覆盖缓冲、限频、上下文续接、失败重试、
 网络重连、迟到响应隔离、流式显示、分帧、TLS 校验、保活与关闭，
 以及会话内容查询、请求耗时冻结、限频剩余时间和重试标志。
@@ -475,7 +490,7 @@ ROS 输入无法解析或不符合对象/数组形式时记录警告并跳过，
 
 ```bash
 source /opt/ros/humble/setup.bash
-colcon build --packages-select vln_agent --cmake-args -DBUILD_TESTING=ON
+colcon build --packages-up-to vln_agent --cmake-args -DBUILD_TESTING=ON
 source install/setup.bash
 colcon test --packages-select vln_agent --ctest-args -R '^test_event_manager$' --output-on-failure
 ```

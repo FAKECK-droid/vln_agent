@@ -434,7 +434,7 @@ tool_manager:
     - id: capture_image
       definition: ../plugins/tools/capture_image/tool.json
       settings:
-        camera_topic: /camera/color/image_raw
+        service_name: /rgbd_image_queue/get_image
       functions:
         - name: capture_image
           plugin: vln_agent/CaptureImage
