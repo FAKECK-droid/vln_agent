@@ -16,6 +16,9 @@ find_package(action_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
 find_package(rgbd_image_queue REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
 
 add_library(vln_agent_utils SHARED
   src/utils/time.cpp
@@ -48,12 +51,17 @@ target_link_libraries(vln_agent_tools PUBLIC
   vln_agent_utils Threads::Threads)
 
 add_library(vln_agent_navigation_tools SHARED
-  plugins/tools/navigate_to_pose/navigation_runtime.cpp
-  plugins/tools/navigate_to_pose/navigate_to_pose_start_navigation.cpp
-  plugins/tools/navigate_to_pose/navigate_to_pose_get_feedback.cpp
-  plugins/tools/navigate_to_pose/navigate_to_pose_cancel_navigation.cpp)
-target_link_libraries(vln_agent_navigation_tools vln_agent_tools)
-ament_target_dependencies(vln_agent_navigation_tools rclcpp_action nav2_msgs action_msgs)
+  plugins/tools/navigation/navigation_runtime.cpp
+  plugins/tools/navigation/navigate_to_pose_start_navigation.cpp
+  plugins/tools/navigation/navigate_to_pose_get_feedback.cpp
+  plugins/tools/navigation/navigate_to_pose_cancel_navigation.cpp
+  plugins/tools/navigation/get_surroundings.cpp
+  plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp
+  plugins/tools/navigation/utils.cpp)
+target_link_libraries(vln_agent_navigation_tools vln_agent_tools ${OpenCV_LIBS})
+target_include_directories(vln_agent_navigation_tools PUBLIC ${OpenCV_INCLUDE_DIRS})
+ament_target_dependencies(vln_agent_navigation_tools
+  rclcpp_action nav2_msgs action_msgs tf2_ros tf2_geometry_msgs)
 
 add_library(vln_agent_camera_tools SHARED plugins/tools/capture_image/capture_image.cpp)
 target_link_libraries(vln_agent_camera_tools vln_agent_tools)
@@ -112,9 +120,15 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_tool_manager ament_index_cpp)
 
   ament_add_gtest(test_ros_tools test/test_ros_tools.cpp TIMEOUT 50)
-  target_link_libraries(test_ros_tools vln_agent_tools)
+  target_link_libraries(test_ros_tools vln_agent_tools ${OpenCV_LIBS})
+  target_include_directories(test_ros_tools PRIVATE ${OpenCV_INCLUDE_DIRS})
   ament_target_dependencies(test_ros_tools
-    rclcpp_action nav2_msgs action_msgs sensor_msgs rgbd_image_queue ament_index_cpp)
+    rclcpp_action nav2_msgs action_msgs sensor_msgs rgbd_image_queue ament_index_cpp tf2_ros tf2_geometry_msgs)
+  ament_add_gtest(test_navigation_utils test/test_navigation_utils.cpp TIMEOUT 20)
+  target_link_libraries(test_navigation_utils vln_agent_navigation_tools)
+  target_compile_definitions(test_navigation_utils PRIVATE
+    VLN_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+
   add_library(vln_agent_ws_fixture STATIC test/ws_fixture.cpp)
   target_link_libraries(vln_agent_ws_fixture PUBLIC
     vln_agent_session Boost::boost OpenSSL::SSL OpenSSL::Crypto)
@@ -163,6 +177,6 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_targets(export_vln_agent_tools HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs pluginlib nlohmann_json yaml-cpp Threads rgbd_image_queue)
+ament_export_dependencies(rclcpp std_msgs pluginlib nlohmann_json yaml-cpp Threads rgbd_image_queue tf2_ros tf2_geometry_msgs OpenCV)
 ament_package()
 

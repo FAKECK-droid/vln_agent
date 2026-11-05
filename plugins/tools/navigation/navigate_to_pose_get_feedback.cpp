@@ -1,11 +1,24 @@
-#include "vln_agent/plugins/tools/navigate_to_pose/navigate_to_pose_get_feedback.hpp"
+#include "vln_agent/plugins/tools/navigation/navigate_to_pose_get_feedback.hpp"
 
 #include <pluginlib/class_list_macros.hpp>
 
-#include "vln_agent/plugins/tools/navigate_to_pose/navigation_runtime.hpp"
+#include "vln_agent/plugins/tools/navigation/navigation_runtime.hpp"
 
 namespace vln_agent
 {
+
+ToolResult NavigationRuntime::get_feedback(const Json & arguments)
+{
+  const auto id = arguments.at("task_id").get<std::string>();
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (!task_ || task_->id != id) {
+    return ToolResult::failure("TASK_NOT_FOUND", "未知或已消费的导航任务: " + id);
+  }
+  // 使用独立引用，避免消费终态时重置 task_ 使参数失效。
+  const auto task = task_;
+  return snapshot(task);
+}
+
 
 void NavigateToPoseGetFeedback::initialize(const ToolContext & context, const Json &)
 {

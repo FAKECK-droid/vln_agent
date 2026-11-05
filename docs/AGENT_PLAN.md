@@ -220,7 +220,7 @@ YYYY-MM-DDTHH:mm:ss.SSSZ
 | `NavigateToPoseGetFeedback` | `navigate_to_pose_get_feedback` | 参数为 `task_id`；返回该任务最新状态及可选图片 |
 | `NavigateToPoseCancelNavigation` | `navigate_to_pose_cancel_navigation` | 参数为 `task_id`；取消处理中返回 `canceling`，收到最终结果后才标记 `canceled` |
 
-`plugins/tools/navigate_to_pose/tool.json` 示例：
+`plugins/tools/navigation/tool.json` 示例：
 
 ```json
 [
@@ -326,7 +326,7 @@ YYYY-MM-DDTHH:mm:ss.SSSZ
 | 函数插件 | 实现一个具体函数，读取参数并调用 ROS 或共享业务对象 |
 | `ToolPluginBase` | 固定初始化、执行、关闭接口 |
 | `SharedResources` | 按名称和类型保存共享业务对象，作用域为本次 ToolManager 实例 |
-| `NavigationRuntime` | 保存导航 Action 客户端、任务、GoalHandle、反馈和最终状态 |
+| `NavigationRuntime` | 保存导航/代价地图客户端、TF、任务反馈以及有界环境变换快照 |
 | `ToolManager` | 加载 JSON 和插件、组织 `tools`、调度本地执行、返回逐调用 future |
 | `SessionManager` | 拼装请求、内部限频调度和管理上下文，调用独立 WebSocket 传输类 |
 | `EventManager` | 独立接收、管理其他 ROS 节点或手动上报的状态、报错和调试消息 |
@@ -417,8 +417,8 @@ tool_manager:
   max_concurrent_calls: 4
   max_pending_calls: 64
   groups:
-    - id: navigate_to_pose
-      definition: ../plugins/tools/navigate_to_pose/tool.json
+    - id: navigation
+      definition: ../plugins/tools/navigation/tool.json
       settings:
         action_name: /navigate_to_pose
       functions:
@@ -568,8 +568,11 @@ vln_agent/
     shared_resources.hpp
   include/vln_agent/plugins/
     tools/
-      navigate_to_pose/
+      navigation/
         navigation_runtime.hpp
+        utils.hpp
+        get_surroundings.hpp
+        navigate_to_pixel_start_navigation.hpp
         navigate_to_pose_start_navigation.hpp
         navigate_to_pose_get_feedback.hpp
         navigate_to_pose_cancel_navigation.hpp
@@ -583,8 +586,11 @@ vln_agent/
     shared_resources.cpp
   plugins/
     tools/
-      navigate_to_pose/
+      navigation/
         navigation_runtime.cpp
+        utils.cpp
+        get_surroundings.cpp
+        navigate_to_pixel_start_navigation.cpp
         navigate_to_pose_start_navigation.cpp
         navigate_to_pose_get_feedback.cpp
         navigate_to_pose_cancel_navigation.cpp
@@ -1130,8 +1136,11 @@ vln_agent/
       time.hpp
     plugins/
       tools/
-        navigate_to_pose/
+        navigation/
           navigation_runtime.hpp
+          utils.hpp
+          get_surroundings.hpp
+          navigate_to_pixel_start_navigation.hpp
           navigate_to_pose_start_navigation.hpp
           navigate_to_pose_get_feedback.hpp
           navigate_to_pose_cancel_navigation.hpp
@@ -1149,8 +1158,11 @@ vln_agent/
       time.cpp
   plugins/
     tools/
-      navigate_to_pose/
+      navigation/
         navigation_runtime.cpp
+        utils.cpp
+        get_surroundings.cpp
+        navigate_to_pixel_start_navigation.cpp
         navigate_to_pose_start_navigation.cpp
         navigate_to_pose_get_feedback.cpp
         navigate_to_pose_cancel_navigation.cpp

@@ -2,10 +2,17 @@ tool_manager:
   max_concurrent_calls: 4
   max_pending_calls: 64
   groups:
-    - id: navigate_to_pose
-      definition: ../plugins/tools/navigate_to_pose/tool.json
+    - id: navigation
+      definition: ../plugins/tools/navigation/tool.json
       settings:
         action_name: /navigate_to_pose
+        local_costmap_service: /local_costmap/get_costmap
+        global_costmap_service: /global_costmap/get_costmap
+        map_frame: map
+        base_frame: base_link
+        costmap_timeout_sec: 2.0
+        image_size: 512
+        max_environments: 8
       functions:
         - name: navigate_to_pose_start_navigation
           plugin: vln_agent/NavigateToPoseStartNavigation
@@ -15,6 +22,12 @@ tool_manager:
           blocking: false
         - name: navigate_to_pose_cancel_navigation
           plugin: vln_agent/NavigateToPoseCancelNavigation
+          blocking: true
+        - name: get_surroundings
+          plugin: vln_agent/GetSurroundings
+          blocking: false
+        - name: navigate_to_pixel_start_navigation
+          plugin: vln_agent/NavigateToPixelStartNavigation
           blocking: true
     - id: capture_image
       definition: ../plugins/tools/capture_image/tool.json

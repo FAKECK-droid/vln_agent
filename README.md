@@ -9,7 +9,7 @@ ROS 2 Humble 功能包，实现 docs/AGENT_PLAN.md 第二至五部分的工具�
 - `ToolPluginBase`：固定的 initialize / execute / shutdown 插件接口。
 - `SharedResources`：每个管理器独立的具名、带类型资源注册表。
 - `ToolManager`：装载定义和 pluginlib 插件、FIFO 调度、活动调用去重及逐调用 future。
-- `plugins/tools/navigate_to_pose`：启动、查询、取消三个插件共用一个 NavigationRuntime。
+- `plugins/tools/navigation`：位姿导航、查询、取消、环境图和像素导航五个插件共用一个 NavigationRuntime。
 - `plugins/tools/capture_image`：调用 GetImage 服务读取最新或历史彩色压缩图，原样返回图片与采样信息。
 - `SessionManager`：独立上下文链、两份输入缓冲、发送限频与单个完整结果槽。
 - `ResponsesWsTransport`：独立 WS/WSS 连接、认证、保活、网络超时和重连。
@@ -134,6 +134,48 @@ call_count 是当前活动数量，completed_count 仅为固定大小的累计�
 终态首次经 get_feedback、cancel_navigation 或启动调用返回后即释放，之后查询返回 TASK_NOT_FOUND。
 未消费终态时启动新目标返回 NAVIGATION_RESULT_PENDING，避免覆盖待交付结果。
 历史导航记录由 Agent 保存；已释放任务的迟到回调不会修改新任务。
+
+### 环境图与像素导航
+
+导航与 Nav2 工具集中在 navigation 组。NavigationRuntime 保存共享资源与任务状态；
+三个原有导航成员函数的定义分别位于对应插件 .cpp，runtime.cpp 只管理资源生命周期和通用状态。
+
+get_surroundings 示例参数：
+
+```json
+{"costmap":"local","range_m":10.0}
+```
+
+costmap 为 local/global；range_m 是以机器人为中心的正方形边长，单位米。
+原始地图可能位于 odom 或 map，先通过 TF 统一到配置的 map_frame，
+再生成机器人朝上的 PNG。固定配色区分自由、低代价、高代价、障碍和未知，
+图片包含机器人位置、朝向、像素标尺和米制比例尺，不计算或选择航点。
+原始代价值含义依据 [Nav2 Humble 发布器](https://api.nav2.org/nav2-humble/html/costmap__2d__publisher_8cpp_source.html)。
+图像处理只使用裁剪 ROI；缩小时分别保留障碍和未知掩膜。
+
+payload 返回 environment_id、time_stamp、map_rect、image_width/image_height、
+meters_per_pixel、robot_pose，以及图片方向约定。frame_id/robot_pose 使用 map_frame；
+图片本身的上方是截图时机器人前方，左方是机器人左侧，并非固定 map 轴方向。
+像素原点位于完整 PNG 左上角，x 向右、y 向下；只能选择 map_rect 内的地图位置。
+
+navigate_to_pixel_start_navigation 示例参数：
+
+```json
+{"environment_id":"env_1","pixel_x":330,"pixel_y":220,"yaw":0.0}
+```
+
+yaw 为相对该图片的目标朝向，单位弧度：0 朝上，正值逆时针朝左。
+工具用该 ID 保存的不可变变换还原位置，并以截图时 robot_pose.yaw + yaw
+生成 map_frame 中的目标朝向。随后复用 start_navigation；只发送像素工具自己的结果，
+包含 environment_id、换算后的 goal、task_id/status，不另发内部导航函数的结果。
+task_id 可继续用于 navigate_to_pose_get_feedback / navigate_to_pose_cancel_navigation。
+
+共享配置可设置 local_costmap_service、global_costmap_service、map_frame、base_frame、
+costmap_timeout_sec、image_size 和 max_environments；默认值见 config/agent.yaml。
+image_size 是地图部分边长，默认 512，图片另有标题和图例边距。
+环境缓存默认最多 8 个，仅保存小型坐标变换元数据，不保存原始地图、PNG 或 Base64。
+超过上限淘汰最旧环境；导航目标接受后消费其 ID，重复使用需重新获取环境。
+坐标换算使用对应截图，实际导航规划和避障仍由 Nav2 执行。
 
 相机函数使用 mode/detail 选择最新或历史彩色图，由 GetImage 服务决定实际命中的帧。
 结果 payload 含 frame_id、format、time_stamp 及服务返回的配对、索引和年龄信息；

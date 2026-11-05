@@ -2,22 +2,27 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <string>
 
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/srv/get_costmap.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
 #include "vln_agent/tools/tool_plugin_base.hpp"
+#include "vln_agent/plugins/tools/navigation/utils.hpp"
+
+namespace tf2_ros {class Buffer; class TransformListener;}
 
 namespace vln_agent
 {
 
 class ToolCallbacks;
 
-/** @brief 一组导航函数共用的 Action 客户端、任务记录及反馈状态。 */
+/** @brief 一组导航函数共用的 Action/Costmap 客户端、TF、任务状态和环境变换。 */
 class NavigationRuntime : public SharedResource,
   public std::enable_shared_from_this<NavigationRuntime>
 {
@@ -35,13 +40,25 @@ public:
   ToolResult get_feedback(const Json & arguments);
   /** @brief 等待取消请求回复；只有最终 Action 结果才能将状态改为 canceled。 */
   ToolResult cancel_navigation(const Json & arguments);
+  /**
+   * @brief 获取代价地图并生成机器人朝上的环境图。
+   * @param arguments costmap 为 local/global，range_m 为观察正方形边长。
+   * @return 含环境 ID、图片元数据的 payload 和一张原生 PNG。
+   */
+  ToolResult get_surroundings(const Json & arguments);
+  /**
+   * @brief 使用快照还原像素位置与相对图片 yaw，复用 start_navigation。
+   * @param arguments environment_id、pixel_x、pixel_y、yaw；yaw=0 朝图上方，正值逆时针。
+   * @return 像素工具自身的结果，成功时含 task_id，供查询和取消。
+   */
+  ToolResult navigate_to_pixel_start_navigation(const Json & arguments);
   /** @brief 唤醒函数等待，尽力取消本客户端活动目标并停止自身回调。 */
   void shutdown() noexcept override;
 
 private:
   struct Task
   {
-    std::string id;
+    std::string id;                         ///< 当前导航任务的内部标志。
     GoalHandle::SharedPtr goal;             ///< 接受目标后得到的句柄。
     std::string status{"running"};          ///< 物理任务状态，不是函数调用状态。
     bool responded{false};                 ///< 是否已经收到目标接受或拒绝回复。
@@ -56,7 +73,20 @@ private:
   rclcpp::Node & node_;                     ///< 外部节点，生命周期由宿主管理。
   std::unique_ptr<ToolCallbacks> callbacks_;  ///< 独占回调组及其执行线程。
   rclcpp_action::Client<Action>::SharedPtr client_;  ///< 整组共用的导航客户端。
-  std::mutex mutex_;                       ///< 只保护任务表和关闭状态。
+  rclcpp::Client<nav2_msgs::srv::GetCostmap>::SharedPtr global_costmap_client_;  ///< 整组共用的全局代价地图客户端。
+  rclcpp::Client<nav2_msgs::srv::GetCostmap>::SharedPtr local_costmap_client_;   ///< 整组共用的局部代价地图客户端。
+
+  std::unique_ptr<tf2_ros::Buffer> tf_buffer_;  ///< 有界 TF 缓存，供截图时的坐标转换。
+  std::unique_ptr<tf2_ros::TransformListener> tf_listener_;  ///< 复用本组专用回调线程。
+  std::string map_frame_;   ///< 环境快照和导航目标使用的坐标系。
+  std::string base_frame_;  ///< 机器人本体坐标系。
+  double costmap_timeout_sec_{2.0};  ///< 服务发现和响应等待各自的时限。
+  int image_size_{512};  ///< 地图区域边长，不包括标题与图例。
+  std::size_t max_environments_{8};  ///< 未消费环境快照的数量上限。
+  std::deque<navigation::Environment> environments_;  ///< 仅保存尚可引用的少量变换。
+  std::uint64_t next_environment_id_{0};  ///< 递增 ID，仅计数而不保存历史。
+
+  std::mutex mutex_;                       ///< 保护任务、关闭状态和环境元数据，不在图像处理期间持锁。
   std::condition_variable condition_;      ///< 目标、取消回复及关闭通知。
   std::shared_ptr<Task> task_;              ///< 唯一活动任务或尚待消费的终态。
   std::uint64_t next_id_{0};                ///< 本次资源内递增的任务编号。

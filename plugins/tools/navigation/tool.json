@@ -1,0 +1,142 @@
+[
+  {
+    "type": "function",
+    "name": "navigate_to_pose_start_navigation",
+    "description": "启动导航，目标被接受后返回任务 ID 和 running 状态；不会等待到达。 上次终态须先用 get_feedback 读取后才能启动新任务。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "frame_id": {
+          "type": "string",
+          "description": "目标所在坐标系，例如 map。"
+        },
+        "x": {
+          "type": "number",
+          "description": "目标 x 坐标，单位米。"
+        },
+        "y": {
+          "type": "number",
+          "description": "目标 y 坐标，单位米。"
+        },
+        "yaw": {
+          "type": "number",
+          "description": "目标朝向，单位弧度。"
+        }
+      },
+      "required": [
+        "frame_id",
+        "x",
+        "y",
+        "yaw"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "navigate_to_pose_get_feedback",
+    "description": "获取指定导航任务的最新反馈。 终态仅交付一次，读取后释放；历史由调用方保存。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "启动导航返回的本地任务 ID。"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "navigate_to_pose_cancel_navigation",
+    "description": "请求取消指定导航任务，返回取消请求的处理结果。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "启动导航返回的本地任务 ID。"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "get_surroundings",
+    "description": "获取机器人周围代价地图图片。图片以机器人为中心、机器人前方朝上，标有像素坐标、比例尺和固定代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 使用。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "costmap": {
+          "type": "string",
+          "enum": [
+            "local",
+            "global"
+          ],
+          "description": "local：局部代价地图；global：全局代价地图。"
+        },
+        "range_m": {
+          "type": "number",
+          "description": "以机器人为中心的正方形边长，单位米，例如 10。",
+          "minimum": 0.1
+        }
+      },
+      "required": [
+        "costmap",
+        "range_m"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "navigate_to_pixel_start_navigation",
+    "description": "使用 get_surroundings 返回的环境 ID，将该张完整图片中的目标像素及图片相对朝向转换到 map 坐标系后启动导航。只能选择 map_rect 内的地图像素。成功接受目标后消费该环境 ID，返回本工具的简短结果和 task_id，后续通过导航反馈/取消工具操作。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "environment_id": {
+          "type": "string",
+          "description": "get_surroundings 返回的环境 ID。"
+        },
+        "pixel_x": {
+          "type": "number",
+          "description": "完整图片中的目标横坐标，左上角为原点，向右增大。"
+        },
+        "pixel_y": {
+          "type": "number",
+          "description": "完整图片中的目标纵坐标，左上角为原点，向下增大。"
+        },
+        "yaw": {
+          "type": "number",
+          "description": "相对该张图片的目标朝向，单位弧度；0 朝上（截图时机器人前方），正值逆时针朝左，负值朝右。"
+        }
+      },
+      "required": [
+        "environment_id",
+        "pixel_x",
+        "pixel_y",
+        "yaw"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

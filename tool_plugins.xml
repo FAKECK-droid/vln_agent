@@ -15,6 +15,16 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>请求取消共享导航任务。</description>
     </class>
+    <class name="vln_agent/GetSurroundings"
+           type="vln_agent::GetSurroundings"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>获取机器人朝上的环境图及可逆像素快照。</description>
+    </class>
+    <class name="vln_agent/NavigateToPixelStartNavigation"
+           type="vln_agent::NavigateToPixelStartNavigation"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>将环境图像素目标与朝向转换到 map 后启动导航。</description>
+    </class>
   </library>
   <library path="vln_agent_camera_tools">
     <class name="vln_agent/CaptureImage"
