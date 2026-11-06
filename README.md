@@ -116,7 +116,10 @@ async 是函数定义字段，blocking 是本地调度字段，二者独立。
 调用元数据包括 `call_id`、`name`、从零递增的 `sequence`、`blocking`、
 `state`（waiting/running）、`wait_ms` 和 `run_ms`。
 等待时间从登记开始计算，执行开始后冻结；运行时间从取出任务计至查询时刻。
-完成后元数据即被删除，结果仍通过调用方句柄读取。
+完成时将固定的 wait_ms/run_ms、state（finished/failed）、name、sequence 和 blocking
+交给句柄的 completion future；失败时还包含 code/message。未开始执行的拒绝调用 run_ms 为 0。
+result 就绪时 completion 必定已就绪，可直接读取 handle.completion.get()，不必再次轮询。
+活动记录完成即删除，完成结果和元数据只由调用方持有，不在管理器中累计。
 call_count 是当前活动数量，completed_count 仅为固定大小的累计计数，不包含历史记录。
 结果查询不复制参数或图片，不把导航的物理任务状态当成函数执行状态。
 
@@ -390,7 +393,7 @@ session->setTools(tools->getTools());
 vln_agent::UserInteractionManager interaction(node, {session, tools, {}});
 interaction.load(config_path);
 // 外部串行 spin_some()，本次只交付新增完成响应和新增就绪结果。
-auto inputs = interaction.exchange(new_response, new_tool_outputs);
+auto inputs = interaction.exchange(new_response, new_tool_outputs, finished_calls);
 session->addInputs(inputs);
 // 是否 request() 仍由宿主决定。
 ```
@@ -411,14 +414,19 @@ Agent 只传新增完成事件；exchange() 成功后不能在空轮询中反复
 先前已经接收者只收 nullptr，已收到的用户输入保留到本轮成功返回。
 管理器不启动线程；外部须串行安排接口回调、exchange() 和 shutdown()。
 
-展示协议含 type/batch_id/time_stamp/full 及启用的 request/response/tools/session。
+展示协议含 type/batch_id/time_stamp 及启用的 request/response/tools/session，不含 full/op。
 每批重发全部已启用的工具定义、当前请求、工具状态/队列和会话状态，无变化也发送。
-为兼容现有 CLI，full 仅标记首批新基线，后续 false 不表示内容为差量。
-messages 每轮携带当前已生成的完整文本，按 response_id/output_index/content_index 使用 replace；
+messages 每轮携带当前位置已生成的完整文本，按 response_id/output_index/content_index 直接覆盖；
 无文本、调用或本批结果时，对应已启用数组仍发送 []。
 流式和最终文本共用当前响应的文本位置，不保留前一帧文本进行差分。
-tools.finished_calls 根据本次 tool_outputs 生成 {call_id, state: "finished"} 通知，
-不查询已删除的工具历史，也不保留 name/wait_ms/run_ms 等终态记录。
+Agent 检查 ToolCallHandle::result 就绪后，同时取得 completion 中的终态元数据，
+通过 exchange(response, tool_outputs, finished_calls) 交付；tools.finished_calls 携带
+call_id/name/sequence/blocking/state/wait_ms/run_ms，失败还包含 code/message。
+工具错误根据 ToolManager、函数名和 call_id 定位，失败元数据保留 code/message；state 表示函数完成或失败，
+不表示 Nav2 的物理导航任务已完成。计时仅用于界面，不加入发给模型的原生结果项。
+交互管理器不回查已删除的活动记录，也不保存完成历史。
+exchange() 必须显式传入三个参数；没有事件时传 nullptr/[]/[]。
+每个 tool_output 必须提供顺序一致、call_id 匹配的完整 finished_call，缺失即报告错误。
 request 去掉重复 tools；definitions 单独缓存。include_images=false 时原生图片项变为
 omitted 标记。原始 API 对象不被修改，日期在展示副本中统一为 UTC 三位毫秒。
 

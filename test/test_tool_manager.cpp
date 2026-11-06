@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <stdexcept>
+#include <thread>
 
 #include <rclcpp/rclcpp.hpp>
 
@@ -172,6 +173,39 @@ TEST_F(ToolManagerTest, BlockingCallPausesLaterDispatchWithoutWaitingForEarlierC
   EXPECT_TRUE(manager.getQueueSnapshot().at("waiting").empty());
 }
 
+TEST_F(ToolManagerTest, DeliversFrozenTimingWithResultWithoutRetainingCompletedCalls)
+{
+  ToolManager manager(node);
+  manager.load(config.config(Json::array({group(Json::array({function("first")}))}), 1));
+  const auto handles = manager.submit(response(Json::array({
+        call("first", "blocker", {{"id", "blocker"}, {"wait", true}}),
+        call("first", "queued", {{"id", "queued"}})})));
+  started(1);
+  std::this_thread::sleep_for(20ms);
+  const auto running = manager.getCallStatus("blocker");
+  const auto waiting = manager.getCallStatus("queued");
+  ASSERT_EQ(waiting.at("state"), "waiting");
+  EXPECT_EQ(waiting.at("run_ms"), 0);
+  release("blocker");
+  for (const auto & handle : handles) {
+    EXPECT_TRUE(payload(handle).at("ok"));
+    ASSERT_EQ(handle.completion.wait_for(0ms), std::future_status::ready);
+    const auto terminal = handle.completion.get();
+    EXPECT_EQ(terminal.at("state"), "finished");
+
+    EXPECT_GE(terminal.at("run_ms").get<int>(), 0);
+    EXPECT_GE(terminal.at("wait_ms").get<int>(), 0);
+    EXPECT_FALSE(terminal.contains("output"));
+    EXPECT_TRUE(manager.getCallStatus(handle.call_id).is_null());
+  }
+  EXPECT_GE(handles[0].completion.get().at("run_ms"), running.at("run_ms"));
+  EXPECT_GE(handles[1].completion.get().at("wait_ms"), waiting.at("wait_ms"));
+  const auto frozen = handles[0].completion.get();
+  std::this_thread::sleep_for(5ms);
+  EXPECT_EQ(handles[0].completion.get(), frozen);
+  EXPECT_EQ(manager.getStatus().at("call_count"), 0);
+}
+
 TEST_F(ToolManagerTest, BoundsActiveExecutions)
 {
   ToolManager manager(node);
@@ -233,6 +267,16 @@ TEST_F(ToolManagerTest, TurnsCallErrorsIntoIndividualResultsAndKeepsImagesNative
   EXPECT_EQ(payload(handles[2]).at("code"), "INVALID_ARGUMENTS");
   EXPECT_EQ(payload(handles[3]).at("code"), "TOOL_EXECUTION_FAILED");
   EXPECT_EQ(payload(handles[4]).at("code"), "INVALID_CALL");
+  for (const auto index : {0, 1, 2, 4}) {
+    const auto terminal = handles[index].completion.get();
+    EXPECT_EQ(terminal.at("state"), "failed");
+
+    EXPECT_EQ(terminal.at("run_ms"), 0);
+    EXPECT_EQ(terminal.at("code"), payload(handles[index]).at("code"));
+  }
+
+  EXPECT_EQ(handles[3].completion.get().at("state"), "failed");
+  EXPECT_EQ(handles[3].completion.get().at("message"), "测试执行异常");
   EXPECT_TRUE(payload(handles[5]).at("ok"));
   const auto output = handles[5].result.get();
   EXPECT_EQ(output.at("output").size(), 2u);
@@ -251,6 +295,9 @@ TEST_F(ToolManagerTest, ShutdownReleasesAllCallsWhileExternalFuturesRemainReadab
   manager.shutdown();
   EXPECT_EQ(payload(handles[0]).at("code"), "TOOL_MANAGER_CLOSED");
   EXPECT_EQ(payload(handles[1]).at("code"), "TOOL_MANAGER_CLOSED");
+
+  EXPECT_EQ(handles[1].completion.get().at("run_ms"), 0);
+  EXPECT_EQ(handles[1].completion.get().at("state"), "failed");
   const auto after = manager.submit(response(Json::array({
         call("first", "new"), call("first", "pending")})));
   EXPECT_EQ(payload(after[0]).at("code"), "TOOL_MANAGER_CLOSED");
@@ -289,6 +336,8 @@ TEST_F(ToolManagerTest, CompletedImageResultsBelongToCallerAndDoNotAccumulate)
   }
   // 管理器已经销毁，Agent 持有的结果仍可读取；由调用方释放最后的 future。
   EXPECT_EQ(retained.result.get().at("output")[1].at("image_url"), image_url);
+  EXPECT_EQ(retained.completion.get().at("state"), "finished");
+  EXPECT_FALSE(retained.completion.get().contains("output"));
   retained = {};
 }
 

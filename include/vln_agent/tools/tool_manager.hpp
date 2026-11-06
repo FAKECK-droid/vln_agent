@@ -21,6 +21,7 @@ struct ToolCallHandle
   std::string call_id;                      ///< 模型提供的调用关联标志。
   std::string name;                         ///< 原生 function 名称。
   std::shared_future<Json> result;          ///< 单个 function_call_output 输入项。
+  std::shared_future<Json> completion;      ///< 结果就绪前交付终态元数据，含固定 wait_ms/run_ms。
 };
 
 /** @brief 加载工具插件并按 FIFO、容量及阻塞策略执行调用。 */
@@ -56,7 +57,8 @@ public:
 
   /**
    * @brief 返回等待/运行中调用元数据；已完成或未知 call_id 返回 null。
-   * @note 完成后立即移除内部记录；结果和历史由调用方持有的 future/Agent 管理。
+   * @note 完成后立即移除内部记录；终态请从句柄 completion.get() 获取，不再按 ID 查询。
+   * @note result 就绪时 completion 必定已就绪；两个 future 均由调用方持有，不累计历史。
    */
   Json getCallStatus(const std::string & call_id) const;
 

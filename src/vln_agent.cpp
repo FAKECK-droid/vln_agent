@@ -97,13 +97,16 @@ void VLNAgent::step()
     const auto & output = it->result.get();
     addInputs(output);
     outgoing_tool_outputs_.push_back(output);
+    outgoing_finished_calls_.push_back(it->completion.get());
     it = active_calls_.erase(it);
   }
 
   // 交付用户接口输入，追加到下一轮输入
-  auto inputs = user_interaction_manager_->exchange(outgoing_response_, outgoing_tool_outputs_);
+  auto inputs = user_interaction_manager_->exchange(
+    outgoing_response_, outgoing_tool_outputs_, outgoing_finished_calls_);
   outgoing_response_ = nullptr;
   outgoing_tool_outputs_ = Json::array();
+  outgoing_finished_calls_ = Json::array();
   addInputs(inputs);
 
   // 只登记有新输入的正常请求；限频由 SessionManager 完成，不自动重放失败请求。
@@ -152,6 +155,7 @@ void VLNAgent::shutdown()
   active_calls_.clear();
   outgoing_response_ = nullptr;
   outgoing_tool_outputs_ = Json::array();
+  outgoing_finished_calls_ = Json::array();
 }
 }  // namespace vln_agent
 

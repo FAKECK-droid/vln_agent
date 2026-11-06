@@ -1,6 +1,5 @@
 #include "vln_agent/interaction/user_interaction_manager.hpp"
 
-#include <algorithm>
 #include <cstdint>
 #include <map>
 #include <stdexcept>
@@ -102,14 +101,14 @@ Json displayCopy(const Json & source, bool images)
   return result;
 }
 
-/** @brief 每次交付完整文本；已有客户端按相同位置执行 replace。 */
+/** @brief 每次交付当前位置的完整文本。 */
 void appendText(Json & messages, const std::string & response_id,
                 std::size_t output, std::size_t content, const std::string & type,
                 const std::string & text)
 {
   messages.push_back({
     {"response_id", response_id}, {"output_index", output}, {"content_index", content},
-    {"type", type}, {"op", "replace"}, {"text", text}});
+    {"type", type}, {"text", text}});
 }
 }  // namespace
 
@@ -169,9 +168,13 @@ struct UserInteractionManager::Impl
     }
   }
 
-  std::unique_ptr<Batch> prepare(const Json & response, const Json & outputs)
+  std::unique_ptr<Batch> prepare(
+    const Json & response, const Json & outputs, const Json & finished_calls)
   {
     if (!outputs.is_array()) {throw std::invalid_argument("tool_outputs 必须为数组");}
+    if (!finished_calls.is_array() || finished_calls.size() != outputs.size()) {
+      throw std::invalid_argument("每个 tool_output 必须提供对应的完整 finished_call");
+    }
     if (!response.is_null() && (!response.is_object() ||
       response.at("status") != "completed" || !response.at("output").is_array()))
     {
@@ -211,15 +214,19 @@ struct UserInteractionManager::Impl
     if (wants("tools.status")) {snapshot["tools"]["status"] = tools->getStatus();}
     if (wants("tools.queue")) {snapshot["tools"]["queue"] = tools->getQueueSnapshot();}
 
-    // 完成事件由 Agent 本次传入，不向工具管理器查询已删除的历史记录。
-    Json terminal = Json::array();
-    for (const auto & item : outputs) {
-      if (item.at("type") != "function_call_output") {
-        throw std::invalid_argument("tool_outputs 元素必须为 function_call_output");
+    // 完成结果和终态元数据按同一顺序交付，不回查活动记录或补造终态。
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+      if (outputs[i].at("type") != "function_call_output" ||
+        outputs[i].at("call_id") != finished_calls[i].at("call_id"))
+      {
+        throw std::invalid_argument("tool_outputs 与 finished_calls 必须按 call_id 一一对应");
       }
-      const auto id = item.at("call_id").get<std::string>();
-      if (wants("tools.finished_calls")) {
-        terminal.push_back({{"call_id", id}, {"state", "finished"}});
+      for (const auto * key : {
+          "name", "sequence", "blocking", "state", "wait_ms", "run_ms"})
+      {
+        if (!finished_calls[i].contains(key)) {
+          throw std::invalid_argument(std::string("finished_call 缺少字段: ") + key);
+        }
       }
     }
 
@@ -287,24 +294,23 @@ struct UserInteractionManager::Impl
         packet["response"]["tool_outputs"] = displayCopy(outputs, options.images);
       }
       if (options.has("tools.finished_calls")) {
-        packet["tools"]["finished_calls"] = terminal;
+        packet["tools"]["finished_calls"] = finished_calls;
       }
       if (packet.empty()) {batch->outgoing.push_back(nullptr);}
       else {
         packet["type"] = "interaction_update";
         packet["batch_id"] = next_batch;
         packet["time_stamp"] = stamp;
-        packet["full"] = next_batch == 1;  // 兼容现有客户端：仅首次包标记新基线。
         batch->outgoing.push_back(std::make_shared<const Json>(std::move(packet)));
       }
     }
     return batch;
   }
 
-  Json exchange(const Json & response, const Json & outputs)
+  Json exchange(const Json & response, const Json & outputs, const Json & finished_calls)
   {
     if (!loaded || closed) {throw std::logic_error("交互管理器未装载或已经关闭");}
-    if (!pending) {pending = prepare(response, outputs);}
+    if (!pending) {pending = prepare(response, outputs, finished_calls);}
     for (std::size_t i = 0; i < channels.size(); ++i) {
       const auto & channel = channels[i];
       const auto outgoing = pending->accepted[i] ? nullptr :
@@ -352,9 +358,10 @@ UserInteractionManager::UserInteractionManager(
 : impl_(std::make_unique<Impl>(node, sources)) {}
 UserInteractionManager::~UserInteractionManager() = default;
 void UserInteractionManager::load(const std::string & path) {impl_->load(path);}
-Json UserInteractionManager::exchange(const Json & response, const Json & outputs)
+Json UserInteractionManager::exchange(
+  const Json & response, const Json & outputs, const Json & finished_calls)
 {
-  return impl_->exchange(response, outputs);
+  return impl_->exchange(response, outputs, finished_calls);
 }
 void UserInteractionManager::shutdown() {impl_->shutdown();}
 }  // namespace vln_agent

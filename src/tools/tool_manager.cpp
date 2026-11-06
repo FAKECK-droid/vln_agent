@@ -79,6 +79,7 @@ struct ToolManager::Impl
     ToolCallHandle handle;
     Json arguments;
     std::promise<Json> promise;
+    std::promise<Json> completion_promise;  ///< 终态计时只交付句柄，不留管理器历史。
     std::uint64_t sequence;                 ///< 按提交顺序分配的队列序号。
     bool blocking{false};                   ///< 已知工具是否暂停后续派发。
     Clock::time_point queued_at{Clock::now()};  ///< 登记时刻，计入提交中的参数解析时间。
@@ -182,7 +183,8 @@ struct ToolManager::Impl
         continue;
       }
       auto call = std::make_shared<Call>();
-      call->handle = {call_id, name, call->promise.get_future().share()};
+      call->handle = {call_id, name, call->promise.get_future().share(),
+        call->completion_promise.get_future().share()};
       call->sequence = next_sequence++;
       calls.emplace(call_id, call);
       handles.push_back(call->handle);
@@ -218,9 +220,23 @@ struct ToolManager::Impl
     return handles;
   }
 
-  /** @brief 持锁移除活动调用并交付结果；结果仅由调用方 future 持有。 */
+  /**
+   * @brief 持锁固定终态计时并移除活动记录；元数据先于结果就绪。
+   * @param call 本次调用；未进入执行的拒绝/关闭路径 run_ms 为零。
+   * @param output 原生模型输入项，不添加遥测字段。
+   */
   void complete(const std::shared_ptr<Call> & call, Json output)
   {
+    auto terminal = snapshot(*call, Clock::now());
+    const auto payload = Json::parse(output.at("output")[0].at("text").get<std::string>());
+    const bool failed = payload.contains("ok") && payload.at("ok") == false;
+    terminal["state"] = failed ? "failed" : "finished";
+    if (failed) {
+      for (const auto * key : {"code", "message"}) {
+        if (payload.contains(key)) {terminal[key] = payload.at(key);}
+      }
+    }
+    call->completion_promise.set_value(std::move(terminal));
     ++completed;
     calls.erase(call->handle.call_id);
     call->arguments = nullptr;

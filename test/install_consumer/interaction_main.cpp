@@ -6,7 +6,7 @@ int main(int argc, char ** argv)
   auto node = std::make_shared<rclcpp::Node>("interaction_consumer");
   vln_agent::UserInteractionManager ui(node, {});
   ui.load(argv[1]);
-  ui.exchange();
+  ui.exchange(nullptr, vln_agent::Json::array(), vln_agent::Json::array());
   ui.shutdown();
   rclcpp::shutdown();
 }

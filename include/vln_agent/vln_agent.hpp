@@ -42,6 +42,7 @@ private:
   // 接口失败时原样续交这一批，成功后释放，避免重复执行工具或丢失展示事件。
   Json outgoing_response_;
   Json outgoing_tool_outputs_ = Json::array();
+  Json outgoing_finished_calls_ = Json::array();  ///< 与本批结果一起交付的终态计时。
   bool exchange_pending_{false};
   double loop_hz_{20.0};
 };

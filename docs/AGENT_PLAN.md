@@ -19,7 +19,7 @@ ToolManager 完成即移除活动记录，交互组件成功交付后不再接�
 - 报错、调试、状态等主动消息由其他 ROS 节点或手动上报，交给 EventManager 自主管理。
 - ToolManager 负责函数定义、插件、共享资源、工具执行队列和逐调用 future；与 UserInteractionManager、SessionManager、EventManager 解耦。
 - 模型请求的拼装、两份输入缓冲和最高频率调度由 SessionManager 管理；EventManager 在第五部分规划，VLNAgent 主流程本次不展开。
-- UserInteractionManager 统一负责用户输入输出，加载交互插件并通过 weak_ptr 查询其他组件；exchange() 直接合并插件返回的原生输入数组，并按各插件配置传递共享的增量汇总 JSON。它不接收机器人主动消息，不消费 Agent 的完整 response 或工具 future。
+- UserInteractionManager 统一负责用户输入输出，加载交互插件并通过 weak_ptr 查询其他组件；exchange() 直接合并插件返回的原生输入数组，并按各插件配置传递共享的完整当前快照。它不接收机器人主动消息，不消费 Agent 的完整 response 或工具 future。
 
 `source` 和 `time_stamp` 是标准业务输入仅有的两个公共必填字段；`pose` 等都是可选业务字段，不是 Responses API 的顶层参数。模型、连接、上下文与缓存配置统一放入全局 YAML，由 SessionManager 读取。
 
@@ -509,7 +509,8 @@ struct ToolCallHandle
 {
   std::string call_id;
   std::string name;
-  std::shared_future<Json> result; // 单个 function_call_output 输入项
+  std::shared_future<Json> result;     // 单个 function_call_output 输入项
+  std::shared_future<Json> completion; // 固定终态元数据，先于 result 就绪
 };
 ```
 
@@ -549,7 +550,7 @@ public:
 | `getTools()` | 取得模型所需的原生 `tools` 数组 |
 | `getStatus()` | 查询装载/关闭状态、执行容量、等待/运行/完成数量和阻塞标志 |
 | `getQueueSnapshot()` | 一次取得 waiting/running 调用数组；含 call_id/name/sequence/blocking/state/wait_ms/run_ms，不含参数和结果 |
-| `getCallStatus(call_id)` | 查询等待/运行中的调用元数据；完成或未知 ID 返回 null，完成结果仅由调用方 future 持有 |
+| `getCallStatus(call_id)` | 查询等待/运行中的调用元数据；完成或未知 ID 返回 null；结果和固定终态计时分别由句柄 result/completion 持有 |
 | `submit()` | 提交完整模型响应，立即取得每个函数调用独立的 handle/future |
 | `shutdown()` | 停止接收、结束工作、完成剩余 promise 并释放资源 |
 
@@ -896,8 +897,9 @@ public:
 
   void load(const std::string & global_yaml_path);
 
-  Json exchange(const Json & new_response = nullptr,
-                const Json & tool_outputs = Json::array());
+  Json exchange(const Json & new_response,
+                const Json & tool_outputs,
+                const Json & finished_calls);
 
   void shutdown();
 };
@@ -909,7 +911,7 @@ public:
 | load() | 装载配置与接口插件；ToolManager 已完成装载，工具定义按需只查询一次 |
 | new_response | 本次新增的 completed 完整响应；无新增传 null，成功后不得重复投递 |
 | tool_outputs | 本次新增的 function_call_output 数组，来自外部已就绪 future；成功后不得重复投递 |
-| exchange() | 同步查询、传递增量汇总数据，直接合并各插件返回的原生 API 输入数组；无输入返回 [] |
+| exchange() | 同步查询、传递完整当前快照，直接合并各插件返回的原生 API 输入数组；无输入返回 [] |
 | shutdown() | 关闭接口插件并释放加载器；不关闭其他组件或外部 ROS 节点 |
 
 response.output 中的 function_call 是模型发出的调用；真正执行结果在 ToolCallHandle::result 中，由外部作为 tool_outputs 传入。管理器不调用 takeResponse()、submit() 或 request()，不等待 future。EventManager 的接口见第五部分；交互管理器不调用 takeEvents()，当前不增加机器事件的界面转发配置。
@@ -955,7 +957,7 @@ public:
 ]
 ```
 
-调用方可直接使用 session.addInputs(interaction.exchange(new_response, tool_outputs))；是否发起模型请求仍由外部决定，本次不设计 Agent 主循环。图片按原生 input_image 项提供，插件不再把 instruction 转成另一种内部输入记录。
+调用方可直接使用 session.addInputs(interaction.exchange(new_response, tool_outputs, finished_calls))；是否发起模型请求仍由外部决定，本次不设计 Agent 主循环。图片按原生 input_image 项提供，插件不再把 instruction 转成另一种内部输入记录。
 
 首版所有 exchange() 串行执行，不设计交互管理器或接口插件的工作线程、定时循环。ROS 回调与 exchange() 在同一外部线程串行执行；网络插件非阻塞地推进收发，不等待用户或模型。协议解析、JSON 序列化属于插件，业务输入结构不在管理器内部转换。
 
@@ -975,10 +977,14 @@ public:
 | 模型输出 | 从 new_response 取得 id/status、message/function_call，不再消费另一份 response |
 | 工具管理状态 | ToolManager::getStatus() |
 | 等待及执行中的工具 | ToolManager::getQueueSnapshot() 一次取得 waiting/running，不逐个查同一批调用 |
-| 本次调用完成通知 | 从本次 tool_outputs 生成 {call_id, state: "finished"}，不查询已经释放的工具历史 |
+| 本次调用完成通知 | Agent 从句柄 completion 取得并作为 exchange() 第三个参数传入，含固定 wait_ms/run_ms、finished/failed 及错误详情，不回查活动记录 |
 | 工具执行结果 | 使用 tool_outputs，不从 request.input 反查结果，不额外获取 future |
 
-getCallStatus() 只返回活动调用；完成后为 null。完成通知仅表示函数返回，业务成功与否从结果中的 ok 判断；物理导航仍可能 running。需要历史终态元数据时由 Agent 保存。
+getCallStatus() 只返回活动调用，完成后为 null；result 就绪时 completion 必定已就绪。
+completion 包含 call_id/name/sequence/blocking/state/wait_ms/run_ms，失败还含 code/message；
+state 根据工具结果的 ok 为 finished 或 failed，物理导航仍可能 running。
+wait_ms 从登记计至开始执行（未执行时计至拒绝/关闭），run_ms 从开始执行计至完成；均使用 steady_clock 的整数毫秒。
+固定终态只由调用方句柄及待交付批次持有，管理器不累计历史，也不修改模型输入项。
 
 #### 19.2 共享待发送数据，全部接收后再标记
 
@@ -1007,16 +1013,15 @@ getCallStatus() 只返回活动调用；完成后为 null。完成通知仅表�
 | tools | definitions、status、queue、finished_calls |
 | session | request_status、context_status |
 
-未启用字段省略；启用字段真实值为 null/[] 时保留。首次批次 full 为 true，之后 full 为 false；状态按键替换，未出现的键保持原值，显式 null 表示清除。batch_id 标识本批，time_stamp 记录该批生成时刻。
+未启用字段省略；启用字段真实值为 null/[] 时保留。每批都是已启用字段的完整当前快照，不使用 full/op 标志。状态按键替换，显式 null 表示清除；batch_id 标识本批，time_stamp 记录生成时刻。
 
-工具定义只独立发送一次。request 展示副本去掉重复的 tools，启用 definitions 的界面从缓存还原；未启用者不会从 request 间接收到定义。原始模型请求和 getCurrentRequest() 的返回不变。
+工具定义缓存一次，每批独立发送。request 展示副本去掉重复的 tools，启用 definitions 的界面接收独立定义；未启用者不会从 request 间接收到定义。原始模型请求和 getCurrentRequest() 的返回不变。
 
 ```json
 {
   "type": "interaction_update",
   "batch_id": 2,
   "time_stamp": "2026-10-21T06:00:00.000Z",
-  "full": false,
   "request": null,
   "response": {
     "id": "resp_001",
@@ -1027,7 +1032,6 @@ getCallStatus() 只返回活动调用；完成后为 null。完成通知仅表�
         "output_index": 0,
         "content_index": 0,
         "type": "output_text",
-        "op": "append",
         "text": "正在前往门口。"
       }
     ],
@@ -1056,11 +1060,11 @@ getCallStatus() 只返回活动调用；完成后为 null。完成通知仅表�
 Agent 负责完成事件的去重和所有历史。组件只保留当前展示状态、当前流式文字及一个尚未交付的批次。
 
 - new_response/tool_outputs 成功交付后，下一次无新增事件时传 null/[]。接口失败时保留当前批次，使用相同参数重试，已接收插件不重复接收。
-- 对已选择字段比较当前状态，只传变化；批次只记录本次差量，不复制整个 ViewState 或所有旧调用 ID。
-- 流式和最终 message 按 response_id/output_index/content_index 比较当前文字：相同内容不传，新后缀用 append，校准时用 replace。
-- 完整响应交付后清空对应文本位置；不再保留已完成文本或响应/调用/结果历史集合。
+- 每批发送已选择字段的完整当前状态，不保存比较基线或旧调用 ID。
+- 流式和最终 message 均按 response_id/output_index/content_index 发送当前位置全文，不计算文本后缀。
+- 完整响应交付后不保留已完成文本或响应/调用/结果历史集合。
 - response.stream 只传 response_id/state；文字放在 messages。usage 只取 session.context_status。
-- tools.finished_calls 只通知本次 tool_outputs 的 call_id/state；完整历史和终态元数据由 Agent 保存。
+- tools.finished_calls 随本次 tool_outputs 通知句柄 completion 的终态元数据；完整历史由调用方决定是否保存。exchange() 显式接收三个参数，每个结果必须提供匹配的完整完成元数据。
 - 不将 reasoning/compaction 项变成展示消息；工具结果保持原生 function_call_output 结构与 UTC 时间戳。
 - 在途请求查询仍使用 getCurrentRequest() 的值副本，共享快照优化暂不实施。
 

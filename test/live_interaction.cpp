@@ -141,7 +141,7 @@ int main(int argc, char ** argv)
     while (received.empty()) {
       require(std::chrono::steady_clock::now() < input_deadline, "ROS 原生用户输入接收超时");
       executor.spin_some();
-      received = ui.exchange();
+      received = ui.exchange(nullptr, Json::array(), Json::array());
       std::this_thread::sleep_for(20ms);
     }
     require(received == Json::parse(input_message.data), "原生输入被交互组件改写");
@@ -156,7 +156,7 @@ int main(int argc, char ** argv)
         const auto request = session->getCurrentRequest();
         if (!request.is_null()) {sent_request = request;}
         executor.spin_some();
-        ui.exchange();
+        ui.exchange(nullptr, Json::array(), Json::array());
         const auto response = session->takeResponse();
         if (!response.is_null()) {
           // 请求体没有认证头，保留原始往返便于定位代理或模型返回异常。
@@ -173,7 +173,7 @@ int main(int argc, char ** argv)
               "后续请求重复发送了初始口令");
           }
           latest = response;
-          ui.exchange(latest);
+          ui.exchange(latest, Json::array(), Json::array());
           executor.spin_some();
           return response;
         }
@@ -187,24 +187,28 @@ int main(int argc, char ** argv)
       throw std::runtime_error("真实 API 等待超时");
     };
     const auto first = turn(received);
-    turns.push_back(Json{{"response", first}});
+    turns.push_back(Json{{"response", first}, {"tool_outputs", Json::array()},
+      {"finished_calls", Json::array()}});
     const auto handles = tools->submit(first);
     require(handles.size() == 1, "首轮没有生成唯一测试函数调用");
     require(handles[0].name == "interaction_test_echo", "出现意外工具调用");
     require(handles[0].result.wait_for(5s) == std::future_status::ready, "测试函数未及时结束");
     displayed_outputs.push_back(handles[0].result.get());
-    ui.exchange(nullptr, displayed_outputs);
+    const auto finished_calls = Json::array({handles[0].completion.get()});
+    ui.exchange(nullptr, displayed_outputs, finished_calls);
     const auto second = turn(displayed_outputs);
-    turns.push_back(Json{{"response", second}, {"tool_outputs", displayed_outputs}});
+    turns.push_back(Json{{"response", second}, {"tool_outputs", displayed_outputs},
+      {"finished_calls", finished_calls}});
     require(textOf(second).find(nonce) != std::string::npos, "工具结果续接后丢失初始上下文");
     require(textOf(second).find("TOOL_OK") != std::string::npos, "未确认工具结果");
     const auto third = turn(Json::array({userInput("只回复首轮的随机口令，不调用工具。")}));
-    turns.push_back(Json{{"response", third}});
+    turns.push_back(Json{{"response", third}, {"tool_outputs", Json::array()},
+      {"finished_calls", Json::array()}});
     require(textOf(third).find(nonce) != std::string::npos, "第三轮增量输入丢失上下文");
 
     // Agent 只交付新增事件；空轮询不应再次产生已经交付的内容。
     for (int i = 0; i < 3; ++i) {
-      ui.exchange();
+      ui.exchange(nullptr, Json::array(), Json::array());
       executor.spin_some();
     }
     std::map<std::string, std::string> displayed_text;
@@ -218,8 +222,7 @@ int main(int argc, char ** argv)
           const auto key = part.at("response_id").get<std::string>() + "/" +
             std::to_string(part.at("output_index").get<std::size_t>()) + "/" +
             std::to_string(part.at("content_index").get<std::size_t>());
-          if (part.at("op") == "replace") {displayed_text[key] = part.at("text");}
-          else {displayed_text[key] += part.at("text").get<std::string>();}
+          displayed_text[key] = part.at("text");
         }
       }
       if (response.contains("function_calls")) {

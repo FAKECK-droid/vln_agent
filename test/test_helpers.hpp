@@ -68,6 +68,13 @@ inline Json response(const Json & items)
   return {{"status", "completed"}, {"output", items}};
 }
 
+/** @brief 完整新版终态测试数据；不作为运行时缺失元数据的替代。 */
+inline Json finishedCall(const std::string & id, const std::string & name = "echo")
+{
+  return {{"call_id", id}, {"name", name}, {"sequence", 0}, {"blocking", false},
+    {"state", "finished"}, {"wait_ms", 0}, {"run_ms", 0}};
+}
+
 /** @brief 验证逐调用 API 外壳并取出业务结果。 */
 inline Json payload(const ToolCallHandle & handle)
 {

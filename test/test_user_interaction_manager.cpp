@@ -53,7 +53,7 @@ TEST_F(InteractionTest, SharesImmutableBatchAndForwardsNativeInputsWithoutWrappi
   interfaceTraces()["a"].inputs.push_back(input);
   interfaceTraces()["b"].inputs.push_back(input);
   const auto response = model("r1", "你好");
-  EXPECT_EQ(ui.exchange(response), Json::array({input, input}));
+  EXPECT_EQ(ui.exchange(response, Json::array(), Json::array()), Json::array({input, input}));
   const auto & a = interfaceTraces().at("a").packets;
   const auto & b = interfaceTraces().at("b").packets;
   ASSERT_EQ(a.size(), 1u);
@@ -62,18 +62,18 @@ TEST_F(InteractionTest, SharesImmutableBatchAndForwardsNativeInputsWithoutWrappi
   EXPECT_EQ(a[0]->at("response").at("function_calls").size(), 1u);
   EXPECT_TRUE(std::regex_match(a[0]->at("time_stamp").get<std::string>(),
     std::regex(R"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)")));
-  EXPECT_TRUE(ui.exchange().empty());
+  EXPECT_TRUE(ui.exchange(nullptr, Json::array(), Json::array()).empty());
   EXPECT_EQ(a.size(), 2u);
   EXPECT_EQ(b.size(), 2u);
   EXPECT_TRUE(a[1]->at("response").at("messages").empty());
   EXPECT_TRUE(a[1]->at("response").at("function_calls").empty());
-  EXPECT_FALSE(a[1]->at("full").get<bool>());
+  EXPECT_FALSE(a[1]->contains("full"));
   EXPECT_EQ(interfaceTraces().at("a").polls, 2);
   // 组件不保存已完成 ID；是否投递旧事件由 Agent 决定。
-  ui.exchange(response);
+  ui.exchange(response, Json::array(), Json::array());
   EXPECT_EQ(a.size(), 3u);
   EXPECT_EQ(a[2]->at("response").at("messages")[0].at("text"), "你好");
-  EXPECT_EQ(a[2]->at("response").at("messages")[0].at("op"), "replace");
+  EXPECT_FALSE(a[2]->at("response").at("messages")[0].contains("op"));
 }
 
 TEST_F(InteractionTest, AppliesPerChannelSelectionAndImageFilteringBeforeDelivery)
@@ -85,7 +85,7 @@ TEST_F(InteractionTest, AppliesPerChannelSelectionAndImageFilteringBeforeDeliver
   const Json image{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}};
   const auto result = utils::functionCallOutput("c1",
     Json{{"ok", true}, {"time_stamp", utils::utcNow()}}, {image});
-  ui.exchange(nullptr, Json::array({result}));
+  ui.exchange(nullptr, Json::array({result}), Json::array({finishedCall("c1")}));
   const auto & hidden = *interfaceTraces().at("hidden").packets.at(0);
   const auto & shown = *interfaceTraces().at("shown").packets.at(0);
   EXPECT_TRUE(hidden.at("response").at("tool_outputs")[0].at("output")[1].at("omitted"));
@@ -96,7 +96,7 @@ TEST_F(InteractionTest, AppliesPerChannelSelectionAndImageFilteringBeforeDeliver
   std::weak_ptr<const Json> delivered = interfaceTraces().at("shown").packets[0];
   interfaceTraces().at("shown").packets.clear();
   EXPECT_TRUE(delivered.expired());
-  ui.exchange();
+  ui.exchange(nullptr, Json::array(), Json::array());
   EXPECT_EQ(interfaceTraces().at("hidden").packets.size(), 2u);
   EXPECT_TRUE(interfaceTraces().at("hidden").packets.back()->at("response").at("tool_outputs").empty());
 }
@@ -110,15 +110,15 @@ TEST_F(InteractionTest, CommitsOnlyAfterAllChannelsAcceptAndDoesNotResendToEarli
   interfaceTraces()["b"].fail_next = true;
   interfaceTraces()["a"].inputs.push_back(message("buffered"));
   const auto response = model("r_retry", "只发一次");
-  EXPECT_THROW(ui.exchange(response), std::runtime_error);
+  EXPECT_THROW(ui.exchange(response, Json::array(), Json::array()), std::runtime_error);
   EXPECT_EQ(interfaceTraces().at("a").packets.size(), 1u);
   EXPECT_TRUE(interfaceTraces().at("c").packets.empty());
-  EXPECT_EQ(ui.exchange(response), Json::array({message("buffered")}));
+  EXPECT_EQ(ui.exchange(response, Json::array(), Json::array()), Json::array({message("buffered")}));
   EXPECT_EQ(interfaceTraces().at("a").packets.size(), 1u);
   const auto first = interfaceTraces().at("a").packets[0];
   EXPECT_EQ(first.get(), interfaceTraces().at("b").packets[0].get());
   EXPECT_EQ(first.get(), interfaceTraces().at("c").packets[0].get());
-  ui.exchange();
+  ui.exchange(nullptr, Json::array(), Json::array());
   EXPECT_EQ(interfaceTraces().at("c").packets.size(), 2u);
 }
 
@@ -141,30 +141,29 @@ TEST_F(InteractionTest, StreamRepeatsWholeTextAndFinalReplacesTheSamePosition)
   session->addInputs(message("start"));
   session->request();
   waitFor([&] {return !session->getStreamSnapshot().at("content").empty();});
-  ui.exchange();
+  ui.exchange(nullptr, Json::array(), Json::array());
   EXPECT_EQ(interfaceTraces().at("live").packets[0]->at("response").at("messages")[0].at("text"),
     "你好");
   EXPECT_TRUE(interfaceTraces().at("final").packets[0]->at("response").at("messages").empty());
-  ui.exchange();
+  ui.exchange(nullptr, Json::array(), Json::array());
   EXPECT_EQ(interfaceTraces().at("live").packets.size(), 2u);
   EXPECT_EQ(interfaceTraces().at("live").packets[1]->at("response").at("messages")[0].at("text"),
     "你好");
-  EXPECT_EQ(interfaceTraces().at("live").packets[1]->at("response").at("messages")[0].at("op"),
-    "replace");
+  EXPECT_FALSE(interfaceTraces().at("live").packets[1]->at("response").at("messages")[0].contains("op"));
   server.release(0);
   waitFor([&] {return session->getRequestStatus().at("response_ready").get<bool>();});
   const auto consumed = session->takeResponse();
   EXPECT_EQ(consumed, final);
-  ui.exchange(consumed);
+  ui.exchange(consumed, Json::array(), Json::array());
   const auto & live = interfaceTraces().at("live").packets;
   ASSERT_EQ(live.size(), 3u);
   EXPECT_EQ(live[2]->at("response").at("messages")[0].at("text"), "你好世界");
-  EXPECT_EQ(live[2]->at("response").at("messages")[0].at("op"), "replace");
+  EXPECT_FALSE(live[2]->at("response").at("messages")[0].contains("op"));
   EXPECT_EQ(interfaceTraces().at("final").packets[2]->at("response").at("messages")[0].at("text"),
     "你好世界");
   // 响应已交给 Agent，会话和交互层均不再保留它的流式正文。
   EXPECT_TRUE(session->getStreamSnapshot().at("content").empty());
-  ui.exchange();
+  ui.exchange(nullptr, Json::array(), Json::array());
   EXPECT_EQ(live.size(), 4u);
   EXPECT_TRUE(live.back()->at("response").at("messages").empty());
   Json packets = Json::array();
@@ -193,7 +192,7 @@ TEST_F(InteractionTest, QueriesCurrentRequestOnlyAndPreservesResponseSlotAndTool
   ui.load(config(Json::array({channel("status", Json{
     {"request", true}, {"tools", {{"definitions", true}, {"status", true}, {"queue", true}}},
     {"session", {{"request_status", true}, {"context_status", true}}}})})));
-  ui.exchange();
+  ui.exchange(nullptr, Json::array(), Json::array());
   const auto & packet = *interfaceTraces().at("status").packets[0];
   EXPECT_FALSE(packet.at("request").contains("tools"));
   EXPECT_TRUE(packet.at("tools").at("definitions").empty());
@@ -224,20 +223,42 @@ TEST_F(InteractionTest, CompletedToolStatusAndOutputDoNotConsumeSharedFuture)
   ASSERT_EQ(handles.size(), 1u);
   EXPECT_TRUE(payload(handles[0]).at("ok"));
   const auto output = handles[0].result.get();
-  ui.exchange(response, Json::array({output}));
+  const auto completion = handles[0].completion.get();
+  ui.exchange(response, Json::array({output}), Json::array({completion}));
   const auto & packet = *interfaceTraces().at("tools").packets.at(0);
-  EXPECT_EQ(packet.at("tools").at("finished_calls")[0].at("state"), "finished");
+  EXPECT_EQ(packet.at("tools").at("finished_calls")[0], completion);
+  EXPECT_GE(completion.at("run_ms").get<int>(), 0);
+  EXPECT_GE(completion.at("wait_ms").get<int>(), 0);
   EXPECT_EQ(packet.at("response").at("tool_outputs")[0], output);
   EXPECT_TRUE(Json::parse(output.at("output")[0].at("text").get<std::string>()).contains("time_stamp"));
   EXPECT_EQ(handles[0].result.get(), output);
   EXPECT_TRUE(tools->getCallStatus(handles[0].call_id).is_null());
-  ui.exchange();
+  ui.exchange(nullptr, Json::array(), Json::array());
   EXPECT_EQ(interfaceTraces().at("tools").packets.size(), 2u);
   const auto & idle = *interfaceTraces().at("tools").packets.back();
   EXPECT_EQ(idle.at("tools").at("definitions"), packet.at("tools").at("definitions"));
   EXPECT_TRUE(idle.at("tools").at("finished_calls").empty());
   EXPECT_TRUE(idle.at("response").at("function_calls").empty());
   EXPECT_TRUE(idle.at("response").at("tool_outputs").empty());
+}
+
+TEST_F(InteractionTest, RequiresCompleteMatchingTerminalMetadataForEveryToolOutput)
+{
+  UserInteractionManager ui(node, {});
+  ui.load(config(Json::array({channel("tools", Json{
+    {"response", {{"tool_outputs", true}}}, {"tools", {{"finished_calls", true}}}})})));
+  const auto outputs = Json::array({utils::functionCallOutput("c1", Json{{"ok", true}}, {})});
+  EXPECT_THROW(ui.exchange(nullptr, outputs, Json::array()), std::invalid_argument);
+  EXPECT_THROW(ui.exchange(nullptr, outputs, Json::array({finishedCall("other")})),
+    std::invalid_argument);
+  auto missing_timing = finishedCall("c1");
+  missing_timing.erase("run_ms");
+  EXPECT_THROW(ui.exchange(nullptr, outputs, Json::array({missing_timing})),
+    std::invalid_argument);
+  EXPECT_TRUE(interfaceTraces().at("tools").packets.empty());
+  ui.exchange(nullptr, outputs, Json::array({finishedCall("c1")}));
+  EXPECT_EQ(interfaceTraces().at("tools").packets[0]->at("tools").at("finished_calls")[0],
+    finishedCall("c1"));
 }
 
 TEST_F(InteractionTest, RollbackClosesInitializedPluginsAndExpiredDependenciesAreReported)
@@ -248,10 +269,10 @@ TEST_F(InteractionTest, RollbackClosesInitializedPluginsAndExpiredDependenciesAr
   EXPECT_THROW(ui.load(config(Json::array({bad}))), std::runtime_error);
   EXPECT_EQ(interfaceTraces().at("bad").shutdowns, 1);
   ui.load(config(Json::array({channel("needs-session", Json{{"request", true}})})));
-  EXPECT_THROW(ui.exchange(), std::logic_error);
+  EXPECT_THROW(ui.exchange(nullptr, Json::array(), Json::array()), std::logic_error);
   ui.shutdown();
   ui.shutdown();
-  EXPECT_THROW(ui.exchange(), std::logic_error);
+  EXPECT_THROW(ui.exchange(nullptr, Json::array(), Json::array()), std::logic_error);
 }
 
 TEST_F(InteractionTest, RosTopicPluginPublishesOneJsonAndReturnsReceivedNativeArray)
@@ -273,7 +294,7 @@ TEST_F(InteractionTest, RosTopicPluginPublishesOneJsonAndReturnsReceivedNativeAr
     rclcpp::spin_some(node);
     return publisher->get_subscription_count() > 0 && subscription->get_publisher_count() > 0;
   }));
-  ui.exchange(model("ros1", "已接收"));
+  ui.exchange(model("ros1", "已接收"), Json::array(), Json::array());
   ASSERT_TRUE(eventually([&] {rclcpp::spin_some(node); return !received.is_null();}));
   EXPECT_EQ(received.at("response").at("messages")[0].at("text"), "已接收");
   const auto inputs = Json::array({message(
@@ -284,11 +305,11 @@ TEST_F(InteractionTest, RosTopicPluginPublishesOneJsonAndReturnsReceivedNativeAr
   Json actual = Json::array();
   ASSERT_TRUE(eventually([&] {
     rclcpp::spin_some(node);
-    actual = ui.exchange();
+    actual = ui.exchange(nullptr, Json::array(), Json::array());
     return !actual.empty();
   }));
   EXPECT_EQ(actual, inputs);
-  EXPECT_TRUE(ui.exchange().empty());
+  EXPECT_TRUE(ui.exchange(nullptr, Json::array(), Json::array()).empty());
 }
 
 TEST_F(InteractionTest, LateRosSubscriberReceivesCompleteToolsAndStateOnNextExchange)
@@ -307,7 +328,7 @@ TEST_F(InteractionTest, LateRosSubscriberReceivesCompleteToolsAndStateOnNextExch
     {"plugin", "vln_agent/RosTopicInterface"},
     {"transmit", {{"tools", {{"definitions", true}, {"status", true}, {"queue", true}}}}},
     {"settings", {{"send_topic", send_topic}, {"receive_topic", "/interaction_late/input"}}}}})));
-  ui.exchange();  // 首次发布时尚无客户端；后接入者依靠下一帧完整快照。
+  ui.exchange(nullptr, Json::array(), Json::array());  // 首次发布时尚无客户端；后接入者依靠下一帧完整快照。
   Json received;
   auto subscription = node->create_subscription<std_msgs::msg::String>(
     send_topic, 10, [&](std_msgs::msg::String::ConstSharedPtr message) {
@@ -317,7 +338,7 @@ TEST_F(InteractionTest, LateRosSubscriberReceivesCompleteToolsAndStateOnNextExch
     rclcpp::spin_some(node);
     return subscription->get_publisher_count() > 0;
   }));
-  ui.exchange();
+  ui.exchange(nullptr, Json::array(), Json::array());
   ASSERT_TRUE(eventually([&] {rclcpp::spin_some(node); return !received.is_null();}));
   const auto & snapshot = received.at("tools");
   ASSERT_EQ(snapshot.at("definitions").size(), 1u);
@@ -325,7 +346,7 @@ TEST_F(InteractionTest, LateRosSubscriberReceivesCompleteToolsAndStateOnNextExch
   EXPECT_EQ(snapshot.at("status").at("state"), "ready");
   EXPECT_TRUE(snapshot.at("queue").at("waiting").empty());
   EXPECT_TRUE(snapshot.at("queue").at("running").empty());
-  EXPECT_FALSE(received.at("full").get<bool>());
+  EXPECT_FALSE(received.contains("full"));
 }
 
 TEST_F(InteractionTest, ReplaysRecordedApiResponsesWithoutNetwork)
@@ -340,9 +361,9 @@ TEST_F(InteractionTest, ReplaysRecordedApiResponsesWithoutNetwork)
   ui.load(config(Json::array({channel("live-api", Json{{"response",
     {{"messages", true}, {"function_calls", true}, {"tool_outputs", true}}}})})));
   for (const auto & turn : fixture.at("turns")) {
-    ui.exchange(turn.at("response"), turn.value("tool_outputs", Json::array()));
+    ui.exchange(turn.at("response"), turn.at("tool_outputs"), turn.at("finished_calls"));
     const auto count = interfaceTraces().at("live-api").packets.size();
-    ui.exchange();
+    ui.exchange(nullptr, Json::array(), Json::array());
     EXPECT_EQ(interfaceTraces().at("live-api").packets.size(), count + 1);
   }
   std::string text;
