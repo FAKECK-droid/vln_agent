@@ -1,0 +1,7 @@
+# 与模型完整响应相同的 JSON 对象：status=completed，output 包含 function_call。
+string request_json
+---
+# 原生 function_call_output 元素数组，可直接加入 Responses input。
+string outputs_json
+# 仅请求解析/提交异常；工具自身执行失败仍保留在 outputs_json 中。
+string error

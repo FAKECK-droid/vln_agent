@@ -351,6 +351,84 @@ shutdown() 先禁止新调度，再关闭传输并回收两个线程，可重复
 - 配置与输入类型检查、重复 ID 规则、关闭/连接代号检查、共享资源类型检查及 TLS 验证保留。
   它们分别约束外部输入、并发生命周期、类型转换和网络连接，不属于重复状态判断。
 
+### 机器人调用工具：ToolCall 服务
+
+ToolManager.load() 同时提供 vln_agent/srv/ToolCall，默认 /vln/tool_call，
+可用 tool_manager.service_name 改名。服务与模型入口复用同一个 submit()、
+FIFO 队列、线程池、插件实例和共享资源；机器人获取的 environment_id
+可直接用于后续模型发起的像素导航。
+
+服务定义：
+
+```text
+string request_json
+---
+string outputs_json
+string error
+```
+
+request_json 是与 submit(response) 相同的完整响应对象，最小示例：
+
+```json
+{
+  "status": "completed",
+  "output": [
+    {
+      "type": "function_call",
+      "call_id": "robot_context_1",
+      "name": "get_surroundings",
+      "arguments": "{\"costmap\":\"local\",\"range_m\":10.0}"
+    }
+  ]
+}
+```
+
+arguments 仍然是 JSON 字符串。一个请求可包含多个 function_call，
+outputs_json 返回按原调用顺序排列的 function_call_output 数组，
+直接来自各 ToolCallHandle.result；图片、images 元数据和公共字段均保持原格式。
+
+error 仅表示外层请求 JSON 的解析/提交异常，此时 outputs_json 为 []。
+未知工具、参数错误、工具执行失败等，仍通过各数组元素中的原有工具结果表达。
+没有函数调用时正常返回 []。调用方应给机器人请求使用独立的 call_id，
+例如 robot_ 前缀；同一个活动 ID 会与模型入口共享已有 future。
+
+服务回调独占一个回调组和线程，等待整批 future 时不会阻塞 Agent 的宿主执行器。
+服务请求之间串行受理；请求内部的工具执行仍遵循原有 blocking 和并发容量配置，
+模型通过 submit() 提交调用和逐项收取结果的行为不变。
+关闭时先结束工具调用、完成 promise，再停止服务线程，避免等待环。
+服务不调用 SessionManager，不自动把机器人调用结果加入模型输入，也不保存调用历史。
+
+Python 客户端示例（先 source 工作空间）：
+
+```python
+import json
+import rclpy
+from vln_agent.srv import ToolCall
+
+rclpy.init()
+node = rclpy.create_node("robot_tool_client")
+client = node.create_client(ToolCall, "/vln/tool_call")
+client.wait_for_service()
+request = ToolCall.Request()
+request.request_json = json.dumps({
+    "status": "completed",
+    "output": [{
+        "type": "function_call",
+        "call_id": "robot_context_1",
+        "name": "get_surroundings",
+        "arguments": json.dumps({"costmap": "local", "range_m": 10.0})
+    }]
+})
+future = client.call_async(request)
+rclpy.spin_until_future_complete(node, future)
+reply = future.result()
+if reply.error:
+    raise RuntimeError(reply.error)
+outputs = json.loads(reply.outputs_json)
+node.destroy_node()
+rclpy.shutdown()
+```
+
 ## 构建与测试
 
 在开发机通过 `ssh jetson-orin` 执行：

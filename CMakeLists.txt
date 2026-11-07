@@ -2,6 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 project(vln_agent)
 
 find_package(ament_cmake REQUIRED)
+find_package(rosidl_default_generators REQUIRED)
 find_package(ament_index_cpp REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(rclcpp_action REQUIRED)
@@ -19,6 +20,9 @@ find_package(rgbd_image_queue REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
 find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
+
+rosidl_generate_interfaces(${PROJECT_NAME} "srv/ToolCall.srv")
+rosidl_get_typesupport_target(tool_call_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
 add_library(vln_agent_utils SHARED
   src/utils/time.cpp
@@ -49,6 +53,7 @@ target_include_directories(vln_agent_tools PUBLIC
 ament_target_dependencies(vln_agent_tools PUBLIC rclcpp pluginlib)
 target_link_libraries(vln_agent_tools PUBLIC
   vln_agent_utils Threads::Threads)
+target_link_libraries(vln_agent_tools PRIVATE "${tool_call_typesupport}")
 
 add_library(vln_agent_navigation_tools SHARED
   plugins/tools/navigation/navigation_runtime.cpp
@@ -119,8 +124,16 @@ if(BUILD_TESTING)
   target_link_libraries(test_tool_manager vln_agent_tools vln_agent_test_tools)
   ament_target_dependencies(test_tool_manager ament_index_cpp)
 
+  ament_add_gtest(test_tool_call_service test/test_tool_call_service.cpp TIMEOUT 30)
+  target_link_libraries(test_tool_call_service
+    vln_agent_tools vln_agent_test_tools "${tool_call_typesupport}")
+  target_compile_definitions(test_tool_call_service PRIVATE
+    VLN_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+  set_tests_properties(test_tool_call_service PROPERTIES ENVIRONMENT
+    "ROS_DOMAIN_ID=177;ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/ros-logs")
+
   ament_add_gtest(test_ros_tools test/test_ros_tools.cpp TIMEOUT 50)
-  target_link_libraries(test_ros_tools vln_agent_tools ${OpenCV_LIBS})
+  target_link_libraries(test_ros_tools vln_agent_tools ${OpenCV_LIBS} "${tool_call_typesupport}")
   target_include_directories(test_ros_tools PRIVATE ${OpenCV_INCLUDE_DIRS})
   ament_target_dependencies(test_ros_tools
     rclcpp_action nav2_msgs action_msgs sensor_msgs rgbd_image_queue ament_index_cpp tf2_ros tf2_geometry_msgs)
@@ -177,6 +190,6 @@ if(BUILD_TESTING)
 endif()
 
 ament_export_targets(export_vln_agent_tools HAS_LIBRARY_TARGET)
-ament_export_dependencies(rclcpp std_msgs pluginlib nlohmann_json yaml-cpp Threads rgbd_image_queue tf2_ros tf2_geometry_msgs OpenCV)
+ament_export_dependencies(rclcpp std_msgs pluginlib nlohmann_json yaml-cpp Threads rgbd_image_queue tf2_ros tf2_geometry_msgs OpenCV rosidl_default_runtime)
 ament_package()
 

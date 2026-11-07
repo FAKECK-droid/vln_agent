@@ -564,6 +564,11 @@ public:
 | `submit()` | 提交完整模型响应，立即取得每个函数调用独立的 handle/future |
 | `shutdown()` | 停止接收、结束工作、完成剩余 promise 并释放资源 |
 
+ToolManager 同时提供 vln_agent/srv/ToolCall 服务，默认 /vln/tool_call；
+request_json 接收完整模型响应格式，复用 submit() 的同一队列与共享资源，
+outputs_json 返回 function_call_output 数组，error 单独表示请求解析/提交异常。
+服务使用独占回调线程等待本批 future，不调用 SessionManager，也不保存结果历史。
+
 ToolManager 提供工具定义、调用结果和只读状态查询。用户输入由 UserInteractionManager 的接口插件直接提供；小车主动事件由 EventManager 管理。SessionManager 独立负责请求拼装、发送调度和上下文；ToolManager 不调用上述组件。VLNAgent 主流程暂不展开。
 
 #### 10.2 插件分组目录与对象生命周期

@@ -17,6 +17,8 @@
 #include <yaml-cpp/yaml.h>
 
 #include "vln_agent/tools/tool_plugin_base.hpp"
+#include "vln_agent/tools/ros_callbacks.hpp"
+#include "vln_agent/srv/tool_call.hpp"
 #include "vln_agent/utils/time.hpp"
 
 namespace vln_agent
@@ -37,6 +39,8 @@ static Json wrapResult(const std::string & call_id, const ToolResult & result)
 /** @brief 单个管理器的装载状态、活动调用和有界执行队列。 */
 struct ToolManager::Impl
 {
+  using ToolCall = srv::ToolCall;
+
   struct Entry
   {
     std::shared_ptr<ToolPluginBase> plugin;  ///< 持久的函数插件实例。
@@ -154,12 +158,30 @@ struct ToolManager::Impl
       }
     }
 
+    // 复用独占回调线程；只在服务自己的线程里等待 future，不阻塞宿主执行器。
+    auto callbacks = std::make_unique<ToolCallbacks>(node);
+    auto service = node.create_service<ToolCall>(
+      config["service_name"].as<std::string>("/vln/tool_call"),
+      [this](ToolCall::Request::SharedPtr request, ToolCall::Response::SharedPtr reply) {
+        reply->outputs_json = "[]";
+        try {
+          Json outputs = Json::array();
+          const auto handles = submit(Json::parse(request->request_json));
+          for (const auto & handle : handles) {outputs.push_back(handle.result.get());}
+          reply->outputs_json = outputs.dump();
+        } catch (const std::exception & error) {
+          reply->error = error.what();
+        }
+      }, rmw_qos_profile_services_default, callbacks->group());
+
     {
       std::lock_guard<std::mutex> lock(mutex);
       max_concurrent = concurrent;
       max_pending = pending_limit;
       loaded = std::move(candidate);
     }
+    service_callbacks = std::move(callbacks);
+    tool_call_service = std::move(service);
     for (std::size_t i = 0; i < max_concurrent; ++i) {
       workers.emplace_back([this] {work();});
     }
@@ -336,6 +358,10 @@ struct ToolManager::Impl
       worker.join();
     }
     workers.clear();
+    // 先完成全部工具 promise，再等待服务回调退出，避免互相等待。
+    if (service_callbacks) {service_callbacks->shutdown();}
+    tool_call_service.reset();
+    service_callbacks.reset();
     std::unique_ptr<Loaded> retired;
     {
       std::lock_guard<std::mutex> lock(mutex);
@@ -358,6 +384,8 @@ struct ToolManager::Impl
   std::unordered_map<std::string, std::shared_ptr<Call>> calls;  ///< 仅等待/执行中的 call_id；完成即移除。
   std::deque<std::shared_ptr<Call>> pending;  ///< 按提交顺序等待工作线程的调用。
   std::map<std::uint64_t, std::shared_ptr<Call>> running;  ///< 按提交序号排列的活动调用。
+  std::unique_ptr<ToolCallbacks> service_callbacks;  ///< ToolCall 独占回调线程，只等待本次调用。
+  rclcpp::Service<ToolCall>::SharedPtr tool_call_service;  ///< 复用同一插件池的机器人调用入口。
   std::vector<std::thread> workers;          ///< 固定容量的工作线程池。
 };
 

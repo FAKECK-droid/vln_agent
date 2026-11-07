@@ -1,5 +1,6 @@
 #include "test_helpers.hpp"
 #include "vln_agent/utils/base64.hpp"
+#include "vln_agent/srv/tool_call.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -521,7 +522,18 @@ TEST_F(RosToolsTest, PixelNavigationUsesSnapshotPositionAndImageRelativeYaw)
   createCostmapServers();
   ToolManager manager(client_node);
   manager.load(config.config(Json::array({surroundingsGroup()})));
-  const auto environment = surroundings(manager);
+  surroundings(manager);  // 等待 TF 准备完毕；正式快照由机器人经服务获取。
+  const auto robot = client_node->create_client<srv::ToolCall>("/vln/tool_call");
+  ASSERT_TRUE(robot->wait_for_service(3s));
+  auto request = std::make_shared<srv::ToolCall::Request>();
+  request->request_json = response(Json::array({
+      call("get_surroundings", "robot_environment", {{"costmap", "local"}, {"range_m", 10}})})).dump();
+  auto future = robot->async_send_request(request);
+  ASSERT_EQ(future.wait_for(3s), std::future_status::ready);
+  const auto reply = future.get();
+  ASSERT_TRUE(reply->error.empty());
+  const auto outputs = Json::parse(reply->outputs_json);
+  const auto environment = Json::parse(outputs.at(0).at("output").at(0).at("text").get<std::string>());
   const auto & rect = environment.at("images").at(0).at("metadata").at("map_rect");
   const double x = rect.at("x").get<double>() + (rect.at("width").get<double>() - 1) / 2;
   const double y = rect.at("y").get<double>() + (rect.at("height").get<double>() - 1) / 2 -

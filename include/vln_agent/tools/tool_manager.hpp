@@ -18,7 +18,7 @@ namespace vln_agent
 /** @brief 可独立取得结果的单次函数调用句柄。 */
 struct ToolCallHandle
 {
-  std::string call_id;                      ///< 模型提供的调用关联标志。
+  std::string call_id;                      ///< 模型或机器人调用方提供的调用关联标志。
   std::string name;                         ///< 原生 function 名称。
   std::shared_future<Json> result;          ///< 单个 function_call_output 输入项。
   std::shared_future<Json> completion;      ///< 结果就绪前交付终态元数据，含固定 wait_ms/run_ms。
@@ -29,8 +29,8 @@ class ToolManager
 {
 public:
   /**
-   * @brief 复用外部节点，管理器不持有节点所有权或启动 ROS 执行器。
-   * @param node 须保持存活，且执行器应运行到 shutdown 返回。
+   * @brief 复用外部节点，成功装载后为 ToolCall 服务启动独占回调线程。
+   * @param node 须保持存活，且宿主执行器应运行到 shutdown 返回。
    */
   explicit ToolManager(const std::shared_ptr<rclcpp::Node> & node);
   ~ToolManager();
@@ -38,6 +38,7 @@ public:
   /**
    * @brief 一次性加载全局 YAML 的 tool_manager 段，失败时不发布部分工具。
    * @param global_yaml_path 配置路径；定义文件相对于该文件所在目录解析。
+   * @note 同时提供 vln_agent/srv/ToolCall；service_name 默认 /vln/tool_call。
    * @throws std::exception 配置、文件或插件装载失败，不支持热更新。
    */
   void load(const std::string & global_yaml_path);

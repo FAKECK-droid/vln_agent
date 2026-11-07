@@ -1,4 +1,5 @@
 tool_manager:
+  service_name: /vln/tool_call
   max_concurrent_calls: 4
   max_pending_calls: 64
   groups:

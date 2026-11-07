@@ -9,8 +9,9 @@ namespace vln_agent
 {
 
 /**
- * @brief 为插件的独占回调组提供可回收的执行线程，复用宿主节点。
- * @note 回调应短时返回；只从回调之外调用 shutdown，返回后该组不再执行回调。
+ * @brief 为工具插件或服务的独占回调组提供可回收的执行线程，复用宿主节点。
+ * @note 插件回调应短时返回；ToolCall 的独占服务组可等待工具 future。
+ * @note 只从回调之外调用 shutdown，返回后该组不再执行回调。
  */
 class ToolCallbacks
 {
@@ -19,7 +20,7 @@ public:
   explicit ToolCallbacks(rclcpp::Node & node);
   ~ToolCallbacks();
 
-  /** @brief 供插件创建订阅和 Action 客户端时指定回调组。 */
+  /** @brief 供插件或服务创建订阅、客户端与服务时指定回调组。 */
   const rclcpp::CallbackGroup::SharedPtr & group() const {return group_;}
 
   /** @brief 停止调度并等待当前回调及执行线程退出；可重复调用。 */
