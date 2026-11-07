@@ -86,7 +86,15 @@ inline Json payload(const ToolCallHandle & handle)
   EXPECT_EQ(output.at("call_id"), handle.call_id);
   EXPECT_EQ(output.at("output").at(0).at("type"), "input_text");
   EXPECT_FALSE(output.contains("source"));
-  return Json::parse(output.at("output").at(0).at("text").get<std::string>());
+  const auto result = Json::parse(output.at("output").at(0).at("text").get<std::string>());
+  EXPECT_EQ(result.at("source"), "robot");
+  EXPECT_TRUE(result.at("time_stamp").is_string());
+  EXPECT_TRUE(result.at("data").is_object());
+  EXPECT_FALSE(result.contains("origin"));
+  EXPECT_FALSE(result.contains("event"));
+  EXPECT_FALSE(result.contains("text"));
+  utils::validateImageMetadata(result, output.at("output").size() - 1);
+  return result;
 }
 
 /** @brief 等待 ROS 回调可观测状态，超时后返回 false。 */

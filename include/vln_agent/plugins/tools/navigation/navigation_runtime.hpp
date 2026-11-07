@@ -43,7 +43,7 @@ public:
   /**
    * @brief 获取代价地图并生成机器人朝上的环境图。
    * @param arguments costmap 为 local/global，range_m 为观察正方形边长。
-   * @return 含环境 ID、图片元数据的 payload 和一张原生 PNG。
+   * @return data.environment_id、公共 pose、images 元数据与原生 PNG。
    */
   ToolResult get_surroundings(const Json & arguments);
   /**
@@ -63,6 +63,7 @@ private:
     std::string status{"running"};          ///< 物理任务状态，不是函数调用状态。
     bool responded{false};                 ///< 是否已经收到目标接受或拒绝回复。
     Json feedback = Json::object();         ///< 最近一次反馈的业务字段。
+    Json pose;                             ///< 最近一次反馈的小车位姿，含坐标系及可用采样时间。
   };
 
   /** @brief 持锁生成当前任务结果，并在交付终态时释放资源内部引用。 */

@@ -54,8 +54,38 @@ function_call，忽略 message、reasoning、compaction。
 同一活动 call_id 返回原句柄；函数完成后立即从 calls 移除，不保留完成结果或历史 ID。
 结果由调用方持有的 future 交付。Agent 负责保存历史、避免重复提交已完成调用，并在消费后释放自身句柄。
 pending 和 running 分别受配置容量限制，calls 只包含这两类活动调用。
-工具返回 `ToolResult{payload, images}`，payload 至少包含布尔值 ok 和 UTC 毫秒 time_stamp。
-管理器补齐结果缺少的 time_stamp 并生成 API 外层，不添加 source 或 pose。
+工具返回 `ToolResult{payload, images}`；payload 共用 source/time_stamp/data，ok/code/message 与 data 同级。
+ToolResult::success(data) 和 failure(code, message) 创建该布局，管理器补齐公共字段并生成 API 外层。
+
+## 统一业务字段
+
+用户输入、机器事件和工具结果的 input_text.text 使用同一组公共业务字段：
+
+| 字段 | 含义 |
+| --- | --- |
+| source | 用户为 user，机器事件和工具结果为 robot |
+| time_stamp | 本条信息产生时刻，UTC 三位毫秒字符串 |
+| data | 具体业务载荷，默认 {} |
+| pose | 可选小车位姿，含 frame_id/x/y/yaw 及可选采样 time_stamp |
+| images | 含图片时提供，按原生图片顺序逐张描述元数据 |
+
+instruction 是用户指令；机器事件的 origin/event 是发布者与事件类型；工具结果的 ok/code/message 是调用结果说明。这些字段均与 data 同级。事件说明使用 data.message。
+
+```json
+{
+  "source": "robot",
+  "time_stamp": "2026-11-07T02:30:00.125Z",
+  "ok": true,
+  "data": {"environment_id": "env_12"},
+  "pose": {"frame_id": "map", "x": 1.2, "y": 2.3, "yaw": 0.5},
+  "images": [{
+    "time_stamp": "2026-11-07T02:30:00.080Z",
+    "metadata": {"costmap": "local", "image_width": 592, "image_height": 660}
+  }]
+}
+```
+
+images[i] 对应同条输入的第 i 张图片，metadata 的内容由提供方自定义；图片 Base64 使用后续原生 input_image。utils::businessPayload() 与 posePayload() 可供下游复用，utils::appendInputs()/functionCallOutput() 检查图片对应关系。
 
 ## 配置与扩展
 
@@ -91,7 +121,7 @@ capture_image 仅读取彩色图，模型参数示例：
 
 工具只做服务调用和 Base64 封装，直接使用服务返回的 JPEG/PNG 压缩字节，
 不订阅图像、不缓存历史、不编解码；没有 width/height 字段。
-结果包含 pair_id、queue_index、queue_size、image_age_sec、age_error_sec 和 exceeded_max_age，
+images[0].metadata 包含 pair_id、queue_index、queue_size、image_age_sec、age_error_sec 和 exceeded_max_age，
 可据此判断实际命中的图像及其陈旧程度。
 服务取不到图时返回 IMAGE_UNAVAILABLE 和原始 message，不自动重试或改取其他帧。
 响应超时会移除客户端挂起请求；shutdown 释放剩余挂起请求。
@@ -146,7 +176,10 @@ call_count 是当前活动数量，completed_count 仅为固定大小的累计�
 get_surroundings 示例参数：
 
 ```json
-{"costmap":"local","range_m":10.0}
+{
+  "costmap": "local",
+  "range_m": 10.0
+}
 ```
 
 costmap 为 local/global；range_m 是以机器人为中心的正方形边长，单位米。
@@ -156,21 +189,26 @@ costmap 为 local/global；range_m 是以机器人为中心的正方形边长，
 原始代价值含义依据 [Nav2 Humble 发布器](https://api.nav2.org/nav2-humble/html/costmap__2d__publisher_8cpp_source.html)。
 图像处理只使用裁剪 ROI；缩小时分别保留障碍和未知掩膜。
 
-payload 返回 environment_id、time_stamp、map_rect、image_width/image_height、
-meters_per_pixel、robot_pose，以及图片方向约定。frame_id/robot_pose 使用 map_frame；
+data.environment_id 是环境引用；pose 是 map_frame 中的小车位姿。
+images[0].metadata 包含 map_rect、image_width/image_height、meters_per_pixel 与图片方向约定；
 图片本身的上方是截图时机器人前方，左方是机器人左侧，并非固定 map 轴方向。
 像素原点位于完整 PNG 左上角，x 向右、y 向下；只能选择 map_rect 内的地图位置。
 
 navigate_to_pixel_start_navigation 示例参数：
 
 ```json
-{"environment_id":"env_1","pixel_x":330,"pixel_y":220,"yaw":0.0}
+{
+  "environment_id": "env_1",
+  "pixel_x": 330,
+  "pixel_y": 220,
+  "yaw": 0.0
+}
 ```
 
 yaw 为相对该图片的目标朝向，单位弧度：0 朝上，正值逆时针朝左。
-工具用该 ID 保存的不可变变换还原位置，并以截图时 robot_pose.yaw + yaw
+工具用该 ID 保存的不可变变换还原位置，并以截图时 pose.yaw + yaw
 生成 map_frame 中的目标朝向。随后复用 start_navigation；只发送像素工具自己的结果，
-包含 environment_id、换算后的 goal、task_id/status，不另发内部导航函数的结果。
+data 包含 environment_id、换算后的 goal、task_id/status，不另发内部导航函数的结果。
 task_id 可继续用于 navigate_to_pose_get_feedback / navigate_to_pose_cancel_navigation。
 
 共享配置可设置 local_costmap_service、global_costmap_service、map_frame、base_frame、
@@ -181,8 +219,8 @@ image_size 是地图部分边长，默认 512，图片另有标题和图例边�
 坐标换算使用对应截图，实际导航规划和避障仍由 Nav2 执行。
 
 相机函数使用 mode/detail 选择最新或历史彩色图，由 GetImage 服务决定实际命中的帧。
-结果 payload 含 frame_id、format、time_stamp 及服务返回的配对、索引和年龄信息；
-真实时钟下另带 image_time_stamp，图片以原生 input_image 的
+结果 images[0].metadata 含 frame_id、format 及服务返回的配对、索引和年龄信息；
+真实时钟下 images[0].time_stamp 记录采样时刻，图片以原生 input_image 的
 data:image/jpeg;base64 或 data:image/png;base64 URL 返回。
 
 shutdown 停止入队，立即完成未执行调用，通知插件和共享资源退出，
@@ -401,7 +439,7 @@ session->addInputs(inputs);
 user_interaction.channels 每个实例独立配置 transmit 和 include_images，缺省关闭。
 默认 RosTopicInterface 发布 /vln/user_output，订阅 /vln/user_input，
 std_msgs/msg/String.data 承载 JSON。输入须已经是原生 API 对象或其数组；
-业务 JSON 只有 source/time_stamp 两项公共必填字段，pose 可省略。
+业务 JSON 共用 source/time_stamp/data；pose 按需提供，含图片时 images 与图片逐张对应。
 管理器不包装输入、不补字段，不读取 pending 输入，也不消费 response 或 future。
 
 一轮按字段并集查询一次，工具定义装载时只查询一次、之后每批重发；每个渠道输出一个完整当前状态汇总 JSON。
@@ -525,16 +563,16 @@ events.shutdown();
 ```
 
 每个 Event 是独立的 input[] 元素；content 第一项为 input_text，
-text 保存 source=robot、time_stamp、origin 及可选 text/data/instruction 的业务 JSON，
+text 保存 source=robot、time_stamp、origin/event、data 及可选 pose/images/instruction 的业务 JSON，
 后续可带原生 input_image。来源和 UTC 三位毫秒时间由发送者填写，
-组件保留全部内容，不补字段、不解码图片、不解释 instruction.function 或设置 tool_choice。
+组件保留业务字段并检查图片与 images 的数量对应关系；instruction.function 由模型决策。
 命令是否生成工具调用由模型决定；详见 docs/AGENT_PLAN.md 第五部分。
 
 addEvents() 和 takeEvents() 使用同一把缓冲锁，整批保持连续顺序；
 takeEvents() 移出后内部立即清空，不保存完成历史或去重 ID。
 getStatus() 只返回 state（unloaded/ready/closed）和 pending_count。
 关闭后忽略新增事件，释放订阅和未交付数据，不关闭宿主节点。
-ROS 输入无法解析或不符合对象/数组形式时记录警告并跳过，不影响后续事件。
+ROS 输入无法解析或图片元数据数量不匹配时，记录警告并跳过整批，后续事件继续处理。
 
 开发机离线验证：
 

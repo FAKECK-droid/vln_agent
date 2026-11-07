@@ -31,7 +31,7 @@ ToolResult NavigationRuntime::navigate_to_pixel_start_navigation(const Json & ar
   if (!started.payload.at("ok").get<bool>()) {
     auto result = ToolResult::failure(
       started.payload.at("code").get<std::string>(), started.payload.at("message").get<std::string>());
-    result.payload["environment_id"] = id;
+    result.payload["data"]["environment_id"] = id;
     return result;
   }
   {
@@ -40,9 +40,9 @@ ToolResult NavigationRuntime::navigate_to_pixel_start_navigation(const Json & ar
       [&](const auto & item) {return item.id == id;});
     if (found != environments_.end()) {environments_.erase(found);}
   }
-  return {Json{{"ok", true}, {"time_stamp", utils::utcNow()}, {"environment_id", id},
-      {"task_id", started.payload.at("task_id")}, {"status", started.payload.at("status")},
-      {"goal", goal}}, {}};
+  return ToolResult::success({{"environment_id", id},
+    {"task_id", started.payload.at("data").at("task_id")},
+    {"status", started.payload.at("data").at("status")}, {"goal", goal}});
 }
 
 void NavigateToPixelStartNavigation::initialize(const ToolContext & context, const Json &)

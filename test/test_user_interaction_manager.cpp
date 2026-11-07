@@ -11,6 +11,7 @@
 #include "vln_agent/interaction/user_interaction_manager.hpp"
 #include "vln_agent/session/session_manager.hpp"
 #include "vln_agent/utils/time.hpp"
+#include "vln_agent/tools/tool_result.hpp"
 
 namespace vln_agent::test
 {
@@ -84,7 +85,8 @@ TEST_F(InteractionTest, AppliesPerChannelSelectionAndImageFilteringBeforeDeliver
     channel("disabled", Json::object())})));
   const Json image{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}};
   const auto result = utils::functionCallOutput("c1",
-    Json{{"ok", true}, {"time_stamp", utils::utcNow()}}, {image});
+    Json{{"source", "robot"}, {"ok", true}, {"time_stamp", utils::utcNow()},
+      {"data", Json::object()}, {"images", Json::array({{{"metadata", {{"label", "door"}}}}})}}, {image});
   ui.exchange(nullptr, Json::array({result}), Json::array({finishedCall("c1")}));
   const auto & hidden = *interfaceTraces().at("hidden").packets.at(0);
   const auto & shown = *interfaceTraces().at("shown").packets.at(0);
@@ -182,7 +184,10 @@ TEST_F(InteractionTest, QueriesCurrentRequestOnlyAndPreservesResponseSlotAndTool
   ConfigFile tool_config;
   tools->load(tool_config.config(Json::array()));
   session->setTools(Json::array({definition("session-only")}));
-  Json input = message("sent");
+  auto business = utils::businessPayload("user");
+  business["instruction"] = "sent";
+  business["images"] = Json::array({{{"metadata", {{"label", "scene"}}}}});
+  Json input = message(business.dump());
   input["content"].push_back(Json{{"type", "input_image"}, {"file_id", "private-image"}});
   session->addInputs(input);
   session->request();
@@ -247,7 +252,7 @@ TEST_F(InteractionTest, RequiresCompleteMatchingTerminalMetadataForEveryToolOutp
   UserInteractionManager ui(node, {});
   ui.load(config(Json::array({channel("tools", Json{
     {"response", {{"tool_outputs", true}}}, {"tools", {{"finished_calls", true}}}})})));
-  const auto outputs = Json::array({utils::functionCallOutput("c1", Json{{"ok", true}}, {})});
+  const auto outputs = Json::array({utils::functionCallOutput("c1", ToolResult::success().payload, {})});
   EXPECT_THROW(ui.exchange(nullptr, outputs, Json::array()), std::invalid_argument);
   EXPECT_THROW(ui.exchange(nullptr, outputs, Json::array({finishedCall("other")})),
     std::invalid_argument);

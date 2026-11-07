@@ -45,8 +45,9 @@ TEST(SessionManager, BuildsNativeRequestsWithoutImplicitInitialization)
   session.request();
   session.addInputs(message("系统规则", "system"));
   session.addInputs(Json::array_t{message("用户"), message("小车状态")});
-  const Json tool_output{{"type", "function_call_output"}, {"call_id", "c1"},
-    {"output", Json::array({{{"type", "input_text"}, {"text", "{\"ok\":true}"}}})}};
+  auto returned = utils::businessPayload("robot");
+  returned["ok"] = true;
+  const auto tool_output = utils::functionCallOutput("c1", returned, {});
   session.addInputs(Json::array({tool_output}));
   std::this_thread::sleep_for(30ms);
   EXPECT_TRUE(server.requests().empty());
@@ -420,7 +421,10 @@ TEST(SessionManager, LocalHistoryReplaysNativeOutputsToolsAndImagesWithoutStored
   SessionManager session(files.sessionConfig(server.url(),
     {{"store", true}, {"context", {{"local_history", true}, {"server_compaction", false}}}}));
   const Json image{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}};
-  auto user = message("检查图像");
+  auto business = utils::businessPayload("user");
+  business["instruction"] = "检查图像";
+  business["images"] = Json::array({{{"metadata", {{"label", "scene"}}}}});
+  auto user = message(business.dump());
   user["content"].push_back(image);
   const Json initial = Json::array({message("系统规则", "system"), user});
   session.addInputs(initial); session.request();
@@ -429,7 +433,10 @@ TEST(SessionManager, LocalHistoryReplaysNativeOutputsToolsAndImagesWithoutStored
   utils::appendInputs(history, first.at("output"));
   EXPECT_EQ(session.getContextStatus().at("mode"), "local");
   EXPECT_EQ(session.getContextStatus().at("history_item_count"), history.size());
-  const auto result = utils::functionCallOutput("c1", Json{{"ok", true}}, {image});
+  auto returned = utils::businessPayload("robot");
+  returned["ok"] = true;
+  returned["images"] = business.at("images");
+  const auto result = utils::functionCallOutput("c1", returned, {image});
   session.addInputs(result); session.request();
   waitFor([&] {return server.requests().size() == 2;});
   session.addInputs(message("下一轮"));

@@ -31,9 +31,9 @@ protected:
   Json event(int value, int slot = 0)
   {
     const Json payload{{"source", "robot"}, {"origin", "/bt/main/InspectDoor"},
-      {"time_stamp", "2026-10-28T06:00:00.000Z"}, {"text", "请检查当前画面"},
+      {"time_stamp", "2026-10-28T06:00:00.000Z"}, {"event", "status"},
       {"instruction", {{"function", "capture_image"}}},
-      {"data", {{"value", value}, {"slot", slot}}}};
+      {"data", {{"value", value}, {"slot", slot}, {"message", "请检查当前画面"}}}};
     return {{"role", "user"},
       {"content", Json::array({{{"type", "input_text"}, {"text", payload.dump()}}})}};
   }
@@ -70,6 +70,9 @@ TEST_F(EventManagerTest, PreservesNativeEventsImagesAndCommandsAndReleasesDelive
   auto picture = event(1);
   const Json image{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="},
     {"detail", "auto"}};
+  auto description = Json::parse(picture["content"][0]["text"].get<std::string>());
+  description["images"] = Json::array({{{"metadata", {{"label", "door"}}}}});
+  picture["content"][0]["text"] = description.dump();
   picture["content"].push_back(image);
   const auto other = event(2);
   events.addEvents(picture);
@@ -82,6 +85,20 @@ TEST_F(EventManagerTest, PreservesNativeEventsImagesAndCommandsAndReleasesDelive
   events.addEvents(other);
   EXPECT_EQ(events.takeEvents(), Json::array({other}));
   EXPECT_EQ(taken.at(0).at("content").at(1), image);
+}
+
+TEST_F(EventManagerTest, RejectsMissingImageDescriptionsBeforeAddingAnyEventInBatch)
+{
+  EventManager events(node);
+  auto invalid = event(2);
+  invalid["content"].push_back({{"type", "input_image"}, {"image_url", "data:image/png;base64,AA=="}});
+  EXPECT_THROW(events.addEvents(Json::array({event(1), invalid})), std::invalid_argument);
+  EXPECT_EQ(events.getStatus().at("pending_count"), 0);
+  auto business = Json::parse(invalid["content"][0]["text"].get<std::string>());
+  business["images"] = Json::array({{{"metadata", {{"custom_label", "door"}}}}});
+  invalid["content"][0]["text"] = business.dump();
+  events.addEvents(invalid);
+  EXPECT_EQ(events.takeEvents(), Json::array({invalid}));
 }
 
 TEST_F(EventManagerTest, ConcurrentBatchesStayContiguousDuringConsumption)

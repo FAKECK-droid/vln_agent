@@ -287,8 +287,8 @@ TEST_F(RosToolsTest, SharesCurrentNavigationAndConsumesTerminalStateOnce)
   manager.load(config.config(Json::array({navigationGroup()})));
   const auto started = start(manager);
   ASSERT_TRUE(started.at("ok").get<bool>());
-  EXPECT_EQ(started.at("status"), "running");
-  const auto id = started.at("task_id");
+  EXPECT_EQ(started.at("data").at("status"), "running");
+  const auto id = started.at("data").at("task_id");
   const auto first_goal = goal(0);
   EXPECT_EQ(first_goal->get_goal()->pose.header.frame_id, "map");
   EXPECT_NEAR(first_goal->get_goal()->pose.pose.orientation.z, std::sin(0.25), 1e-6);
@@ -296,28 +296,40 @@ TEST_F(RosToolsTest, SharesCurrentNavigationAndConsumesTerminalStateOnce)
 
   auto observation = std::make_shared<Action::Feedback>();
   observation->distance_remaining = 12.5;
+  observation->current_pose.header.frame_id = "map";
+  observation->current_pose.header.stamp.sec = 4;
+  observation->current_pose.pose.position.x = 1.2;
+  observation->current_pose.pose.position.y = 2.3;
+  observation->current_pose.pose.orientation.z = std::sin(0.25);
+  observation->current_pose.pose.orientation.w = std::cos(0.25);
   first_goal->publish_feedback(observation);
-  ASSERT_TRUE(eventually([&] {return feedback(manager, id).contains("distance_remaining_m");}));
-  EXPECT_NEAR(feedback(manager, id).at("distance_remaining_m").get<double>(), 12.5, 1e-6);
+  ASSERT_TRUE(eventually([&] {return feedback(manager, id).at("data").contains("distance_remaining_m");}));
+  const auto current = feedback(manager, id);
+  EXPECT_NEAR(current.at("data").at("distance_remaining_m").get<double>(), 12.5, 1e-6);
+  EXPECT_EQ(current.at("pose").at("frame_id"), "map");
+  EXPECT_EQ(current.at("pose").at("time_stamp"), "1970-01-01T00:00:04.000Z");
+  EXPECT_DOUBLE_EQ(current.at("pose").at("x").get<double>(), 1.2);
+  EXPECT_DOUBLE_EQ(current.at("pose").at("y").get<double>(), 2.3);
+  EXPECT_NEAR(current.at("pose").at("yaw").get<double>(), 0.5, 1e-6);
 
   const auto cancel = payload(invoke(manager, "navigate_to_pose_cancel_navigation", {{"task_id", id}}));
   EXPECT_TRUE(cancel.at("ok").get<bool>());
-  EXPECT_EQ(cancel.at("status"), "canceling");
-  EXPECT_EQ(feedback(manager, id).at("status"), "canceling");
+  EXPECT_EQ(cancel.at("data").at("status"), "canceling");
+  EXPECT_EQ(feedback(manager, id).at("data").at("status"), "canceling");
   ASSERT_TRUE(eventually([&] {return first_goal->is_canceling();}));
   first_goal->canceled(std::make_shared<Action::Result>());
-  ASSERT_TRUE(eventually([&] {return feedback(manager, id).at("status") == "canceled";}));
+  ASSERT_TRUE(eventually([&] {return feedback(manager, id).at("data").at("status") == "canceled";}));
 
   const auto next = start(manager);
   ASSERT_TRUE(next.at("ok").get<bool>());
-  EXPECT_NE(next.at("task_id"), id);
+  EXPECT_NE(next.at("data").at("task_id"), id);
   const auto next_goal = goal(1);
   next_goal->succeed(std::make_shared<Action::Result>());
   ASSERT_TRUE(eventually([&] {
-      return feedback(manager, next.at("task_id")).at("status") == "succeeded";
+      return feedback(manager, next.at("data").at("task_id")).at("data").at("status") == "succeeded";
     }));
   EXPECT_EQ(feedback(manager, id).at("code"), "TASK_NOT_FOUND");
-  EXPECT_EQ(feedback(manager, next.at("task_id")).at("code"), "TASK_NOT_FOUND");
+  EXPECT_EQ(feedback(manager, next.at("data").at("task_id")).at("code"), "TASK_NOT_FOUND");
 }
 
 TEST_F(RosToolsTest, ReportsRejectionUnknownTaskAndFailedPhysicalResult)
@@ -328,7 +340,7 @@ TEST_F(RosToolsTest, ReportsRejectionUnknownTaskAndFailedPhysicalResult)
   const auto rejected = start(manager, -1);
   EXPECT_FALSE(rejected.at("ok").get<bool>());
   EXPECT_EQ(rejected.at("code"), "NAVIGATION_REJECTED");
-  EXPECT_EQ(rejected.at("status"), "rejected");
+  EXPECT_EQ(rejected.at("data").at("status"), "rejected");
   EXPECT_EQ(feedback(manager, "missing").at("code"), "TASK_NOT_FOUND");
   const auto accepted = start(manager);
   ASSERT_TRUE(accepted.at("ok").get<bool>());
@@ -338,11 +350,11 @@ TEST_F(RosToolsTest, ReportsRejectionUnknownTaskAndFailedPhysicalResult)
       return start(manager).value("code", std::string()) == "NAVIGATION_RESULT_PENDING";
     }));
   const auto cancel = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
-      {{"task_id", accepted.at("task_id")}}));
+      {{"task_id", accepted.at("data").at("task_id")}}));
   EXPECT_TRUE(cancel.at("ok").get<bool>());
-  EXPECT_EQ(cancel.at("status"), "failed");
-  EXPECT_EQ(feedback(manager, accepted.at("task_id")).at("code"), "TASK_NOT_FOUND");
-  EXPECT_EQ(feedback(manager, rejected.at("task_id")).at("code"), "TASK_NOT_FOUND");
+  EXPECT_EQ(cancel.at("data").at("status"), "failed");
+  EXPECT_EQ(feedback(manager, accepted.at("data").at("task_id")).at("code"), "TASK_NOT_FOUND");
+  EXPECT_EQ(feedback(manager, rejected.at("data").at("task_id")).at("code"), "TASK_NOT_FOUND");
 }
 
 TEST_F(RosToolsTest, UnavailableNavigationDoesNotCreateAnActiveTask)
@@ -383,14 +395,16 @@ TEST_F(RosToolsTest, ForwardsLatestIndexAndAgeRequestsWithoutTranscoding)
   for (std::size_t i = 0; i < handles.size(); ++i) {
     const auto result = payload(handles[i]);
     ASSERT_TRUE(result.at("ok").get<bool>());
-    EXPECT_EQ(result.at("frame_id"), "test_camera");
-    EXPECT_EQ(result.at("image_time_stamp"), "1970-01-01T00:00:04.000Z");
-    EXPECT_EQ(result.at("pair_id"), 100 + arguments[i].at("detail").get<int>());
-    EXPECT_EQ(result.at("queue_index"), i == 0 ? -1 : (i == 1 ? 2 : 1));
-    EXPECT_EQ(result.at("queue_size"), 3);
-    EXPECT_DOUBLE_EQ(result.at("image_age_sec").get<double>(), 1.625);
-    EXPECT_DOUBLE_EQ(result.at("age_error_sec").get<double>(), i == 2 ? 0.125 : 0.0);
-    EXPECT_TRUE(result.at("exceeded_max_age").get<bool>());
+    const auto & description = result.at("images").at(0);
+    const auto & metadata = description.at("metadata");
+    EXPECT_EQ(metadata.at("frame_id"), "test_camera");
+    EXPECT_EQ(description.at("time_stamp"), "1970-01-01T00:00:04.000Z");
+    EXPECT_EQ(metadata.at("pair_id"), 100 + arguments[i].at("detail").get<int>());
+    EXPECT_EQ(metadata.at("queue_index"), i == 0 ? -1 : (i == 1 ? 2 : 1));
+    EXPECT_EQ(metadata.at("queue_size"), 3);
+    EXPECT_DOUBLE_EQ(metadata.at("image_age_sec").get<double>(), 1.625);
+    EXPECT_DOUBLE_EQ(metadata.at("age_error_sec").get<double>(), i == 2 ? 0.125 : 0.0);
+    EXPECT_TRUE(metadata.at("exceeded_max_age").get<bool>());
     EXPECT_TRUE(result.contains("time_stamp"));
     EXPECT_FALSE(result.contains("width"));
 
@@ -409,6 +423,19 @@ TEST_F(RosToolsTest, ForwardsLatestIndexAndAgeRequestsWithoutTranscoding)
   {
     EXPECT_NE(std::find(image_requests.begin(), image_requests.end(), expected), image_requests.end());
   }
+}
+
+TEST_F(RosToolsTest, SimulatedImageStampStaysOptionalAndResultTimeIsUtc)
+{
+  client_node->set_parameter(rclcpp::Parameter("use_sim_time", true));
+  createImageServer();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({cameraGroup()})));
+  const auto result = payload(invoke(manager, "capture_image", {{"mode", "latest"}, {"detail", 0}}));
+  ASSERT_TRUE(result.at("ok"));
+  EXPECT_FALSE(result.at("images").at(0).contains("time_stamp"));
+  EXPECT_EQ(result.at("time_stamp").get<std::string>().size(), 24u);
+  EXPECT_FALSE(result.contains("image_time_stamp"));
 }
 
 TEST_F(RosToolsTest, ReportsImageServiceFailureWithoutFallback)
@@ -469,13 +496,13 @@ TEST_F(RosToolsTest, GetsLocalAndGlobalSurroundingsWithNativePngAndSnapshotMetad
   manager.load(config.config(Json::array({surroundingsGroup()})));
   for (const auto & source : {"local", "global"}) {
     const auto result = surroundings(manager, source);
-    EXPECT_EQ(result.at("costmap"), source);
-    EXPECT_EQ(result.at("frame_id"), "map");
-    EXPECT_NEAR(result.at("robot_pose").at("x").get<double>(), 8, 1e-6);
-    EXPECT_NEAR(result.at("robot_pose").at("y").get<double>(), -2, 1e-6);
-    EXPECT_NEAR(result.at("robot_pose").at("yaw").get<double>(), M_PI / 2, 1e-6);
-    EXPECT_EQ(result.at("image_up"), "robot_forward");
-    EXPECT_TRUE(result.contains("environment_id"));
+    EXPECT_EQ(result.at("images").at(0).at("metadata").at("costmap"), source);
+    EXPECT_EQ(result.at("pose").at("frame_id"), "map");
+    EXPECT_NEAR(result.at("pose").at("x").get<double>(), 8, 1e-6);
+    EXPECT_NEAR(result.at("pose").at("y").get<double>(), -2, 1e-6);
+    EXPECT_NEAR(result.at("pose").at("yaw").get<double>(), M_PI / 2, 1e-6);
+    EXPECT_EQ(result.at("images").at(0).at("metadata").at("image_up"), "robot_forward");
+    EXPECT_TRUE(result.at("data").contains("environment_id"));
   }
   const auto handle = invoke(manager, "get_surroundings", {{"costmap", "global"}, {"range_m", 10}});
   const auto result = payload(handle);
@@ -483,8 +510,8 @@ TEST_F(RosToolsTest, GetsLocalAndGlobalSurroundingsWithNativePngAndSnapshotMetad
   const std::string prefix = "data:image/png;base64,";
   ASSERT_EQ(url.substr(0, prefix.size()), prefix);
   const auto image = cv::imdecode(utils::decodeBase64(url.substr(prefix.size())), cv::IMREAD_COLOR);
-  EXPECT_EQ(image.cols, result.at("image_width"));
-  EXPECT_EQ(image.rows, result.at("image_height"));
+  EXPECT_EQ(image.cols, result.at("images").at(0).at("metadata").at("image_width"));
+  EXPECT_EQ(image.rows, result.at("images").at(0).at("metadata").at("image_height"));
   EXPECT_GT(local_reads.load(), 0); EXPECT_GT(global_reads.load(), 0);
 }
 
@@ -495,16 +522,16 @@ TEST_F(RosToolsTest, PixelNavigationUsesSnapshotPositionAndImageRelativeYaw)
   ToolManager manager(client_node);
   manager.load(config.config(Json::array({surroundingsGroup()})));
   const auto environment = surroundings(manager);
-  const auto & rect = environment.at("map_rect");
+  const auto & rect = environment.at("images").at(0).at("metadata").at("map_rect");
   const double x = rect.at("x").get<double>() + (rect.at("width").get<double>() - 1) / 2;
   const double y = rect.at("y").get<double>() + (rect.at("height").get<double>() - 1) / 2 -
-    1 / environment.at("meters_per_pixel").get<double>();
-  const Json arguments{{"environment_id", environment.at("environment_id")},
+    1 / environment.at("images").at(0).at("metadata").at("meters_per_pixel").get<double>();
+  const Json arguments{{"environment_id", environment.at("data").at("environment_id")},
     {"pixel_x", x}, {"pixel_y", y}, {"yaw", M_PI / 4}};
   const auto result = payload(invoke(manager, "navigate_to_pixel_start_navigation", arguments));
   ASSERT_TRUE(result.at("ok").get<bool>());
-  EXPECT_EQ(result.at("environment_id"), environment.at("environment_id"));
-  EXPECT_TRUE(result.contains("task_id"));
+  EXPECT_EQ(result.at("data").at("environment_id"), environment.at("data").at("environment_id"));
+  EXPECT_TRUE(result.at("data").contains("task_id"));
   const auto accepted = goal(0);
   const auto & pose = accepted->get_goal()->pose;
   EXPECT_EQ(pose.header.frame_id, "map");
@@ -516,7 +543,7 @@ TEST_F(RosToolsTest, PixelNavigationUsesSnapshotPositionAndImageRelativeYaw)
     at("code"), "ENVIRONMENT_NOT_FOUND");
   accepted->succeed(std::make_shared<Action::Result>());
   ASSERT_TRUE(eventually([&] {
-      return feedback(manager, result.at("task_id")).value("status", "") == "succeeded";
+      return feedback(manager, result.at("data").at("task_id")).at("data").value("status", "") == "succeeded";
     }));
 }
 
@@ -529,10 +556,10 @@ TEST_F(RosToolsTest, EnvironmentCacheIsBoundedAndRejectsPixelsOutsideMap)
   surroundings(manager);
   const auto latest = surroundings(manager);
   const auto expired = payload(invoke(manager, "navigate_to_pixel_start_navigation",
-      {{"environment_id", first.at("environment_id")}, {"pixel_x", 300}, {"pixel_y", 300}, {"yaw", 0}}));
+      {{"environment_id", first.at("data").at("environment_id")}, {"pixel_x", 300}, {"pixel_y", 300}, {"yaw", 0}}));
   EXPECT_EQ(expired.at("code"), "ENVIRONMENT_NOT_FOUND");
   const auto outside = payload(invoke(manager, "navigate_to_pixel_start_navigation",
-      {{"environment_id", latest.at("environment_id")}, {"pixel_x", 0}, {"pixel_y", 0}, {"yaw", 0}}));
+      {{"environment_id", latest.at("data").at("environment_id")}, {"pixel_x", 0}, {"pixel_y", 0}, {"yaw", 0}}));
   EXPECT_FALSE(outside.at("ok").get<bool>());
 }
 

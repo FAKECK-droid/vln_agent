@@ -2,7 +2,7 @@
   {
     "type": "function",
     "name": "navigate_to_pose_start_navigation",
-    "description": "启动导航，目标被接受后返回任务 ID 和 running 状态；不会等待到达。 上次终态须先用 get_feedback 读取后才能启动新任务。",
+    "description": "启动导航，目标被接受后返回任务 ID 和 running 状态；不会等待到达。 上次终态须先用 get_feedback 读取后才能启动新任务。 任务 ID 和物理状态分别位于结果的 data.task_id 和 data.status。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -37,7 +37,7 @@
   {
     "type": "function",
     "name": "navigate_to_pose_get_feedback",
-    "description": "获取指定导航任务的最新反馈。 终态仅交付一次，读取后释放；历史由调用方保存。",
+    "description": "获取指定导航任务的最新反馈。 终态仅交付一次，读取后释放；历史由调用方保存。 反馈数值位于 data，可用的小车位姿位于 pose。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -45,7 +45,7 @@
       "properties": {
         "task_id": {
           "type": "string",
-          "description": "启动导航返回的本地任务 ID。"
+          "description": "启动导航结果 data.task_id 中的本地任务 ID。"
         }
       },
       "required": [
@@ -65,7 +65,7 @@
       "properties": {
         "task_id": {
           "type": "string",
-          "description": "启动导航返回的本地任务 ID。"
+          "description": "启动导航结果 data.task_id 中的本地任务 ID。"
         }
       },
       "required": [
@@ -77,7 +77,7 @@
   {
     "type": "function",
     "name": "get_surroundings",
-    "description": "获取机器人周围代价地图图片。图片以机器人为中心、机器人前方朝上，标有像素坐标、比例尺和固定代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 使用。",
+    "description": "获取机器人周围代价地图图片。图片以机器人为中心、机器人前方朝上，标有像素坐标、比例尺和固定代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 使用。 环境 ID 位于 data.environment_id；小车位姿位于 pose，地图像素范围和比例位于 images[0].metadata。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -107,7 +107,7 @@
   {
     "type": "function",
     "name": "navigate_to_pixel_start_navigation",
-    "description": "使用 get_surroundings 返回的环境 ID，将该张完整图片中的目标像素及图片相对朝向转换到 map 坐标系后启动导航。只能选择 map_rect 内的地图像素。成功接受目标后消费该环境 ID，返回本工具的简短结果和 task_id，后续通过导航反馈/取消工具操作。",
+    "description": "使用 get_surroundings 返回的环境 ID，将该张完整图片中的目标像素及图片相对朝向转换到 map 坐标系后启动导航。只能选择 map_rect 内的地图像素。成功接受目标后消费该环境 ID，返回本工具的简短结果和 task_id，后续通过导航反馈/取消工具操作。 任务 ID 和物理状态分别位于结果的 data.task_id 和 data.status。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -115,7 +115,7 @@
       "properties": {
         "environment_id": {
           "type": "string",
-          "description": "get_surroundings 返回的环境 ID。"
+          "description": "get_surroundings 结果 data.environment_id 中的环境 ID。"
         },
         "pixel_x": {
           "type": "number",

@@ -57,8 +57,8 @@ void VLNAgent::init()
   Json inputs = Json::array({{{"role", "system"}, {"content", Json::array({
     {{"type", "input_text"}, {"text", prompt}}})}}});
   if (!instruction.empty()) {
-    const Json payload{{"source", "user"}, {"time_stamp", utils::utcNow()},
-      {"instruction", instruction}};
+    auto payload = utils::businessPayload("user");
+    payload["instruction"] = instruction;
     inputs.push_back({{"role", "user"}, {"content", Json::array({
       {{"type", "input_text"}, {"text", payload.dump()}}})}});
   }

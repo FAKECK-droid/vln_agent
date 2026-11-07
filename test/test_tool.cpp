@@ -61,10 +61,18 @@ ToolResult TestTool::execute(const Json & arguments)
   if (arguments.value("throw", false)) {
     throw std::runtime_error("测试执行异常");
   }
-  return {
-    {{"ok", true}, {"id", id}, {"token_id", token_->id},
-      {"settings", settings_}, {"group_settings", group_settings_}},
-    arguments.value("images", std::vector<Json>{})};
+  auto result = ToolResult::success({{"id", id}, {"token_id", token_->id},
+    {"settings", settings_}, {"group_settings", group_settings_}});
+  result.images = arguments.value("images", std::vector<Json>{});
+  if (!result.images.empty()) {
+    Json descriptions = Json::array();
+    for (std::size_t i = 0; i < result.images.size(); ++i) {
+      descriptions.push_back({{"metadata", {{"index", i}}}});
+    }
+    result.payload["images"] = arguments.value("image_metadata", descriptions);
+  }
+  if (arguments.contains("time_stamp")) {result.payload["time_stamp"] = arguments.at("time_stamp");}
+  return result;
 }
 
 void TestTool::shutdown() noexcept

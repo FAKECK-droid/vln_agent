@@ -32,7 +32,8 @@ static Json userInput(const std::string & instruction)
 {
   return {{"role", "user"}, {"content", Json::array({Json{
     {"type", "input_text"}, {"text", Json{{"source", "user"},
-      {"time_stamp", vln_agent::utils::utcNow()}, {"instruction", instruction}}.dump()}}})}};
+      {"time_stamp", vln_agent::utils::utcNow()}, {"instruction", instruction},
+      {"data", Json::object()}}.dump()}}})}};
 }
 
 static std::string textOf(const Json & response)

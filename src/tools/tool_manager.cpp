@@ -28,7 +28,9 @@ using Clock = std::chrono::steady_clock;
 static Json wrapResult(const std::string & call_id, const ToolResult & result)
 {
   auto payload = result.payload;
+  payload["source"] = "robot";
   if (!payload.contains("time_stamp")) {payload["time_stamp"] = utils::utcNow();}
+  if (!payload.contains("data")) {payload["data"] = Json::object();}
   return utils::functionCallOutput(call_id, payload, result.images);
 }
 

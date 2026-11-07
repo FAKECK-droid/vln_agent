@@ -56,12 +56,12 @@ bool NavigationRuntime::terminal(const std::string & status)
 ToolResult NavigationRuntime::snapshot(const std::shared_ptr<Task> & task)
 {
   Json payload = task->feedback;
-  payload["ok"] = true;
-  payload["time_stamp"] = utils::utcNow();
   payload["task_id"] = task->id;
   payload["status"] = task->status;
+  auto result = ToolResult::success(std::move(payload));
+  if (!task->pose.is_null()) {result.payload["pose"] = task->pose;}
   if (terminal(task->status) && task_ == task) {task_.reset();}
-  return {std::move(payload), {}};
+  return result;
 }
 
 void NavigationRuntime::shutdown() noexcept

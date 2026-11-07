@@ -65,17 +65,32 @@ ToolResult NavigationRuntime::get_surroundings(const Json & arguments)
     while (environments_.size() > max_environments_) {environments_.pop_front();}
   }
   const auto & rect = environment.map_rect;
-  return {Json{
-      {"ok", true}, {"time_stamp", utils::utcNow()}, {"environment_id", environment.id},
-      {"costmap", source}, {"frame_id", map_frame_}, {"range_m", environment.range_m},
-      {"image_width", image.cols}, {"image_height", image.rows},
-      {"map_rect", {{"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}}},
-      {"meters_per_pixel", environment.meters_per_pixel},
-      {"robot_pose", {{"x", environment.robot.x}, {"y", environment.robot.y},
-          {"yaw", environment.robot.yaw}}},
-      {"pixel_origin", "top_left"}, {"image_up", "robot_forward"},
-      {"image_left", "robot_left"}, {"yaw_convention", "0=up, positive=counterclockwise"}},
-    {{{"type", "input_image"}, {"image_url", image_url}, {"detail", "high"}}}};
+  auto result = ToolResult::success({{"environment_id", environment.id}});
+  result.payload["pose"] = utils::posePayload(map_frame_,
+    environment.robot.x, environment.robot.y, environment.robot.yaw);
+  bool simulated = false;
+  node_.get_parameter_or("use_sim_time", simulated, false);
+  const auto stamp = robot.header.stamp;
+  if (!simulated && (stamp.sec != 0 || stamp.nanosec != 0)) {
+    result.payload["pose"]["time_stamp"] = utils::formatUtcTime(
+      std::chrono::system_clock::time_point(std::chrono::seconds(stamp.sec) +
+      std::chrono::nanoseconds(stamp.nanosec)));
+  }
+  Json description{{"metadata", {
+    {"costmap", source}, {"range_m", environment.range_m},
+    {"image_width", image.cols}, {"image_height", image.rows},
+    {"map_rect", {{"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}}},
+    {"meters_per_pixel", environment.meters_per_pixel},
+    {"pixel_origin", "top_left"}, {"image_up", "robot_forward"},
+    {"image_left", "robot_left"}, {"yaw_convention", "0=up, positive=counterclockwise"}}}};
+  if (!simulated && (costmap.header.stamp.sec != 0 || costmap.header.stamp.nanosec != 0)) {
+    description["time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
+      std::chrono::seconds(costmap.header.stamp.sec) +
+      std::chrono::nanoseconds(costmap.header.stamp.nanosec)));
+  }
+  result.payload["images"] = Json::array({std::move(description)});
+  result.images.push_back({{"type", "input_image"}, {"image_url", image_url}, {"detail", "high"}});
+  return result;
 }
 
 void GetSurroundings::initialize(const ToolContext & context, const Json &)

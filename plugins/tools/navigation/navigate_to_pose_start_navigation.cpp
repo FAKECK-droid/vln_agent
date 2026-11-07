@@ -1,9 +1,13 @@
 #include "vln_agent/plugins/tools/navigation/navigate_to_pose_start_navigation.hpp"
 
+#include <chrono>
 #include <cmath>
 #include <pluginlib/class_list_macros.hpp>
+#include <tf2/utils.h>
+#include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 
 #include "vln_agent/plugins/tools/navigation/navigation_runtime.hpp"
+#include "vln_agent/utils/time.hpp"
 
 namespace vln_agent
 {
@@ -35,7 +39,7 @@ ToolResult NavigationRuntime::start_navigation(const Json & arguments)
       if (terminal(task_->status)) {
         auto result = ToolResult::failure(
           "NAVIGATION_RESULT_PENDING", "请先调用 get_feedback 读取上次导航终态");
-        result.payload["task_id"] = task_->id;
+        result.payload["data"]["task_id"] = task_->id;
         return result;
       }
       return ToolResult::failure("NAVIGATION_BUSY", "已有活动导航任务");
@@ -74,6 +78,19 @@ ToolResult NavigationRuntime::start_navigation(const Json & arguments)
             {"estimated_time_remaining_sec",
               rclcpp::Duration(feedback->estimated_time_remaining).seconds()},
             {"number_of_recoveries", feedback->number_of_recoveries}};
+          const auto & current = feedback->current_pose;
+          if (!current.header.frame_id.empty()) {
+            auto pose = utils::posePayload(current.header.frame_id,
+              current.pose.position.x, current.pose.position.y, tf2::getYaw(current.pose.orientation));
+            bool simulated = false;
+            self->node_.get_parameter_or("use_sim_time", simulated, false);
+            if (!simulated && (current.header.stamp.sec != 0 || current.header.stamp.nanosec != 0)) {
+              pose["time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
+                std::chrono::seconds(current.header.stamp.sec) +
+                std::chrono::nanoseconds(current.header.stamp.nanosec)));
+            }
+            task->pose = std::move(pose);
+          }
         }
       }
     };
@@ -111,8 +128,8 @@ ToolResult NavigationRuntime::start_navigation(const Json & arguments)
   }
   if (task->status == "rejected") {
     auto result = ToolResult::failure("NAVIGATION_REJECTED", "导航目标被服务端拒绝");
-    result.payload["task_id"] = task->id;
-    result.payload["status"] = task->status;
+    result.payload["data"]["task_id"] = task->id;
+    result.payload["data"]["status"] = task->status;
     if (task_ == task) {task_.reset();}
     return result;
   }

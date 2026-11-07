@@ -56,21 +56,23 @@ ToolResult CaptureImage::execute(const Json & arguments)
   }
 
   const auto & image = response->color;
-  Json payload{{"ok", true}, {"time_stamp", utils::utcNow()},
-    {"frame_id", image.header.frame_id}, {"format", image.format},
+  Json metadata{{"frame_id", image.header.frame_id}, {"format", image.format},
     {"pair_id", response->pair_id}, {"queue_index", response->queue_index},
     {"queue_size", response->queue_size}, {"image_age_sec", response->image_age_sec},
     {"age_error_sec", response->age_error_sec}, {"exceeded_max_age", response->exceeded_max_age}};
+  Json description{{"metadata", std::move(metadata)}};
   if (real_stamps_ && (image.header.stamp.sec != 0 || image.header.stamp.nanosec != 0)) {
-    payload["image_time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
+    description["time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
       std::chrono::seconds(image.header.stamp.sec) +
       std::chrono::nanoseconds(image.header.stamp.nanosec)));
   }
   const std::string mime = image.format.find("png") != std::string::npos ?
     "image/png" : "image/jpeg";
-  return {payload,
-    {{{"type", "input_image"}, {"image_url", "data:" + mime + ";base64," +
-        utils::encodeBase64(image.data)}, {"detail", "auto"}}}};
+  auto result = ToolResult::success();
+  result.payload["images"] = Json::array({std::move(description)});
+  result.images.push_back({{"type", "input_image"},
+    {"image_url", "data:" + mime + ";base64," + utils::encodeBase64(image.data)}, {"detail", "auto"}});
+  return result;
 }
 
 void CaptureImage::shutdown() noexcept

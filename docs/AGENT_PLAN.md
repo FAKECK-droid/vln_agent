@@ -1,6 +1,6 @@
 # Scout Mini Agent 规划
 
-日期：2026-10-23；EventManager 规划更新：2026-10-28。本文分为输入输出约束、工具定义与管理、SessionManager 会话管理、用户交互管理、EventManager 机器事件管理、后续规划六部分。本次只完善 EventManager 及其交接约定，不修改组件源码或展开 VLNAgent 主流程。
+日期：2026-10-23；统一业务字段更新：2026-11-07。本文分为输入输出约束、工具定义与管理、SessionManager 会话管理、用户交互管理、EventManager 机器事件管理、后续规划六部分。本文与当前统一业务输入、事件及工具结果实现保持一致。
 
 高层流程改为 Agent 驱动，通过 Responses API 的 Function Calling 调用小车工具。本文作为新方案的输入输出基线；旧的自定义 navigator、模型交互 BT 节点规划不再作为新架构的设计依据。
 
@@ -21,60 +21,82 @@ ToolManager 完成即移除活动记录，交互组件成功交付后不再接�
 - 模型请求的拼装、两份输入缓冲和最高频率调度由 SessionManager 管理；EventManager 在第五部分规划，VLNAgent 主流程本次不展开。
 - UserInteractionManager 统一负责用户输入输出，加载交互插件并通过 weak_ptr 查询其他组件；exchange() 直接合并插件返回的原生输入数组，并按各插件配置传递共享的完整当前快照。它不接收机器人主动消息，不消费 Agent 的完整 response 或工具 future。
 
-`source` 和 `time_stamp` 是标准业务输入仅有的两个公共必填字段；`pose` 等都是可选业务字段，不是 Responses API 的顶层参数。模型、连接、上下文与缓存配置统一放入全局 YAML，由 SessionManager 读取。
+用户输入、机器事件和工具结果共用业务 JSON 的 `source/time_stamp/data`，按需携带 `pose/images`。这些字段位于 `input_text.text` 内。模型、连接、上下文与缓存配置统一放入全局 YAML，由 SessionManager 读取。
 
 对象所有权统一优先使用智能指针：独占的 Impl、传输对象和插件加载器用 unique_ptr；共享资源、插件实例和跨插件共享的只读数据用 shared_ptr；查询其他组件、保存外部 ROS 节点或回调中反向引用所属对象时用 weak_ptr，避免引用环。一次操作先 lock() 取得局部 shared_ptr 保持对象存活；JSON 值、标量和只在函数调用期间使用的 const 引用保持值/引用语义，不为它们单独分配指针。
 
 ### 2. 标准输入 JSON
 
-#### 2.1 字段
+#### 2.1 公共字段与来源字段
 
-| 字段 | 约束 | 含义 |
+所有字段位于业务 JSON 顶层，具体载荷统一放在 data。用户、事件、工具的描述字段与 data 同级。
+
+| 字段 | 使用方式 | 含义 |
 | --- | --- | --- |
-| `source` | 必填，`"user"` 或 `"robot"` | 输入来自用户还是小车 |
-| `time_stamp` | 必填，固定三位毫秒的 UTC 字符串 | 指令接收或事件发生的时刻，格式为 `YYYY-MM-DDTHH:mm:ss.SSSZ`，例如 `2026-10-21T06:00:00.000Z` |
-| `pose` | 可选，位姿对象或 `null` | 有相关位姿时由输入来源提供；用户输入无需携带或自动补齐 |
-| `origin` | 机器 Event 必填，字符串 | 具体发布者，如 `/localization_monitor` 或 `/bt/main/InspectDoor`；与表示用户/机器类别的 `source` 区分 |
-| `text` | 可选，字符串 | 机器事件的文字说明 |
-| `instruction` | 可选 | 用户输入使用文字字符串；机器 Event 可使用 `{"function":"工具名"}` 请求调用函数，是否调用及调用顺序由模型自行决定，见第 26 节 |
-| `event` | 可选，字符串 | `status`：状态/观测；`error`：报错；`debug`：调试信息 |
-| `data` | 可选，对象 | 具体状态、错误或调试数据；业务扩展可放在这里 |
-| `images` | 有图片时填写，数组 | 每张图片的 `camera`、`time_stamp`；与后续原生图片项一一按顺序对应 |
+| `source` | 公共，user 或 robot | 用户输入为 user；机器事件和工具结果为 robot |
+| `time_stamp` | 公共，UTC 三位毫秒字符串 | 用户指令接收、事件发生或工具结果生成时刻；转发保留原值 |
+| `data` | 公共，对象，默认 {} | 观测、任务、目标及其他具体载荷 |
+| `pose` | 公共，可选 | 与本条信息对应的小车位姿 |
+| `images` | 含图片时填写 | 按原生图片顺序逐张提供元数据对象，数量与图片一致 |
+| `instruction` | 用户指令；事件也可携带工具建议 | 文字指令或 {"function":"工具名"}，与 data 同级 |
+| `origin` | 机器事件独有 | ROS 发布者或行为树节点实例标识，与 data 同级 |
+| `event` | 机器事件独有 | 事件类型，如 status、error、navigation_completed，与 data 同级 |
+| `ok` | 工具结果 | 本次函数执行成功与否，与 data 同级 |
+| `code/message` | 工具失败结果 | 错误码与说明，与 data 同级 |
 
-公共格式只要求 source 和 time_stamp；其余字段按内容需要提供，不适用时省略。时间戳记录实际事件/采样时刻，排队发送时不改成发送时刻。用户渠道插件提供已经包含标准业务 JSON 的原生 API 输入项，UserInteractionManager 只合并，不补位姿、不重写字段。
+事件的具体说明使用 data.message。公共封装由 utils::businessPayload(source, data) 创建；来源继续填写自己的描述字段。用户渠道保留提供方已构建的业务 JSON。
 
 #### 2.2 位姿
 
-首版使用二维位姿：`{"frame_id":"map","x":1.2,"y":2.3,"yaw":0.5}`。
+二维小车位姿统一使用：
 
-`frame_id` 明确坐标系，`x/y` 单位为米，`yaw` 单位为弧度。没有相关位姿时可直接省略 pose；明确表达未知位姿时也可填 null，不用零坐标代替未知值。有采样时间时可附加 pose.time_stamp，采用第 2.5 节同一 UTC 毫秒格式。
+```json
+{
+  "frame_id": "map",
+  "time_stamp": "2026-11-07T02:30:00.080Z",
+  "x": 1.2,
+  "y": 2.3,
+  "yaw": 0.5
+}
+```
+
+frame_id 表示坐标系，x/y 使用米，yaw 使用逆时针弧度。pose.time_stamp 为可选的位姿采样时刻。目标位姿放在 data.goal，使用同一组坐标字段。utils::posePayload() 共用此结构。
 
 #### 2.3 用户指令示例
 
 ```json
 {
   "source": "user",
-  "time_stamp": "2026-10-21T06:00:00.000Z",
-  "instruction": "前往走廊尽头，途中检查是否存在障碍物。"
+  "time_stamp": "2026-11-07T02:30:00.125Z",
+  "instruction": "前往门口",
+  "data": {}
 }
 ```
 
-#### 2.4 小车主动报错示例
+#### 2.4 机器事件与图片描述
 
 ```json
 {
   "source": "robot",
-  "time_stamp": "2026-10-21T06:01:00.000Z",
-  "origin": "/localization_monitor",
-  "event": "error",
+  "time_stamp": "2026-11-07T02:30:00.125Z",
+  "origin": "/bt/main/InspectDoor",
+  "event": "status",
   "data": {
-    "code": "LOCALIZATION_LOST",
-    "message": "暂时无法获得有效定位。"
-  }
+    "message": "已到达门口，请结合当前图片判断。"
+  },
+  "images": [
+    {
+      "time_stamp": "2026-11-07T02:30:00.080Z",
+      "metadata": {
+        "label": "door",
+        "score": 0.97
+      }
+    }
+  ]
 }
 ```
 
-状态与调试消息使用同样外壳，将 `event` 设为 `status` 或 `debug`，在 `text/data` 中放具体内容。机器 Event 还要填写具体发布者 `origin`；普通用户输入不要求该字段。EventManager 的接收、缓存和交付见第五部分。
+images[i] 对应同条消息中的第 i 张原生图片；可包含 time_stamp、pose 和自定义 metadata。metadata 的键和值由提供方定义。图片字节放在后续 input_image 中；无图片时可省略 images。输入追加及工具包装统一检查图片数量和元数据对象，整批校验通过后再追加。
 
 #### 2.5 全部组件统一时间戳
 
@@ -89,9 +111,9 @@ YYYY-MM-DDTHH:mm:ss.SSSZ
 
 在 include/vln_agent/utils/time.hpp 和 src/utils/time.cpp 提供共享格式化函数 formatUtcTime(system_clock::time_point) 与 utcNow()，各组件、工具插件和用户交互端复用。绝对时间用 system_clock；SessionManager 限频、超时和工具耗时继续用 steady_clock。wait_ms、run_ms、navigation_time_sec、estimated_time_remaining_sec 等时长保持数值，不转换成日期。
 
-- 工具结果的 payload 至少包含 ok/time_stamp；工具拒绝和异常结果也遵循此格式。
-- CaptureImage 将原有 stamp.sec/nanosec 的 JSON 输出改为 image_time_stamp 字符串，另以 time_stamp 表示结果生成时间。只有能对应真实 UTC 的 ROS 采样时间才转换；无法映射时省略采样时间，不把仿真时钟当成墙上时钟。
-- 导航反馈若携带反馈采样时刻，使用 feedback_time_stamp；其他插件有采样、开始、结束等绝对时刻时采用同一格式。
+- 工具 payload 包含 source/time_stamp/ok/data；拒绝和异常结果使用同一布局。
+- CaptureImage 使用 images[i].time_stamp 表示图片采样时间，顶层 time_stamp 表示结果生成时刻。可对应真实 UTC 的 ROS 时间才转换；仿真采样时间省略。
+- 导航反馈的采样位姿放入 pose，时间使用 pose.time_stamp；其他开始、结束等时刻按业务需要放在 data。
 - 交互汇总包在生成新的批次时填写 time_stamp；空轮询不因“当前时间变化”单独制造更新。相同批次重试保持原时间。
 - Responses 等外部协议固有字段在底层收发时遵守其协议，完整原始 response 仍原样交给 Agent；若其数值时间需要进入用户展示数据，在展示副本中转成上述字符串字段，不改写发送给服务端的原生字段。项目新增的业务时间一律使用上述格式。
 
@@ -111,7 +133,7 @@ YYYY-MM-DDTHH:mm:ss.SSSZ
       "content": [
         {
           "type": "input_text",
-          "text": "{\"source\":\"user\",\"time_stamp\":\"2026-10-21T06:00:00.000Z\",\"instruction\":\"前往走廊尽头，途中检查是否存在障碍物。\"}"
+          "text": "{\"source\":\"user\",\"time_stamp\":\"2026-10-21T06:00:00.000Z\",\"instruction\":\"前往走廊尽头，途中检查是否存在障碍物。\",\"data\":{}}"
         }
       ]
     }
@@ -123,9 +145,7 @@ YYYY-MM-DDTHH:mm:ss.SSSZ
 
 #### 3.2 工具执行结果
 
-工具执行结果使用 `function_call_output`，与第 2 节的用户/小车标准输入分别定义。`output` 使用内容数组：第一项 `input_text` 只包含本函数结果对象的 JSON 字符串，后面可追加原生图片项；不套用 `source/time_stamp/pose/event/data` 标准输入外壳。`call_id` 复制本次模型工具调用的值。[官方内容类型定义](https://developers.openai.com/api/reference/python/resources/responses)
-
-下例为 `navigate_to_pose_get_feedback` 的回传片段，图片数据是占位符：
+工具结果使用 function_call_output，业务 JSON 沿用第二节公共字段；output 第一项为 input_text，后面按顺序追加原生图片。call_id 复制对应模型调用的值。
 
 ```json
 {
@@ -136,12 +156,7 @@ YYYY-MM-DDTHH:mm:ss.SSSZ
       "output": [
         {
           "type": "input_text",
-          "text": "{\"ok\":true,\"task_id\":\"nav_001\",\"status\":\"running\",\"distance_remaining_m\":12.5,\"time_stamp\":\"2026-10-21T06:00:00.000Z\"}"
-        },
-        {
-          "type": "input_image",
-          "image_url": "data:image/jpeg;base64,<图片Base64数据>",
-          "detail": "auto"
+          "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-11-07T02:30:00.125Z\",\"ok\":true,\"data\":{\"task_id\":\"nav_12\",\"status\":\"running\",\"distance_remaining_m\":12.5}}"
         }
       ]
     }
@@ -149,18 +164,13 @@ YYYY-MM-DDTHH:mm:ss.SSSZ
 }
 ```
 
-工具结果约定：
+- source 固定为 robot，time_stamp 表示结果生成时刻，ok/code/message 与 data 同级。
+- task_id、status、environment_id、goal 和反馈数值等具体载荷放在 data。
+- pose 表示小车观测位姿；每张图片的采样时间及自定义信息放在 images 对应元素。
+- ok 表示本次函数是否执行成功；data.status 表示导航物理任务状态，使用 running/succeeded/failed/canceling/canceled/rejected。
+- ToolResult::success(data) 与 failure(code, message) 构造共用业务字段。ToolManager 补齐 source、缺省 time_stamp/data 并封装 API 外层；图片和 images 元数据数量须一致。
 
-- 结果对象至少包含布尔值 ok 和结果生成时刻 time_stamp，表示本次函数操作是否成功以及生成结果的时间；失败时增加 code 和 message。time_stamp 统一为第 2.5 节的 UTC 毫秒字符串。
-- 插件复用通用时间工具生成时间戳。ToolManager 在封装结果时为缺少 time_stamp 的成功、拒绝、异常等路径统一补齐，已有采样时间保持原值；不添加普通业务输入的 source 外壳。
-- 其他字段由具体工具定义。导航反馈可直接返回 `task_id/status/distance_remaining_m`，图片使用原生 `input_image` 项。
-- 持续动作的 `status` 可为 `running / succeeded / failed / canceling / canceled / rejected`，具体枚举由工具固定。
-- `ok: true` 表示本次启动、查询或取消请求处理成功，不保证物理动作已经完成；例如查询成功仍可得到 `status: "failed"`。
-- ToolManager 只封装调用结果的 API 外层和 `call_id`，不补齐普通业务输入字段，也不把同一个结果重复转换成小车标准输入。
-
-一次请求可以只携带工具执行结果，无需额外制造标准输入消息。用户指令、小车主动消息和工具结果在 `input` 中作为独立项出现，各组件提供已经包装好的 API 输入项，SessionManager 按添加顺序拼装和发送。
-
-没有对应函数调用的主动报错、调试或状态消息走 EventManager，使用第 3.1 节的普通消息形式。系统提示词和已有历史项保持 API 原生结构。
+用户、事件与工具结果作为 input 的独立元素提交。系统提示词与模型历史保持原生格式。
 
 ### 4. 模型输出
 
@@ -366,7 +376,7 @@ public:
 
 `ToolContext` 只提供工具执行所需的通用依赖：ROS 节点的 weak_ptr、同一份 shared_ptr<SharedResources>、`group_id/group_settings` 和共享关闭标志。它不提供输入快照、机器人事件投递或会话传输接口；需要观测数据的插件通过自身 ROS 接口或组内共享资源获取。
 
-`ToolResult` 只保存本函数的结果对象 `payload` 和可选原生图片内容项。`payload` 至少包含 ok 与 time_stamp，遵循第 3.2 节的 status/code/message 约定；结果时刻和采样时刻均使用第 2.5 节统一格式，其余字段由插件定义。Manager 将 `payload` 序列化为 `input_text.text`，与图片一起封装到单个 `function_call_output`，并填入对应 `call_id`。插件不重复编写 API 外壳，也不在返回值中硬编码函数定义。
+`ToolResult` 只保存本函数的结果对象 `payload` 和可选原生图片内容项。`payload` 包含 source/time_stamp/ok/data，遵循第 3.2 节约定；结果时刻和采样时刻均使用第 2.5 节统一格式，其余字段由插件定义。Manager 将 `payload` 序列化为 `input_text.text`，与图片一起封装到单个 `function_call_output`，并填入对应 `call_id`。插件不重复编写 API 外壳，也不在返回值中硬编码函数定义。
 
 #### 7.2 有状态工具类与函数插件的适配
 
@@ -753,7 +763,7 @@ SessionManager 内部只保留一个通用 `buildRequest()`：所有输入种类
       "output": [
         {
           "type": "input_text",
-          "text": "{\"ok\":true,\"status\":\"running\",\"distance_remaining_m\":12.5,\"time_stamp\":\"2026-10-21T06:00:00.000Z\"}"
+          "text": "{\"ok\":true,\"time_stamp\":\"2026-10-21T06:00:00.000Z\",\"source\":\"robot\",\"data\":{\"status\":\"running\",\"distance_remaining_m\":12.5}}"
         }
       ]
     }
@@ -938,10 +948,10 @@ public:
 
 - initialize() 准备本插件的 ROS 或网络接口，只接收协议 settings；插件不查询其他业务组件。
 - exchange(outgoing) 正常返回表示已接收该输出批次：已发布，或已保留共享指针供本插件继续发送。传 nullptr 表示没有新输出，仍然接收输入。
-- 返回值就是可直接追加到 Responses input[] 的对象数组；无输入返回 []。管理器仅按顺序合并数组，不包装、不解析业务文本、不添加 channel_id/source/pose 或时间。
+- 返回值就是可直接追加到 Responses input[] 的对象数组；无输入返回 []。管理器按顺序合并数组；图片输入通过共用工具检查 images 对应关系，已有业务字段保持原值。
 - shutdown() 释放本渠道资源，可重复调用。
 
-原生消息的 input_text.text 内仍遵循第二部分业务约定，公共必填字段只有 source/time_stamp；用户文字、图片等在输入来源处组织好。单个插件返回示例：
+原生消息的 input_text.text 内仍遵循第二部分业务约定，公共字段为 source/time_stamp/data；用户文字、图片等在输入来源处组织好。单个插件返回示例：
 
 ```json
 [
@@ -950,7 +960,7 @@ public:
     "content": [
       {
         "type": "input_text",
-        "text": "{\"source\":\"user\",\"time_stamp\":\"2026-10-21T06:00:00.000Z\",\"instruction\":\"请前往门口\"}"
+        "text": "{\"source\":\"user\",\"time_stamp\":\"2026-10-21T06:00:00.000Z\",\"instruction\":\"请前往门口\",\"data\":{}}"
       }
     ]
   }
@@ -1192,7 +1202,7 @@ shutdown() 停止新 exchange()，先关闭、释放接口插件，再释放加�
 
 本节是规划中的代码示例，本轮不创建或移动功能包源码。插件发布一个 send_topic，订阅一个 receive_topic，均使用 std_msgs/msg/String，data 保存 JSON 文本。
 
-接收话题发送方直接提供一个原生 API 输入对象或其数组，其中业务 JSON 的 source/time_stamp 已准备好。插件只解析 JSON 并追加，不将普通文字自动包装成模型消息，不修改已有字段。
+接收话题发送方直接提供一个原生 API 输入对象或其数组，其中业务 JSON 的 source/time_stamp/data 已准备好。插件只解析 JSON 并追加，不将普通文字自动包装成模型消息，不修改已有字段。
 
 include/vln_agent/plugins/interfaces/ros_topic_interface/ros_topic_interface.hpp：
 
@@ -1336,13 +1346,13 @@ EventManager 负责接收、按到达顺序暂存和批量取出 Event，一次�
 | `source` | 必填，固定 `"robot"`；沿用普通业务输入的来源类别 |
 | `time_stamp` | 必填，事件发生时刻，UTC 三位毫秒，例如 `2026-10-28T06:00:00.000Z` |
 | `origin` | Event 必填，具体发布者标识；ROS 节点用完整节点名，行为树节点用实例路径，例如 `/bt/main/InspectDoor` |
-| `text` | 可选，事件的文字内容；图片事件也可附带文字说明 |
-| `event` | 可选，沿用 `status/error/debug` 分类 |
-| `data` | 可选，结构化业务数据；`pose` 等仍按第一部分需要填写 |
-| `images` | 可选，图片元数据数组，与后续原生图片项按顺序对应 |
+| `pose` | 可选，统一的小车位姿对象 |
+| `event` | 机器事件独有的类型，与 data 同级，如 status/error/navigation_completed |
+| `data` | 具体事件载荷，默认 {}；事件说明使用 data.message |
+| `images` | 含图片时填写，与原生图片逐张按顺序对应；元素可含 time_stamp/pose/metadata |
 | `instruction` | 可选，`{"function":"capture_image"}` 形式的函数调用请求；模型综合事件和上下文决定是否执行，不保证生成对应的 function_call |
 
-`source` 回答“用户还是机器”，`origin` 回答“具体哪个节点”。时间和来源由发布者填写；EventManager 保留原值。文字、图片和命令请求按实际需要组合，不要求事件必须带图片或命令请求。instruction.function 只是提供给模型的业务信息，不是本地执行命令或强制工具选择。
+`source` 回答“用户还是机器”，机器事件独有的 `origin` 回答“具体哪个节点”，`event` 表示事件类型。时间和来源由发布者填写；EventManager 保留原值。事件说明放在 data.message，图片和命令请求按实际需要组合。instruction.function 只是提供给模型的业务信息，不是本地执行命令或强制工具选择。
 
 业务 JSON 示例：
 
@@ -1352,15 +1362,19 @@ EventManager 负责接收、按到达顺序暂存和批量取出 Event，一次�
   "time_stamp": "2026-10-28T06:00:00.000Z",
   "origin": "/bt/main/InspectDoor",
   "event": "status",
-  "text": "已到达门口，请结合当前画面重新拍照检查。",
   "images": [
     {
-      "camera": "front",
-      "time_stamp": "2026-10-28T06:00:00.000Z"
+      "time_stamp": "2026-10-28T06:00:00.000Z",
+      "metadata": {
+        "camera": "front"
+      }
     }
   ],
   "instruction": {
     "function": "capture_image"
+  },
+  "data": {
+    "message": "已到达门口，请结合当前画面重新拍照检查。"
   }
 }
 ```
@@ -1373,7 +1387,7 @@ EventManager 负责接收、按到达顺序暂存和批量取出 Event，一次�
   "content": [
     {
       "type": "input_text",
-      "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-10-28T06:00:00.000Z\",\"origin\":\"/bt/main/InspectDoor\",\"event\":\"status\",\"text\":\"已到达门口，请结合当前画面重新拍照检查。\",\"images\":[{\"camera\":\"front\",\"time_stamp\":\"2026-10-28T06:00:00.000Z\"}],\"instruction\":{\"function\":\"capture_image\"}}"
+      "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-10-28T06:00:00.000Z\",\"origin\":\"/bt/main/InspectDoor\",\"event\":\"status\",\"images\":[{\"time_stamp\":\"2026-10-28T06:00:00.000Z\",\"metadata\":{\"camera\":\"front\"}}],\"instruction\":{\"function\":\"capture_image\"},\"data\":{\"message\":\"已到达门口，请结合当前画面重新拍照检查。\"}}"
     },
     {
       "type": "input_image",
@@ -1421,7 +1435,7 @@ event_manager:
 
 只提供一个接收 ROS 话题，首版类型为 std_msgs/msg/String，data 是第 24 节原生 Event 对象或 Event 数组的 JSON 文本。其他 ROS 节点或独立进程的行为树节点共用此话题发布，EventManager 解析后统一调用 addEvents()；同进程也可直接调用 addEvents()。话题采用可靠、volatile、KeepLast(10) 的 QoS，不重放旧事件。该话题只负责事件上报，不增加应答话题。
 
-发布者负责按约定准备字段、UTC 时间和图片。接收侧只做 JSON 解析；语法错误记录 ROS 日志并忽略该条，不增加逐字段 Schema 校验、自动补齐、图片解码或转换。订阅回调捕获独立 shared_ptr 缓冲状态，不捕获裸 this 或形成节点引用环；对象内部仍以 unique_ptr 管理 Impl。
+发布者负责按约定准备字段、UTC 时间和图片。接收侧解析 JSON 并检查图片与 images 元数据数量；无效批次记录 ROS 日志并忽略，后续消息继续处理。订阅回调捕获独立 shared_ptr 缓冲状态，不捕获裸 this 或形成节点引用环；对象内部仍以 unique_ptr 管理 Impl。
 
 ### 26. 批量事件与会话交接
 
@@ -1434,7 +1448,7 @@ event_manager:
     "content": [
       {
         "type": "input_text",
-        "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-10-28T06:00:00.000Z\",\"origin\":\"/localization_monitor\",\"text\":\"当前位置已更新。\",\"pose\":{\"frame_id\":\"map\",\"x\":1.2,\"y\":2.3,\"yaw\":0.5}}"
+        "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-10-28T06:00:00.000Z\",\"origin\":\"/localization_monitor\",\"pose\":{\"frame_id\":\"map\",\"x\":1.2,\"y\":2.3,\"yaw\":0.5},\"event\":\"status\",\"data\":{\"message\":\"当前位置已更新。\"}}"
       }
     ]
   },
@@ -1443,7 +1457,7 @@ event_manager:
     "content": [
       {
         "type": "input_text",
-        "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-10-28T06:00:00.100Z\",\"origin\":\"/bt/main/InspectDoor\",\"text\":\"已到达门口。\",\"instruction\":{\"function\":\"capture_image\"}}"
+        "text": "{\"source\":\"robot\",\"time_stamp\":\"2026-10-28T06:00:00.100Z\",\"origin\":\"/bt/main/InspectDoor\",\"instruction\":{\"function\":\"capture_image\"},\"event\":\"status\",\"data\":{\"message\":\"已到达门口。\"}}"
       }
     ]
   }

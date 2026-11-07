@@ -2,7 +2,7 @@
   {
     "type": "function",
     "name": "capture_image",
-    "description": "通过图像服务获取一张彩色图。latest 取当前最新图；index 按历史索引取图；age 取最接近指定毫秒前的历史图。读取不消耗图像队列。",
+    "description": "通过图像服务获取一张彩色图。latest 取当前最新图；index 按历史索引取图；age 取最接近指定毫秒前的历史图。读取不消耗图像队列。 结果的 images[0] 描述对应图片；采样时间为 time_stamp，配对、索引和年龄信息位于 metadata。",
     "async": true,
     "strict": true,
     "parameters": {

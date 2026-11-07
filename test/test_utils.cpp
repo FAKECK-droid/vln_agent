@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <yaml-cpp/yaml.h>
 
+#include "vln_agent/tools/tool_result.hpp"
 #include "vln_agent/utils/base64.hpp"
 #include "vln_agent/utils/time.hpp"
 #include "vln_agent/utils/json.hpp"
@@ -42,10 +43,65 @@ TEST(Utils, JsonArraysAppendAtomicallyAndResultsKeepNativeImages)
   utils::prependArray(destination, Json::array({{{"type", "reasoning"}}}));
   EXPECT_EQ(destination.at(0).at("type"), "reasoning");
   const Json image{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}};
-  const auto result = utils::functionCallOutput("call_1", Json{{"ok", true}}, {image});
+  auto tool = ToolResult::success({{"value", 7}});
+  tool.payload["images"] = Json::array({{{"metadata", {{"label", "door"}}}}});
+  const auto result = utils::functionCallOutput("call_1", tool.payload, {image});
   EXPECT_EQ(result.at("call_id"), "call_1");
-  EXPECT_EQ(result.at("output").at(0).at("text"), "{\"ok\":true}");
+  EXPECT_EQ(Json::parse(result.at("output").at(0).at("text").get<std::string>()), tool.payload);
   EXPECT_EQ(result.at("output").at(1), image);
+}
+
+TEST(Utils, CommonPayloadKeepsDescriptionsBesideDataAndPoseIsStamped)
+{
+  auto input = utils::businessPayload("user", {{"route", "hall"}});
+  input["instruction"] = "前往门口";
+  EXPECT_EQ(input.at("source"), "user");
+  EXPECT_EQ(input.at("instruction"), "前往门口");
+  EXPECT_EQ(input.at("data"), (Json{{"route", "hall"}}));
+  EXPECT_EQ(input.at("time_stamp").get<std::string>().size(), 24u);
+  EXPECT_FALSE(input.contains("origin"));
+  EXPECT_FALSE(input.contains("event"));
+  EXPECT_FALSE(input.contains("text"));
+  const auto pose = utils::posePayload("map", 1.2, 2.3, 0.5, "2026-11-07T02:30:00.080Z");
+  EXPECT_EQ(pose, (Json{{"frame_id", "map"}, {"x", 1.2}, {"y", 2.3}, {"yaw", 0.5},
+    {"time_stamp", "2026-11-07T02:30:00.080Z"}}));
+  EXPECT_FALSE(utils::posePayload("odom", 0, 0, 0).contains("time_stamp"));
+  const auto success = ToolResult::success({{"task_id", "nav_7"}});
+  EXPECT_EQ(success.payload.at("data"), (Json{{"task_id", "nav_7"}}));
+  EXPECT_TRUE(success.payload.at("ok"));
+  const auto failure = ToolResult::failure("UNAVAILABLE", "服务未就绪");
+  EXPECT_FALSE(failure.payload.at("ok"));
+  EXPECT_EQ(failure.payload.at("code"), "UNAVAILABLE");
+  EXPECT_EQ(failure.payload.at("source"), "robot");
+  EXPECT_EQ(failure.payload.at("data"), Json::object());
+}
+
+TEST(Utils, RequiresOrderedMetadataForEveryImageAndRejectsWholeInvalidBatches)
+{
+  const Json image{{"type", "input_image"}, {"image_url", "data:image/png;base64,AA=="}};
+  auto payload = utils::businessPayload("user");
+  payload["instruction"] = "查看图片";
+  EXPECT_THROW(utils::functionCallOutput("c", payload, {image}), std::invalid_argument);
+  payload["images"] = Json::array({{{"metadata", {{"label", "first"}}}},
+    {{"metadata", {{"score", 0.7}, {"enabled", true}}}}});
+  const auto output = utils::functionCallOutput("c", payload, {image, image});
+  EXPECT_EQ(Json::parse(output.at("output")[0].at("text").get<std::string>()), payload);
+  auto message = Json{{"role", "user"}, {"content", output.at("output")}};
+  Json destination = Json::array();
+  utils::appendInputs(destination, message);
+  EXPECT_EQ(destination, Json::array({message}));
+  const auto previous = destination;
+  message["content"].erase(message["content"].end() - 1);
+  EXPECT_THROW(utils::appendInputs(destination, Json::array({output, message})), std::invalid_argument);
+  EXPECT_EQ(destination, previous);
+  EXPECT_THROW(utils::appendInputs(destination, message), std::invalid_argument);
+  EXPECT_EQ(destination, previous);
+  payload["images"] = Json::array({1});
+  EXPECT_THROW(utils::functionCallOutput("c", payload, {image}), std::invalid_argument);
+  payload["images"] = Json::object();
+  EXPECT_THROW(utils::functionCallOutput("c", payload, {}), std::invalid_argument);
+  payload.erase("images");
+  EXPECT_NO_THROW(utils::functionCallOutput("c", payload, {}));
 }
 
 TEST(Utils, YamlKeepsQuotedScalarsAndSettingsDefaults)

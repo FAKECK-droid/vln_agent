@@ -16,7 +16,7 @@ public:
   /**
    * @brief 读取代价地图并返回机器人朝上的环境图片。
    * @param arguments 包含 costmap（local/global）和 range_m（正方形边长，米）。
-   * @return 环境 ID、图片几何信息与原生 PNG 内容项。
+   * @return data.environment_id、公共 pose、images 图片元数据与原生 PNG 内容项。
    */
   ToolResult execute(const Json & arguments) override;
   /** @brief 插件无独立资源；共享资源由 SharedResources 统一关闭。 */

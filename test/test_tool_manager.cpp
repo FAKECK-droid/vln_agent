@@ -77,10 +77,10 @@ TEST_F(ToolManagerTest, SelectsDefinitionsInConfigurationOrderAndInjectsSettings
         call("first", "a"), call("second", "b")})));
   const auto first_result = payload(handles[0]);
   const auto second_result = payload(handles[1]);
-  EXPECT_EQ(first_result.at("token_id"), second_result.at("token_id"));
-  EXPECT_EQ(first_result.at("settings"), Json::object());
-  EXPECT_EQ(second_result.at("settings"), second.at("settings"));
-  EXPECT_EQ(second_result.at("group_settings"),
+  EXPECT_EQ(first_result.at("data").at("token_id"), second_result.at("data").at("token_id"));
+  EXPECT_EQ(first_result.at("data").at("settings"), Json::object());
+  EXPECT_EQ(second_result.at("data").at("settings"), second.at("settings"));
+  EXPECT_EQ(second_result.at("data").at("group_settings"),
     (Json{{"number", 7}, {"quoted", "007"}, {"enabled", true}}));
 }
 
@@ -94,8 +94,8 @@ TEST_F(ToolManagerTest, SeparatesGroupsAndManagerInstances)
   second.load(path);
   const auto a = first.submit(response(Json::array({call("first", "a"), call("second", "b")})));
   const auto b = second.submit(response(Json::array({call("first", "a")})));
-  EXPECT_NE(payload(a[0]).at("token_id"), payload(a[1]).at("token_id"));
-  EXPECT_NE(payload(a[0]).at("token_id"), payload(b[0]).at("token_id"));
+  EXPECT_NE(payload(a[0]).at("data").at("token_id"), payload(a[1]).at("data").at("token_id"));
+  EXPECT_NE(payload(a[0]).at("data").at("token_id"), payload(b[0]).at("data").at("token_id"));
 }
 
 TEST_F(ToolManagerTest, PublishesFastResultAndDeduplicatesOnlyActiveCallIds)
@@ -106,7 +106,7 @@ TEST_F(ToolManagerTest, PublishesFastResultAndDeduplicatesOnlyActiveCallIds)
         call("first", "slow", {{"id", "slow"}, {"wait", true}}),
         call("first", "fast", {{"id", "fast"}})})));
   started(2);
-  EXPECT_EQ(payload(handles[1]).at("id"), "fast");
+  EXPECT_EQ(payload(handles[1]).at("data").at("id"), "fast");
   EXPECT_EQ(handles[0].result.wait_for(0ms), std::future_status::timeout);
   auto repeated = call("unknown", "slow");
   repeated["arguments"] = "invalid";
@@ -160,7 +160,7 @@ TEST_F(ToolManagerTest, BlockingCallPausesLaterDispatchWithoutWaitingForEarlierC
   EXPECT_EQ(manager.getQueueSnapshot().at("running").size(), 2u);
   release("b");
   EXPECT_TRUE(payload(handles[1]).at("ok"));
-  EXPECT_EQ(payload(handles[2]).at("id"), "c");
+  EXPECT_EQ(payload(handles[2]).at("data").at("id"), "c");
   EXPECT_EQ(handles[0].result.wait_for(0ms), std::future_status::timeout);
   EXPECT_TRUE(manager.getCallStatus("b").is_null());
   EXPECT_EQ(manager.getStatus().at("call_count"), 1);
@@ -281,6 +281,20 @@ TEST_F(ToolManagerTest, TurnsCallErrorsIntoIndividualResultsAndKeepsImagesNative
   const auto output = handles[5].result.get();
   EXPECT_EQ(output.at("output").size(), 2u);
   EXPECT_EQ(output.at("output").at(1), image);
+}
+
+TEST_F(ToolManagerTest, InvalidImageMetadataFailsOneCallAndKeepsWorkerUsable)
+{
+  ToolManager manager(node);
+  manager.load(config.config(Json::array({group(Json::array({function("first")}))}), 1));
+  const Json image{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}};
+  const auto handles = manager.submit(response(Json::array({
+    call("first", "bad", {{"images", Json::array({image})}, {"image_metadata", Json::array()}}),
+    call("first", "good", {{"time_stamp", "2026-11-07T02:30:00.125Z"}})})));
+  EXPECT_EQ(payload(handles[0]).at("code"), "TOOL_EXECUTION_FAILED");
+  EXPECT_EQ(handles[0].completion.get().at("state"), "failed");
+  EXPECT_TRUE(payload(handles[1]).at("ok"));
+  EXPECT_EQ(payload(handles[1]).at("time_stamp"), "2026-11-07T02:30:00.125Z");
 }
 
 TEST_F(ToolManagerTest, ShutdownReleasesAllCallsWhileExternalFuturesRemainReadable)
