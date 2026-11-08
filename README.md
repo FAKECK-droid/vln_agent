@@ -715,3 +715,23 @@ colcon test --packages-select vln_agent --ctest-args -R '^test_event_manager$' -
 完整离线回归 58 项 GTest 中 57 项通过，1 项已有真实响应回放因未提供 fixture 跳过，无失败。
 安装后的独立下游工程仅链接 vln_agent::vln_agent_events，编译运行通过；动态依赖中没有
 vln_agent_session、vln_agent_tools 或 vln_agent_interaction。未进行开发板或真实模型测试。
+
+### Base64 性能
+
+encodeBase64 / decodeBase64 的接口保持不变。底层静态集成 libbase64 v0.5.3，
+x86 运行时选择支持的 SIMD，ARM64 使用 NEON，其他平台回退到通用实现。
+每次调用一次分配输出空间，不使用 OpenMP 工作线程；
+CPU 分派通过线程安全的一次初始化完成。解码仍拒绝空白、非法字符、
+中途填充、不完整四字符组和非零未使用位。
+第三方源码随包保存，构建不联网；版本和许可证见 third_party/libbase64。
+
+开发机参考测试（i7-14650HX / WSL2、Release、1 MiB 二进制数据、包含输出分配，
+三轮中位数；解码输入约 1.33 MiB）：
+
+| 操作 | 原实现 | SIMD 实现 |
+| --- | ---: | ---: |
+| 编码 | 1.444 ms | 0.063 ms |
+| 解码 | 10.384 ms | 0.058 ms |
+
+以上仅为 Base64 函数耗时，不含图片压缩、JSON 序列化及传输。
+Jetson 未实测，不能将上述耗时直接套用于 ARM 设备。

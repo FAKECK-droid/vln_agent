@@ -24,6 +24,8 @@ find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs calib3d)
 rosidl_generate_interfaces(${PROJECT_NAME} "srv/ToolCall.srv")
 rosidl_get_typesupport_target(tool_call_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
 
+add_subdirectory(third_party/libbase64 EXCLUDE_FROM_ALL)
+
 add_library(vln_agent_utils SHARED
   src/utils/time.cpp
   src/utils/json.cpp
@@ -34,6 +36,7 @@ target_include_directories(vln_agent_utils PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
 target_link_libraries(vln_agent_utils PUBLIC nlohmann_json::nlohmann_json yaml-cpp)
+target_link_libraries(vln_agent_utils PRIVATE vln_agent_base64)
 
 add_library(vln_agent_session SHARED
   src/session/session_manager.cpp
@@ -123,6 +126,8 @@ install(DIRECTORY plugins/ DESTINATION share/${PROJECT_NAME}/plugins
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME} PATTERN "*.local.yaml" EXCLUDE)
 install(DIRECTORY docs DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
+install(FILES third_party/libbase64/LICENSE third_party/libbase64/README.vendor.md
+  DESTINATION share/${PROJECT_NAME}/licenses/libbase64)
 
 if(BUILD_TESTING)
   find_package(ament_cmake_gtest REQUIRED)
@@ -189,6 +194,9 @@ if(BUILD_TESTING)
     VLN_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
   set_tests_properties(test_event_manager PROPERTIES ENVIRONMENT
     "ROS_DOMAIN_ID=176;ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/ros-logs")
+
+  ament_add_gtest(test_base64 test/test_base64.cpp TIMEOUT 20)
+  target_link_libraries(test_base64 vln_agent_utils OpenSSL::Crypto Threads::Threads)
 
   ament_add_gtest(test_utils test/test_utils.cpp TIMEOUT 15)
   target_link_libraries(test_utils vln_agent_utils)
