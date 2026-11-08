@@ -160,6 +160,18 @@ protected:
     return group;
   }
 
+  /** @brief 与普通导航共用资源，只覆盖环顾 XML 路径供假 Action 检查。 */
+  Json lookaroundGroup()
+  {
+    auto group = surroundingsGroup();
+    group["settings"]["lookaround_behavior_tree"] = "/test/behavior_trees/lookaround.xml";
+    group["functions"].push_back({{"name", "start_lookaround"},
+        {"plugin", "vln_agent/StartLookaround"}, {"blocking", true}});
+    group["functions"].push_back({{"name", "cancel_lookaround"},
+        {"plugin", "vln_agent/CancelLookaround"}, {"blocking", true}});
+    return group;
+  }
+
   void createCostmapServers()
   {
     using Service = nav2_msgs::srv::GetCostmap;
@@ -254,11 +266,13 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
   ToolManager manager(client_node);
   manager.load(share + "/config/agent.yaml");
   const auto tools = manager.getTools();
-  ASSERT_EQ(tools.size(), 6u);
+  ASSERT_EQ(tools.size(), 8u);
   EXPECT_EQ(tools.at(0).at("name"), "navigate_to_pose_start_navigation");
   EXPECT_EQ(tools.at(3).at("name"), "get_surroundings");
   EXPECT_EQ(tools.at(4).at("name"), "navigate_to_pixel_start_navigation");
-  EXPECT_EQ(tools.at(5).at("name"), "capture_image");
+  EXPECT_EQ(tools.at(5).at("name"), "start_lookaround");
+  EXPECT_EQ(tools.at(6).at("name"), "cancel_lookaround");
+  EXPECT_EQ(tools.at(7).at("name"), "capture_image");
   for (const auto & tool : tools) {
     EXPECT_TRUE(tool.at("async").get<bool>());
     EXPECT_TRUE(tool.at("strict").get<bool>());
@@ -369,6 +383,82 @@ TEST_F(RosToolsTest, UnavailableNavigationDoesNotCreateAnActiveTask)
   manager.shutdown();
   ASSERT_TRUE(eventually([&] {return active_goal->is_canceling();}));
   active_goal->canceled(std::make_shared<Action::Result>());
+}
+
+TEST_F(RosToolsTest, LookaroundUsesCurrentPoseAndTreeThenReleasesSuccessAndFailureWithoutFeedback)
+{
+  createServer();
+  createCostmapServers();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({lookaroundGroup()})));
+  surroundings(manager);  // 等待专用 TF 回调准备好。
+
+  const auto first = payload(invoke(manager, "start_lookaround", Json::object()));
+  ASSERT_TRUE(first.at("ok").get<bool>());
+  EXPECT_EQ(first.at("data").at("status"), "running");
+  const auto first_goal = goal(0);
+  const auto & request = *first_goal->get_goal();
+  EXPECT_TRUE(first_goal->is_active());  // 工具已返回，行为树仍未结束。
+  EXPECT_EQ(request.behavior_tree, "/test/behavior_trees/lookaround.xml");
+  EXPECT_EQ(request.pose.header.frame_id, "map");
+  EXPECT_NEAR(request.pose.pose.position.x, 8, 1e-6);
+  EXPECT_NEAR(request.pose.pose.position.y, -2, 1e-6);
+  EXPECT_NEAR(request.pose.pose.orientation.z, std::sin(M_PI / 4), 1e-6);
+  EXPECT_NEAR(request.pose.pose.orientation.w, std::cos(M_PI / 4), 1e-6);
+  EXPECT_EQ(start(manager).at("code"), "NAVIGATION_BUSY");
+  EXPECT_EQ(payload(invoke(manager, "start_lookaround", Json::object())).at("code"),
+    "NAVIGATION_BUSY");
+
+  first_goal->succeed(std::make_shared<Action::Result>());
+  Json second;
+  ASSERT_TRUE(eventually([&] {
+      second = payload(invoke(manager, "start_lookaround", Json::object()));
+      return second.value("ok", false);
+    }));
+  EXPECT_NE(second.at("data").at("task_id"), first.at("data").at("task_id"));
+  goal(1)->abort(std::make_shared<Action::Result>());
+  Json normal;
+  ASSERT_TRUE(eventually([&] {
+      normal = start(manager);
+      return normal.value("ok", false);
+    }));
+  EXPECT_EQ(goal(2)->get_goal()->behavior_tree, "");  // 不污染普通导航。
+  goal(2)->succeed(std::make_shared<Action::Result>());
+  ASSERT_TRUE(eventually([&] {
+      return feedback(manager, normal.at("data").at("task_id")).at("data").at("status") == "succeeded";
+    }));
+}
+
+TEST_F(RosToolsTest, CancelLookaroundUsesSharedActionAndReleasesCanceledTaskWithoutFeedback)
+{
+  createServer();
+  createCostmapServers();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({lookaroundGroup()})));
+  surroundings(manager);
+  const auto first = payload(invoke(manager, "start_lookaround", Json::object()));
+  ASSERT_TRUE(first.at("ok").get<bool>());
+  const auto id = first.at("data").at("task_id");
+  EXPECT_EQ(payload(invoke(manager, "cancel_lookaround", {{"task_id", "missing"}})).at("code"),
+    "TASK_NOT_FOUND");
+  const auto canceled = payload(invoke(manager, "cancel_lookaround", {{"task_id", id}}));
+  ASSERT_TRUE(canceled.at("ok").get<bool>());
+  EXPECT_EQ(canceled.at("data").at("task_id"), id);
+  EXPECT_EQ(canceled.at("data").at("status"), "canceling");
+  const auto first_goal = goal(0);
+  ASSERT_TRUE(eventually([&] {return first_goal->is_canceling();}));
+  first_goal->canceled(std::make_shared<Action::Result>());
+  Json next;
+  ASSERT_TRUE(eventually([&] {
+      next = payload(invoke(manager, "start_lookaround", Json::object()));
+      return next.value("ok", false);
+    }));
+  EXPECT_EQ(payload(invoke(manager, "cancel_lookaround", {{"task_id", id}})).at("code"),
+    "TASK_NOT_FOUND");
+  const auto next_goal = goal(1);
+  manager.shutdown();
+  ASSERT_TRUE(eventually([&] {return next_goal->is_canceling();}));
+  next_goal->canceled(std::make_shared<Action::Result>());
 }
 
 TEST_F(RosToolsTest, ReportsUnavailableImageService)

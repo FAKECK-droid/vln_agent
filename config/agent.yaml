@@ -7,6 +7,7 @@ tool_manager:
       definition: ../plugins/tools/navigation/tool.json
       settings:
         action_name: /navigate_to_pose
+        lookaround_behavior_tree: ""  # 空值使用 vln_behavior_tree 安装目录中的 behavior_trees/lookaround.xml
         local_costmap_service: /local_costmap/get_costmap
         global_costmap_service: /global_costmap/get_costmap
         map_frame: map
@@ -29,6 +30,12 @@ tool_manager:
           blocking: false
         - name: navigate_to_pixel_start_navigation
           plugin: vln_agent/NavigateToPixelStartNavigation
+          blocking: true
+        - name: start_lookaround
+          plugin: vln_agent/StartLookaround
+          blocking: true
+        - name: cancel_lookaround
+          plugin: vln_agent/CancelLookaround
           blocking: true
     - id: capture_image
       definition: ../plugins/tools/capture_image/tool.json

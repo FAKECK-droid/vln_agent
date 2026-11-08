@@ -25,6 +25,16 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>将环境图像素目标与朝向转换到 map 后启动导航。</description>
     </class>
+    <class name="vln_agent/StartLookaround"
+           type="vln_agent::StartLookaround"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>以当前位姿启动环顾行为树，结果由行为树事件提交。</description>
+    </class>
+    <class name="vln_agent/CancelLookaround"
+           type="vln_agent::CancelLookaround"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>复用导航 Action 取消环顾任务。</description>
+    </class>
   </library>
   <library path="vln_agent_camera_tools">
     <class name="vln_agent/CaptureImage"

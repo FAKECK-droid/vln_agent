@@ -138,5 +138,38 @@
       ],
       "additionalProperties": false
     }
+  },
+  {
+    "type": "function",
+    "name": "start_lookaround",
+    "description": "在小车当前位置执行环顾。目标被接受后立即返回 data.task_id 和 data.status，不等待动作完成；完成后的环视图由行为树通过 lookaround_completed 事件提交，不需要查询反馈。可用 cancel_lookaround 取消。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "cancel_lookaround",
+    "description": "请求取消环顾任务。使用 start_lookaround 返回的 data.task_id；返回取消请求的处理状态，不等待动作最终结束。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "start_lookaround 返回的 data.task_id。"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "additionalProperties": false
+    }
   }
 ]

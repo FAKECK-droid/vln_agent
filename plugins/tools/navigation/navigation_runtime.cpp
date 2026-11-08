@@ -31,6 +31,7 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
     rmw_qos_profile_services_default, callbacks_->group());
   map_frame_ = settings.value("map_frame", std::string("map"));
   base_frame_ = settings.value("base_frame", std::string("base_link"));
+  lookaround_behavior_tree_ = settings.value("lookaround_behavior_tree", std::string{});
   costmap_timeout_sec_ = settings.value("costmap_timeout_sec", 2.0);
   image_size_ = settings.value("image_size", 512);
   max_environments_ = settings.value("max_environments", std::size_t{8});

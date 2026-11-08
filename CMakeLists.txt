@@ -62,11 +62,13 @@ add_library(vln_agent_navigation_tools SHARED
   plugins/tools/navigation/navigate_to_pose_cancel_navigation.cpp
   plugins/tools/navigation/get_surroundings.cpp
   plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp
+  plugins/tools/navigation/start_lookaround.cpp
+  plugins/tools/navigation/cancel_lookaround.cpp
   plugins/tools/navigation/utils.cpp)
 target_link_libraries(vln_agent_navigation_tools vln_agent_tools ${OpenCV_LIBS})
 target_include_directories(vln_agent_navigation_tools PUBLIC ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(vln_agent_navigation_tools
-  rclcpp_action nav2_msgs action_msgs tf2_ros tf2_geometry_msgs)
+  rclcpp_action nav2_msgs action_msgs tf2_ros tf2_geometry_msgs ament_index_cpp)
 
 add_library(vln_agent_camera_tools SHARED plugins/tools/capture_image/capture_image.cpp)
 target_link_libraries(vln_agent_camera_tools vln_agent_tools)

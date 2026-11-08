@@ -9,7 +9,7 @@ ROS 2 Humble 功能包，实现 docs/AGENT_PLAN.md 第二至五部分的工具�
 - `ToolPluginBase`：固定的 initialize / execute / shutdown 插件接口。
 - `SharedResources`：每个管理器独立的具名、带类型资源注册表。
 - `ToolManager`：装载定义和 pluginlib 插件、FIFO 调度、活动调用去重及逐调用 future。
-- `plugins/tools/navigation`：位姿导航、查询、取消、环境图和像素导航五个插件共用一个 NavigationRuntime。
+- `plugins/tools/navigation`：位姿导航、查询、取消、环境图、像素导航和环顾七个插件共用一个 NavigationRuntime。
 - `plugins/tools/capture_image`：调用 GetImage 服务读取最新或历史彩色压缩图，原样返回图片与采样信息。
 - `SessionManager`：独立上下文链、两份输入缓冲、发送限频与单个完整结果槽。
 - `ResponsesWsTransport`：独立 WS/WSS 连接、认证、保活、网络超时和重连。
@@ -167,6 +167,21 @@ call_count 是当前活动数量，completed_count 仅为固定大小的累计�
 终态首次经 get_feedback、cancel_navigation 或启动调用返回后即释放，之后查询返回 TASK_NOT_FOUND。
 未消费终态时启动新目标返回 NAVIGATION_RESULT_PENDING，避免覆盖待交付结果。
 历史导航记录由 Agent 保存；已释放任务的迟到回调不会修改新任务。
+
+### 环顾工具
+
+- start_lookaround 参数为 {}。读取 map_frame → base_frame 的当前 TF 位姿，
+  复用同一个 NavigateToPose Action，将 goal.behavior_tree 设为环顾 XML。
+- 目标被接受后返回 data.task_id / data.status，不等待环顾完成。
+  环视图由行为树最终的 lookaround_completed 事件提交；工具不轮询反馈、不另行提交结果事件。
+- cancel_lookaround 参数为 {"task_id":"nav_1"}，复用现有取消逻辑，
+  等待取消请求确认，不等待 Action 最终结束。客户端超时不会自动取消动作。
+- 环顾不缓存 Action feedback；成功、失败或取消后自动释放任务，不需要 get_feedback。
+  环顾与普通导航共用唯一活动任务，因此不能同时启动。
+- 默认 XML 来自已安装的 vln_behavior_tree 包下 behavior_trees/lookaround.xml；
+  可在 navigation 组 settings.lookaround_behavior_tree 中覆盖绝对路径。
+  启用默认路径时需安装该包，并让 Nav2 装载该树所需插件。
+- 默认 blocking: true 仅覆盖启动/取消工具调用的等待阶段，不覆盖整段物理动作。
 
 ### 环境图与像素导航
 
