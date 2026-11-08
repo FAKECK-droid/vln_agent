@@ -43,4 +43,14 @@
       <description>读取最新相机图像并返回 JPEG。</description>
     </class>
   </library>
+  <library path="vln_agent_rgbd_tools">
+    <class name="vln_agent/CapturePair" type="vln_agent::CapturePair"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>保存 RGB-D 图像对，仅返回彩色图和图像对 ID。</description>
+    </class>
+    <class name="vln_agent/GetDepthPoint" type="vln_agent::GetDepthPoint"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>读取保存的深度像素并换算到目标坐标系。</description>
+    </class>
+  </library>
 </class_libraries>

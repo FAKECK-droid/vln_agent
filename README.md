@@ -11,6 +11,7 @@ ROS 2 Humble 功能包，实现 docs/AGENT_PLAN.md 第二至五部分的工具�
 - `ToolManager`：装载定义和 pluginlib 插件、FIFO 调度、活动调用去重及逐调用 future。
 - `plugins/tools/navigation`：位姿导航、查询、取消、环境图、像素导航和环顾七个插件共用一个 NavigationRuntime。
 - `plugins/tools/capture_image`：调用 GetImage 服务读取最新或历史彩色压缩图，原样返回图片与采样信息。
+- `plugins/tools/rgbd`：保存有界 RGB-D 图像对，按原始彩色像素查询目标坐标系中的三维坐标。
 - `SessionManager`：独立上下文链、两份输入缓冲、发送限频与单个完整结果槽。
 - `ResponsesWsTransport`：独立 WS/WSS 连接、认证、保活、网络超时和重连。
 - `src/utils/`：YAML/JSON 转换、输入数组操作、工具结果包装、Base64 编解码与 WS URL 解析。
@@ -167,6 +168,36 @@ call_count 是当前活动数量，completed_count 仅为固定大小的累计�
 终态首次经 get_feedback、cancel_navigation 或启动调用返回后即释放，之后查询返回 TASK_NOT_FOUND。
 未消费终态时启动新目标返回 NAVIGATION_RESULT_PENDING，避免覆盖待交付结果。
 历史导航记录由 Agent 保存；已释放任务的迟到回调不会修改新任务。
+
+### RGB-D 图像对与像素三维坐标
+
+两个工具位于 plugins/tools/rgbd，共享 RgbdRuntime；原 capture_image 保持独立。
+
+1. capture_pair({"mode":"latest","detail":0}) 调用 GetImage 的 PAIR 操作，
+   缓存彩色、深度、CameraInfo 和采样时相机到 fixed_frame 的变换。
+   只返回原始彩色 input_image 和 data.image_pair_id；不缩放、重编码或向模型发送深度图。
+2. get_depth_point({"image_pair_id":"pair_1","pixel_x":640,"pixel_y":360,"target_frame":"map"})
+   返回 data.frame_id、x/y/z（米）、depth_m 和查询标识。
+   depth_m 是光轴 Z 深度，不是到像素点的欧氏距离。
+
+像素使用 images[0].metadata.width/height 对应的原始网格，
+左上角为原点、x 向右、y 向下；模型若在缩放预览中选点，应先还原原始像素。
+按 CameraInfo 的 K/D 去畸变，支持 plumb_bob、rational_polynomial 和 equidistant。
+相机必须将深度对齐到原始彩色像素网格和光学坐标系；本工具不额外执行 D2C。
+相机工作模式在队列中保持一致，CameraInfo 在捕获时保存快照。
+
+默认 fixed_frame=map：以深度图采样时间查找相机变换，保存后不受机器人后续运动影响。
+target_frame 为其他坐标系时，将固定系中的点转换到该目标系当前的位置；
+例如 base_link 返回当前车体坐标，而不是图像采样时的车体坐标。
+读取历史队列时，采样时间对应的 TF 仍须存在；无法获取时返回 TF_UNAVAILABLE，不回退到最新相机位姿。
+仿真采样时间不转成 UTC；对外业务时间戳仍统一为 UTC 毫秒格式。
+
+深度支持 ROS compressedDepth PNG：16UC1 毫米、32FC1 逆深度量化；
+不支持 RVL。首次深度查询只解码一次，之后只读取所选像素，不生成点云。
+越界、0/无效深度直接返回 DEPTH_UNAVAILABLE，不搜索邻近像素。
+同一 ID 可并发、多次查询；默认最多保存 8 对，超限 FIFO 淘汰，关闭时清空，
+不保留工具结果或 Base64 历史。缓存大小由 rgbd.settings.max_pairs 配置。
+其他配置为 service_name、camera_info_topic、fixed_frame 和 timeout_sec。
 
 ### 环顾工具
 

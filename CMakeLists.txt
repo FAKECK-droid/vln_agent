@@ -19,7 +19,7 @@ find_package(std_msgs REQUIRED)
 find_package(rgbd_image_queue REQUIRED)
 find_package(tf2_ros REQUIRED)
 find_package(tf2_geometry_msgs REQUIRED)
-find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs calib3d)
 
 rosidl_generate_interfaces(${PROJECT_NAME} "srv/ToolCall.srv")
 rosidl_get_typesupport_target(tool_call_typesupport ${PROJECT_NAME} "rosidl_typesupport_cpp")
@@ -74,6 +74,15 @@ add_library(vln_agent_camera_tools SHARED plugins/tools/capture_image/capture_im
 target_link_libraries(vln_agent_camera_tools vln_agent_tools)
 ament_target_dependencies(vln_agent_camera_tools rgbd_image_queue)
 
+add_library(vln_agent_rgbd_tools SHARED
+  plugins/tools/rgbd/rgbd_runtime.cpp
+  plugins/tools/rgbd/capture_pair.cpp
+  plugins/tools/rgbd/get_depth_point.cpp
+  plugins/tools/rgbd/utils.cpp)
+target_link_libraries(vln_agent_rgbd_tools vln_agent_tools opencv_core opencv_imgcodecs opencv_calib3d)
+target_include_directories(vln_agent_rgbd_tools PUBLIC ${OpenCV_INCLUDE_DIRS})
+ament_target_dependencies(vln_agent_rgbd_tools rgbd_image_queue sensor_msgs tf2_ros tf2_geometry_msgs)
+
 add_library(vln_agent_interaction SHARED
   src/interaction/user_interaction_manager.cpp)
 target_link_libraries(vln_agent_interaction PUBLIC vln_agent_session vln_agent_tools)
@@ -92,7 +101,7 @@ add_executable(vln_agent_node src/vln_agent.cpp)
 target_link_libraries(vln_agent_node vln_agent_interaction vln_agent_events)
 ament_target_dependencies(vln_agent_node rclcpp ament_index_cpp)
 
-foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_navigation_tools vln_agent_camera_tools vln_agent_events vln_agent_node)
+foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_navigation_tools vln_agent_camera_tools vln_agent_rgbd_tools vln_agent_events vln_agent_node)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
 endforeach()
 pluginlib_export_plugin_description_file(vln_agent tool_plugins.xml)
@@ -103,7 +112,7 @@ install(TARGETS vln_agent_utils vln_agent_session vln_agent_tools vln_agent_inte
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
-install(TARGETS vln_agent_navigation_tools vln_agent_camera_tools vln_agent_ros_topic_interface
+install(TARGETS vln_agent_navigation_tools vln_agent_camera_tools vln_agent_rgbd_tools vln_agent_ros_topic_interface
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
@@ -139,6 +148,14 @@ if(BUILD_TESTING)
   target_include_directories(test_ros_tools PRIVATE ${OpenCV_INCLUDE_DIRS})
   ament_target_dependencies(test_ros_tools
     rclcpp_action nav2_msgs action_msgs sensor_msgs rgbd_image_queue ament_index_cpp tf2_ros tf2_geometry_msgs)
+  ament_add_gtest(test_rgbd_tools test/test_rgbd_tools.cpp TIMEOUT 25)
+  target_link_libraries(test_rgbd_tools vln_agent_rgbd_tools)
+  ament_target_dependencies(test_rgbd_tools ament_index_cpp)
+  target_compile_definitions(test_rgbd_tools PRIVATE
+    VLN_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+  set_tests_properties(test_rgbd_tools PROPERTIES ENVIRONMENT
+    "ROS_DOMAIN_ID=178;ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/ros-logs")
+
   ament_add_gtest(test_navigation_utils test/test_navigation_utils.cpp TIMEOUT 20)
   target_link_libraries(test_navigation_utils vln_agent_navigation_tools)
   target_compile_definitions(test_navigation_utils PRIVATE

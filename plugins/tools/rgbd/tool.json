@@ -1,0 +1,71 @@
+[
+  {
+    "type": "function",
+    "name": "capture_pair",
+    "description": "获取并保存一对已对齐的彩色/深度图像，只返回原始彩色图和 data.image_pair_id。随后可用 get_depth_point 查询图上的像素；坐标以原始图片左上角为原点。图像对缓存有上限，较旧 ID 会被淘汰。latest 取最新，index/age 取历史。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "mode": {
+          "type": "string",
+          "enum": [
+            "latest",
+            "index",
+            "age"
+          ],
+          "description": "latest 最新；index 历史索引；age 距当前的毫秒数。"
+        },
+        "detail": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295,
+          "description": "latest 填 0；index 从 0 表示最新；age 为毫秒，例如 1500。"
+        }
+      },
+      "required": [
+        "mode",
+        "detail"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "get_depth_point",
+    "description": "根据 capture_pair 的图像对 ID 和原始彩色图片整数像素，读取深度并返回目标坐标系中的三维坐标（米）。pixel_x 向右、pixel_y 向下。无有效深度直接报错；不补邻近点。采样时相机位姿已保存在固定坐标系（默认 map）；目标为其他坐标系时，换算到该坐标系当前的位置。可重复查询同一图像对。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "image_pair_id": {
+          "type": "string",
+          "description": "capture_pair 返回的 data.image_pair_id。"
+        },
+        "pixel_x": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "原始图片横坐标，左上角为原点，向右增大；使用 images[0].metadata.width 的原始网格。"
+        },
+        "pixel_y": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "原始图片纵坐标，向下增大；使用 images[0].metadata.height 的原始网格。"
+        },
+        "target_frame": {
+          "type": "string",
+          "description": "输出坐标系，例如 map 或 base_link。"
+        }
+      },
+      "required": [
+        "image_pair_id",
+        "pixel_x",
+        "pixel_y",
+        "target_frame"
+      ],
+      "additionalProperties": false
+    }
+  }
+]

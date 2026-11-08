@@ -48,6 +48,22 @@ tool_manager:
           settings:
             timeout_sec: 2.0
 
+    - id: rgbd
+      definition: ../plugins/tools/rgbd/tool.json
+      settings:
+        service_name: /rgbd_image_queue/get_image
+        camera_info_topic: /camera/color/camera_info
+        fixed_frame: map
+        timeout_sec: 2.0
+        max_pairs: 8
+      functions:
+        - name: capture_pair
+          plugin: vln_agent/CapturePair
+          blocking: false
+        - name: get_depth_point
+          plugin: vln_agent/GetDepthPoint
+          blocking: false
+
 
 session_manager:
   base_url: "http://192.168.3.25:8317/v1"
