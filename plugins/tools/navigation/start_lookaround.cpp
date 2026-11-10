@@ -20,7 +20,7 @@ ToolResult NavigationRuntime::start_lookaround()
   goal.behavior_tree = lookaround_behavior_tree_.empty() ?
     ament_index_cpp::get_package_share_directory("vln_behavior_tree") +
     "/behavior_trees/lookaround.xml" : lookaround_behavior_tree_;
-  return sendGoal(goal, true);
+  return sendGoal(goal);
 }
 
 void StartLookaround::initialize(const ToolContext & context, const Json &)

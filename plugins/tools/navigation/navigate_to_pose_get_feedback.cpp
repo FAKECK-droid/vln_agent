@@ -12,11 +12,9 @@ ToolResult NavigationRuntime::get_feedback(const Json & arguments)
   const auto id = arguments.at("task_id").get<std::string>();
   std::lock_guard<std::mutex> lock(mutex_);
   if (!task_ || task_->id != id) {
-    return ToolResult::failure("TASK_NOT_FOUND", "未知或已消费的导航任务: " + id);
+    return ToolResult::failure("TASK_NOT_FOUND", "未知或已结束的导航任务: " + id);
   }
-  // 使用独立引用，避免消费终态时重置 task_ 使参数失效。
-  const auto task = task_;
-  return snapshot(task);
+  return snapshot(task_);
 }
 
 

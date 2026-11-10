@@ -38,7 +38,7 @@ public:
   ToolResult start_navigation(const Json & arguments);
   /** @brief 以当前位姿启动环顾行为树；接受后返回 task_id，终态由行为树事件上报。 */
   ToolResult start_lookaround();
-  /** @brief 读取当前任务反馈；终态首次返回后即释放，由 Agent 保存历史。 */
+  /** @brief 读取活动任务反馈；任务结束后由结果回调释放。 */
   ToolResult get_feedback(const Json & arguments);
   /** @brief 等待取消请求回复；只有最终 Action 结果才能将状态改为 canceled。 */
   ToolResult cancel_navigation(const Json & arguments);
@@ -63,7 +63,6 @@ private:
     std::string id;                         ///< 当前导航任务的内部标志。
     GoalHandle::SharedPtr goal;             ///< 接受目标后得到的句柄。
     std::string status{"running"};          ///< 物理任务状态，不是函数调用状态。
-    bool release_on_finish{false};          ///< 环顾由事件交付结果，Action 结束后直接释放任务。
     bool responded{false};                 ///< 是否已经收到目标接受或拒绝回复。
     Json feedback = Json::object();         ///< 最近一次反馈的业务字段。
     Json pose;                             ///< 最近一次反馈的小车位姿，含坐标系及可用采样时间。
@@ -72,11 +71,10 @@ private:
   /**
    * @brief 共用的 Action 发送、目标确认与取消所需任务管理。
    * @param goal 已组装的位姿和行为树路径。
-   * @param release_on_finish 为 true 时不收集反馈，终态回调直接释放内部任务。
    * @return 接受后的 task_id/status 或启动失败信息，不等待动作完成。
    */
-  ToolResult sendGoal(const Action::Goal & goal, bool release_on_finish);
-  /** @brief 持锁生成当前任务结果，并在交付终态时释放资源内部引用。 */
+  ToolResult sendGoal(const Action::Goal & goal);
+  /** @brief 持锁生成任务状态和最新反馈结果。 */
   ToolResult snapshot(const std::shared_ptr<Task> & task);
   /** @brief 判断任务是否进入终态。 */
   static bool terminal(const std::string & status);
@@ -100,7 +98,7 @@ private:
 
   std::mutex mutex_;                       ///< 保护任务、关闭状态和环境元数据，不在图像处理期间持锁。
   std::condition_variable condition_;      ///< 目标、取消回复及关闭通知。
-  std::shared_ptr<Task> task_;              ///< 唯一活动任务或尚待消费的终态。
+  std::shared_ptr<Task> task_;              ///< 唯一活动任务，收到终态后释放。
   std::uint64_t next_id_{0};                ///< 本次资源内递增的任务编号。
   std::size_t pending_goals_{0};            ///< 尚未收到回复的目标请求数。
   bool closed_{false};                     ///< 关闭后唤醒等待并拒绝新操作。

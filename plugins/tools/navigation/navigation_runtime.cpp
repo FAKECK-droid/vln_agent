@@ -61,7 +61,6 @@ ToolResult NavigationRuntime::snapshot(const std::shared_ptr<Task> & task)
   payload["status"] = task->status;
   auto result = ToolResult::success(std::move(payload));
   if (!task->pose.is_null()) {result.payload["pose"] = task->pose;}
-  if (terminal(task->status) && task_ == task) {task_.reset();}
   return result;
 }
 

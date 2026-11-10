@@ -301,7 +301,7 @@ string error
 
 普通导航在 Action 目标接受后返回，任务继续运行。`get_feedback` 返回的数值包括 `distance_remaining_m`、`navigation_time_sec`、`estimated_time_remaining_sec`、`number_of_recoveries`。任务状态为 `running/succeeded/failed/canceling/canceled/rejected`；取消确认后进入 `canceling`，最终 Action 结果决定终态。
 
-普通导航终态保存至首次读取后释放；下一次启动前先读取该结果。未读终态时返回 `NAVIGATION_RESULT_PENDING`，活动任务期间返回 `NAVIGATION_BUSY`。共享资源同时维护一个物理导航任务。
+导航任务在 Action 成功、失败或取消后立即释放，结果由行为树事件上报。空闲时可直接启动下一个目标，活动任务期间返回 `NAVIGATION_BUSY`。`get_feedback` 可选查询活动任务，已结束任务返回 `TASK_NOT_FOUND`。共享资源同时维护一个物理导航任务。
 
 `get_surroundings` 通过 GetCostmap 读取局部或全局地图，以机器人为中心生成正方形环境图。`range_m` 为边长，图片上方表示截图时机器人前方。地图区域默认 `image_size=512`，完整图片还包含标题、坐标和图例；有效地图范围与比例以返回的 `map_rect`、`meters_per_pixel` 为准。
 

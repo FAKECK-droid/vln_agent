@@ -297,7 +297,7 @@ TEST_F(RosToolsTest, FailedInitializationStopsCallbackThreadsAndRollsBackPlugins
   }
 }
 
-TEST_F(RosToolsTest, SharesCurrentNavigationAndConsumesTerminalStateOnce)
+TEST_F(RosToolsTest, KeepsActiveFeedbackAndRestartsAfterCancelAndSuccessWithoutPolling)
 {
   createServer();
   ToolManager manager(client_node);
@@ -335,21 +335,28 @@ TEST_F(RosToolsTest, SharesCurrentNavigationAndConsumesTerminalStateOnce)
   EXPECT_EQ(feedback(manager, id).at("data").at("status"), "canceling");
   ASSERT_TRUE(eventually([&] {return first_goal->is_canceling();}));
   first_goal->canceled(std::make_shared<Action::Result>());
-  ASSERT_TRUE(eventually([&] {return feedback(manager, id).at("data").at("status") == "canceled";}));
-
-  const auto next = start(manager);
-  ASSERT_TRUE(next.at("ok").get<bool>());
+  Json next;
+  ASSERT_TRUE(eventually([&] {
+      next = start(manager);  // 直接启动；终态由事件处理，启动前无需读取反馈。
+      return next.value("ok", false);
+    }));
   EXPECT_NE(next.at("data").at("task_id"), id);
   const auto next_goal = goal(1);
   next_goal->succeed(std::make_shared<Action::Result>());
+  Json after_success;
   ASSERT_TRUE(eventually([&] {
-      return feedback(manager, next.at("data").at("task_id")).at("data").at("status") == "succeeded";
+      after_success = start(manager);
+      return after_success.value("ok", false);
     }));
   EXPECT_EQ(feedback(manager, id).at("code"), "TASK_NOT_FOUND");
   EXPECT_EQ(feedback(manager, next.at("data").at("task_id")).at("code"), "TASK_NOT_FOUND");
+  goal(2)->abort(std::make_shared<Action::Result>());
+  ASSERT_TRUE(eventually([&] {
+      return feedback(manager, after_success.at("data").at("task_id")).value("code", "") == "TASK_NOT_FOUND";
+    }));
 }
 
-TEST_F(RosToolsTest, ReportsRejectionUnknownTaskAndFailedPhysicalResult)
+TEST_F(RosToolsTest, RestartsAfterAbortedNavigationWithoutReadingTerminalFeedback)
 {
   createServer();
   ToolManager manager(client_node);
@@ -362,14 +369,18 @@ TEST_F(RosToolsTest, ReportsRejectionUnknownTaskAndFailedPhysicalResult)
   const auto accepted = start(manager);
   ASSERT_TRUE(accepted.at("ok").get<bool>());
   goal(0)->abort(std::make_shared<Action::Result>());
-  // 未交付的终态仍有用途：先读取它，再允许启动下一个导航。
+  Json next;
   ASSERT_TRUE(eventually([&] {
-      return start(manager).value("code", std::string()) == "NAVIGATION_RESULT_PENDING";
+      next = start(manager);
+      return next.value("ok", false);
     }));
   const auto cancel = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
       {{"task_id", accepted.at("data").at("task_id")}}));
-  EXPECT_TRUE(cancel.at("ok").get<bool>());
-  EXPECT_EQ(cancel.at("data").at("status"), "failed");
+  EXPECT_EQ(cancel.at("code"), "TASK_NOT_FOUND");
+  goal(1)->succeed(std::make_shared<Action::Result>());
+  ASSERT_TRUE(eventually([&] {
+      return feedback(manager, next.at("data").at("task_id")).value("code", "") == "TASK_NOT_FOUND";
+    }));
   EXPECT_EQ(feedback(manager, accepted.at("data").at("task_id")).at("code"), "TASK_NOT_FOUND");
   EXPECT_EQ(feedback(manager, rejected.at("data").at("task_id")).at("code"), "TASK_NOT_FOUND");
 }
@@ -427,7 +438,7 @@ TEST_F(RosToolsTest, LookaroundUsesCurrentPoseAndTreeThenReleasesSuccessAndFailu
   EXPECT_EQ(goal(2)->get_goal()->behavior_tree, "");  // 不污染普通导航。
   goal(2)->succeed(std::make_shared<Action::Result>());
   ASSERT_TRUE(eventually([&] {
-      return feedback(manager, normal.at("data").at("task_id")).at("data").at("status") == "succeeded";
+      return feedback(manager, normal.at("data").at("task_id")).value("code", "") == "TASK_NOT_FOUND";
     }));
 }
 
@@ -647,7 +658,7 @@ TEST_F(RosToolsTest, PixelNavigationUsesSnapshotPositionAndImageRelativeYaw)
     at("code"), "ENVIRONMENT_NOT_FOUND");
   accepted->succeed(std::make_shared<Action::Result>());
   ASSERT_TRUE(eventually([&] {
-      return feedback(manager, result.at("data").at("task_id")).at("data").value("status", "") == "succeeded";
+      return feedback(manager, result.at("data").at("task_id")).value("code", "") == "TASK_NOT_FOUND";
     }));
 }
 

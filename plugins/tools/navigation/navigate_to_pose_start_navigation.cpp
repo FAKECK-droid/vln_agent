@@ -27,10 +27,10 @@ ToolResult NavigationRuntime::start_navigation(const Json & arguments)
   {
     return ToolResult::failure("INVALID_ARGUMENTS", "目标坐标系不能为空，坐标和朝向必须为有限数值");
   }
-  return sendGoal(goal, false);
+  return sendGoal(goal);
 }
 
-ToolResult NavigationRuntime::sendGoal(const Action::Goal & goal, bool release_on_finish)
+ToolResult NavigationRuntime::sendGoal(const Action::Goal & goal)
 {
   if (!client_->action_server_is_ready()) {
     return ToolResult::failure("NAVIGATION_UNAVAILABLE", "导航 Action 服务尚未就绪");
@@ -41,17 +41,10 @@ ToolResult NavigationRuntime::sendGoal(const Action::Goal & goal, bool release_o
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
     if (task_) {
-      if (terminal(task_->status)) {
-        auto result = ToolResult::failure(
-          "NAVIGATION_RESULT_PENDING", "请先调用 get_feedback 读取上次导航终态");
-        result.payload["data"]["task_id"] = task_->id;
-        return result;
-      }
       return ToolResult::failure("NAVIGATION_BUSY", "已有活动导航任务");
     }
     task = std::make_shared<Task>();
     task->id = "nav_" + std::to_string(++next_id_);
-    task->release_on_finish = release_on_finish;
     task_ = task;
     ++pending_goals_;
   }
@@ -73,35 +66,33 @@ ToolResult NavigationRuntime::sendGoal(const Action::Goal & goal, bool release_o
         self->condition_.notify_all();
       }
     };
-  if (!release_on_finish) {
-    options.feedback_callback =
-      [weak, weak_task](GoalHandle::SharedPtr, const std::shared_ptr<const Action::Feedback> feedback) {
-        if (const auto self = weak.lock()) {
-          std::lock_guard<std::mutex> lock(self->mutex_);
-          if (const auto task = weak_task.lock(); task && !terminal(task->status)) {
-            task->feedback = {
-              {"distance_remaining_m", feedback->distance_remaining},
-              {"navigation_time_sec", rclcpp::Duration(feedback->navigation_time).seconds()},
-              {"estimated_time_remaining_sec",
-                rclcpp::Duration(feedback->estimated_time_remaining).seconds()},
-              {"number_of_recoveries", feedback->number_of_recoveries}};
-            const auto & current = feedback->current_pose;
-            if (!current.header.frame_id.empty()) {
-              auto pose = utils::posePayload(current.header.frame_id,
-                current.pose.position.x, current.pose.position.y, tf2::getYaw(current.pose.orientation));
-              bool simulated = false;
-              self->node_.get_parameter_or("use_sim_time", simulated, false);
-              if (!simulated && (current.header.stamp.sec != 0 || current.header.stamp.nanosec != 0)) {
-                pose["time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
-                  std::chrono::seconds(current.header.stamp.sec) +
-                  std::chrono::nanoseconds(current.header.stamp.nanosec)));
-              }
-              task->pose = std::move(pose);
+  options.feedback_callback =
+    [weak, weak_task](GoalHandle::SharedPtr, const std::shared_ptr<const Action::Feedback> feedback) {
+      if (const auto self = weak.lock()) {
+        std::lock_guard<std::mutex> lock(self->mutex_);
+        if (const auto task = weak_task.lock(); task && !terminal(task->status)) {
+          task->feedback = {
+            {"distance_remaining_m", feedback->distance_remaining},
+            {"navigation_time_sec", rclcpp::Duration(feedback->navigation_time).seconds()},
+            {"estimated_time_remaining_sec",
+              rclcpp::Duration(feedback->estimated_time_remaining).seconds()},
+            {"number_of_recoveries", feedback->number_of_recoveries}};
+          const auto & current = feedback->current_pose;
+          if (!current.header.frame_id.empty()) {
+            auto pose = utils::posePayload(current.header.frame_id,
+              current.pose.position.x, current.pose.position.y, tf2::getYaw(current.pose.orientation));
+            bool simulated = false;
+            self->node_.get_parameter_or("use_sim_time", simulated, false);
+            if (!simulated && (current.header.stamp.sec != 0 || current.header.stamp.nanosec != 0)) {
+              pose["time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
+                std::chrono::seconds(current.header.stamp.sec) +
+                std::chrono::nanoseconds(current.header.stamp.nanosec)));
             }
+            task->pose = std::move(pose);
           }
         }
-      };
-  }
+      }
+    };
   options.result_callback = [weak, weak_task](const GoalHandle::WrappedResult & result) {
       if (const auto self = weak.lock()) {
         {
@@ -113,7 +104,7 @@ ToolResult NavigationRuntime::sendGoal(const Action::Goal & goal, bool release_o
               default: task->status = "failed"; break;
             }
             task->goal.reset();
-            if (task->release_on_finish && self->task_ == task) {self->task_.reset();}
+            if (self->task_ == task) {self->task_.reset();}
           }
         }
         self->condition_.notify_all();

@@ -2,7 +2,7 @@
   {
     "type": "function",
     "name": "navigate_to_pose_start_navigation",
-    "description": "启动导航，目标被接受后返回任务 ID 和 running 状态；不会等待到达。 上次终态须先用 get_feedback 读取后才能启动新任务。 任务 ID 和物理状态分别位于结果的 data.task_id 和 data.status。",
+    "description": "启动导航，目标被接受后即返回 data.task_id 和 data.status。导航结果由行为树事件上报；任务结束后可直接启动下一个目标。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -37,7 +37,7 @@
   {
     "type": "function",
     "name": "navigate_to_pose_get_feedback",
-    "description": "获取指定导航任务的最新反馈。 终态仅交付一次，读取后释放；历史由调用方保存。 反馈数值位于 data，可用的小车位姿位于 pose。",
+    "description": "查询当前活动导航任务的状态与反馈。反馈数值位于 data，可用的小车位姿位于 pose；任务终态由行为树事件上报。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -107,7 +107,7 @@
   {
     "type": "function",
     "name": "navigate_to_pixel_start_navigation",
-    "description": "使用 get_surroundings 返回的环境 ID，将该张完整图片中的目标像素及图片相对朝向转换到 map 坐标系后启动导航。只能选择 map_rect 内的地图像素。成功接受目标后消费该环境 ID，返回本工具的简短结果和 task_id，后续通过导航反馈/取消工具操作。 任务 ID 和物理状态分别位于结果的 data.task_id 和 data.status。",
+    "description": "使用 get_surroundings 返回的环境 ID，将完整图片中的目标像素及图片相对朝向转换到 map 后启动导航。目标位于 map_rect 内；目标接受后消费环境 ID，返回 data.environment_id、goal、task_id 和 status。结果由行为树事件上报，可使用导航取消工具中止任务。",
     "async": true,
     "strict": true,
     "parameters": {
