@@ -66,15 +66,15 @@ tool_manager:
 
 
 session_manager:
-  base_url: "http://192.168.3.25:8317/v1"
-  api_key: "sk-local-1gHIUqOELWgeLmW5AocUxtxGo7DWRlUBed1xu-35"  # 实际密钥请填写 config/agent.local.yaml（不提交）
+  base_url: "http://127.0.0.1:8317/v1"
+  api_key: "sk-local-1gHIUqOELWgeLmW5AocUxtxGo7DWRlUBed1xu-35"
   model: "gpt-6.1-terra"
   store: true
   reasoning_effort: low
   max_output_tokens: 8192
   parallel_tool_calls: true
   prompt_cache_key: "scout-mini-vln"
-  max_request_hz: 5.0
+  max_request_hz: 2.0
   request_timeout_sec: 0
   stream_output: true
   context:
