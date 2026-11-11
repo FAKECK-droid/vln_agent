@@ -56,6 +56,20 @@ TEST(RgbdMathTest, DecodesMillimetersAndInverseDepthWithInvalidAndOutsidePixels)
   EXPECT_THROW(rgbd::decodeDepth(bad), std::invalid_argument);
 }
 
+TEST(RgbdMathTest, MapsReturnedPixelCentersUsingActualRoundedDimensions)
+{
+  EXPECT_EQ(rgbd::toDepthPixel(2, 1, {4, 3}, {8, 6}), cv::Point(5, 3));
+  EXPECT_EQ(rgbd::toDepthPixel(0, 0, {4, 3}, {8, 6}), cv::Point(1, 1));
+  EXPECT_EQ(rgbd::toDepthPixel(3, 2, {4, 3}, {8, 6}), cv::Point(7, 5));
+  // 0.4 * 8/6 的实际返回尺寸为 3x2，查询不能直接除以配置中的 0.4。
+  EXPECT_EQ(rgbd::toDepthPixel(1, 1, {3, 2}, {8, 6}), cv::Point(4, 4));
+  EXPECT_EQ(rgbd::toDepthPixel(11, 8, {12, 9}, {8, 6}), cv::Point(7, 5));
+  EXPECT_EQ(rgbd::toDepthPixel(5, 4, {8, 6}, {8, 6}), cv::Point(5, 4));
+  EXPECT_EQ(rgbd::toDepthPixel(0, 0, {1, 1}, {8, 6}), cv::Point(4, 3));
+  EXPECT_THROW(rgbd::toDepthPixel(4, 1, {4, 3}, {8, 6}), std::out_of_range);
+  EXPECT_THROW(rgbd::toDepthPixel(-1, 1, {4, 3}, {8, 6}), std::out_of_range);
+}
+
 TEST(RgbdMathTest, RemovesRawImageDistortionBeforeBackProjection)
 {
   sensor_msgs::msg::CameraInfo info;
@@ -94,13 +108,14 @@ protected:
     executor.cancel();
     spinner.join();
   }
-  Json group(std::size_t capacity = 8, double timeout = 0.3)
+  Json group(std::size_t capacity = 8, double timeout = 0.3, double scale = 1.0)
   {
     return {{"id", "rgbd"}, {"definition", share + "/plugins/tools/rgbd/tool.json"},
       {"settings", {{"service_name", service_name}, {"camera_info_topic", info_name},
           {"fixed_frame", "rgbd_test_map"}, {"max_pairs", capacity}, {"timeout_sec", timeout}}},
       {"functions", Json::array({
-          {{"name", "capture_pair"}, {"plugin", "vln_agent/CapturePair"}, {"blocking", false}},
+          {{"name", "capture_pair"}, {"plugin", "vln_agent/CapturePair"}, {"blocking", false},
+            {"settings", {{"image_scale", scale}}}},
           {{"name", "get_depth_point"}, {"plugin", "vln_agent/GetDepthPoint"}, {"blocking", false}}})}};
   }
   void createSource(bool with_calibration = true)
@@ -118,7 +133,7 @@ protected:
         reply->has_color = reply->has_depth = !missing_pair;
         reply->pair_id = 200 + request->detail;
         reply->color.header = depth.header;
-        reply->color.format = "jpeg";
+        reply->color.format = color_format;
         reply->color.data = color;
         reply->depth = depth;
       });
@@ -188,6 +203,7 @@ protected:
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> broadcaster;
   sensor_msgs::msg::CompressedImage depth;
   std::vector<unsigned char> color;
+  std::string color_format{"jpeg"};
   std::mutex mutex;
   std::vector<std::pair<std::uint8_t, std::uint32_t>> requests;
   std::atomic_bool missing_pair{false};
@@ -224,6 +240,98 @@ TEST_F(RgbdToolsTest, PairOperationsReturnOnlyOriginalColorAndCacheQueryableDept
   {
     EXPECT_NE(std::find(requests.begin(), requests.end(), expected), requests.end());
   }
+}
+
+TEST_F(RgbdToolsTest, ReturnsResizedJpegAndPngAndUsesTheirActualPixelGrid)
+{
+  createSource();
+  const std::vector<std::pair<double, cv::Size>> cases{
+    {0.5, {4, 3}}, {0.4, {3, 2}}, {1.5, {12, 9}}};
+  for (const auto & item : cases) {
+    SCOPED_TRACE(item.first);
+    const bool png = item.first == 0.4;
+    color_format = png ? "png" : "jpeg";
+    cv::imencode(png ? ".png" : ".jpg",
+      cv::Mat(6, 8, CV_8UC3, cv::Scalar(20, 80, 180)), color);
+    ToolManager manager(host);
+    manager.load(config.config(Json::array({group(8, 0.3, item.first)})));
+    const auto handle = capture(manager);
+    const auto result = payload(handle);
+    const auto url = handle.result.get().at("output").at(1).at("image_url").get<std::string>();
+    EXPECT_EQ(url.substr(0, url.find(';')), png ? "data:image/png" : "data:image/jpeg");
+    const auto bytes = utils::decodeBase64(url.substr(url.find(',') + 1));
+    const auto actual = cv::imdecode(bytes, cv::IMREAD_COLOR);
+    ASSERT_EQ(actual.size(), item.second);
+    const auto & metadata = result.at("images").at(0).at("metadata");
+    EXPECT_EQ(metadata.at("width"), actual.cols);
+    EXPECT_EQ(metadata.at("height"), actual.rows);
+    EXPECT_EQ(metadata.at("original_width"), 8);
+    EXPECT_EQ(metadata.at("original_height"), 6);
+
+    // 非整数缩小时，末端像素中心也按实际宽高映射，原始标定继续参与反投影。
+    const bool rounded = item.first == 0.4;
+    const auto id = result.at("data").at("image_pair_id");
+    const auto mapped = query(manager, id, "rgbd_test_map", actual.cols - 1, actual.rows - 1);
+    ASSERT_TRUE(mapped.at("ok")) << mapped;
+    const auto & data = mapped.at("data");
+    EXPECT_EQ(data.at("depth_pixel_x"), rounded ? 6 : 7);
+    EXPECT_EQ(data.at("depth_pixel_y"), rounded ? 4 : 5);
+    EXPECT_NEAR(data.at("x").get<double>(), rounded ? 9.2 : 8.8, 1e-9);
+    EXPECT_NEAR(data.at("y").get<double>(), rounded ? 21.5 : 22.0, 1e-9);
+    EXPECT_NEAR(data.at("z").get<double>(), 3.0, 1e-9);
+    EXPECT_EQ(query(manager, id, "rgbd_test_map", actual.cols, 0).at("code"), "DEPTH_UNAVAILABLE");
+  }
+}
+
+TEST_F(RgbdToolsTest, ReadsNativeDepthWithoutAveragingAndKeepsSampledPoseAfterScaling)
+{
+  createSource();
+  cv::Mat pixels(6, 8, CV_16UC1);
+  for (int v = 0; v < pixels.rows; ++v) {
+    for (int u = 0; u < pixels.cols; ++u) {
+      pixels.at<std::uint16_t>(v, u) = 1000 + 100 * u + 10 * v;
+    }
+  }
+  pixels.at<std::uint16_t>(1, 1) = 0;
+  std::vector<unsigned char> png;
+  cv::imencode(".png", pixels, png);
+  depth.data.resize(12 + png.size());
+  std::copy(png.begin(), png.end(), depth.data.begin() + 12);
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({group(8, 0.3, 0.5)})));
+  const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+  const auto mapped = query(manager, id, "rgbd_test_map", 2, 1);
+  ASSERT_TRUE(mapped.at("ok")) << mapped;
+  const auto & data = mapped.at("data");
+  EXPECT_EQ(data.at("depth_pixel_x"), 5);
+  EXPECT_EQ(data.at("depth_pixel_y"), 3);
+  EXPECT_DOUBLE_EQ(data.at("depth_m").get<double>(), 1.53);
+  EXPECT_NEAR(data.at("x").get<double>(), 9.694, 1e-9);
+  EXPECT_NEAR(data.at("y").get<double>(), 20.765, 1e-9);
+  EXPECT_NEAR(data.at("z").get<double>(), 2.53, 1e-9);
+  EXPECT_EQ(query(manager, id, "rgbd_test_map", 0, 0).at("code"), "DEPTH_UNAVAILABLE");
+
+  sendTransforms(100, 200);
+  ASSERT_TRUE(eventually([&] {
+      const auto point = query(manager, id, "rgbd_test_optical", 2, 1);
+      return point.value("ok", false) &&
+             std::abs(point.at("data").at("x").get<double>() + 179.235) < 1e-9;
+    }));
+  const auto unchanged = query(manager, id, "rgbd_test_map", 2, 1).at("data");
+  EXPECT_NEAR(unchanged.at("x").get<double>(), 9.694, 1e-9);
+  EXPECT_NEAR(unchanged.at("y").get<double>(), 20.765, 1e-9);
+}
+
+TEST_F(RgbdToolsTest, RejectsColorDimensionsThatDoNotMatchCalibration)
+{
+  createSource();
+  cv::imencode(".jpg", cv::Mat(3, 4, CV_8UC3, cv::Scalar(20, 80, 180)), color);
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({group()})));
+  ASSERT_TRUE(eventually([&] {
+      return payload(invoke(manager, "capture_pair", {{"mode", "latest"}, {"detail", 0}})).
+        value("code", "") == "UNALIGNED_IMAGE_PAIR";
+    }));
 }
 
 TEST_F(RgbdToolsTest, FreezesExposurePoseAndTransformsPointIntoCurrentTargetFrame)

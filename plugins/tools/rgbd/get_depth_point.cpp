@@ -26,6 +26,7 @@ ToolResult RgbdRuntime::get_depth_point(const Json & arguments)
     pair = *found;
   }
   double depth;
+  cv::Point pixel;
   geometry_msgs::msg::PointStamped point;
   try {
     std::call_once(pair->decode_once, [&] {
@@ -37,8 +38,9 @@ ToolResult RgbdRuntime::get_depth_point(const Json & arguments)
       }
       pair->depth = std::move(decoded);
     });
-    depth = rgbd::depthAt(pair->depth, u, v);
-    point.point = rgbd::backProject(*pair->info, u, v, depth);
+    pixel = rgbd::toDepthPixel(u, v, pair->image_size, pair->depth.pixels.size());
+    depth = rgbd::depthAt(pair->depth, pixel.x, pixel.y);
+    point.point = rgbd::backProject(*pair->info, pixel.x, pixel.y, depth);
   } catch (const std::exception & error) {
     return ToolResult::failure("DEPTH_UNAVAILABLE", error.what());
   }
@@ -53,6 +55,7 @@ ToolResult RgbdRuntime::get_depth_point(const Json & arguments)
     }
   }
   return ToolResult::success({{"image_pair_id", id}, {"pixel_x", u}, {"pixel_y", v},
+    {"depth_pixel_x", pixel.x}, {"depth_pixel_y", pixel.y},
     {"depth_m", depth}, {"frame_id", target},
     {"x", point.point.x}, {"y", point.point.y}, {"z", point.point.z}});
 }

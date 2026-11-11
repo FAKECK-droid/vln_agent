@@ -49,6 +49,18 @@ double depthAt(const DepthImage & image, int u, int v)
   return depth;
 }
 
+cv::Point toDepthPixel(int u, int v, cv::Size image_size, cv::Size depth_size)
+{
+  if (u < 0 || v < 0 || u >= image_size.width || v >= image_size.height) {
+    throw std::out_of_range("像素坐标超出返回彩色图范围");
+  }
+  // resize 的像素中心为 (u + 0.5) * 原宽 / 新宽 - 0.5；最近像素取整后如下。
+  const double scale_x = depth_size.width / static_cast<double>(image_size.width);
+  const double scale_y = depth_size.height / static_cast<double>(image_size.height);
+  return {static_cast<int>(std::floor((u + 0.5) * scale_x)),
+    static_cast<int>(std::floor((v + 0.5) * scale_y))};
+}
+
 geometry_msgs::msg::Point backProject(
   const sensor_msgs::msg::CameraInfo & info, int u, int v, double depth)
 {

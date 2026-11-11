@@ -28,8 +28,12 @@ public:
   RgbdRuntime(rclcpp::Node & node, const Json & settings);
   ~RgbdRuntime() override;
 
-  /** @brief 获取并保存配对图像及采样时变换，只向模型返回彩色图。 */
-  ToolResult capture_pair(const Json & arguments);
+  /**
+   * @brief 保存原始图像对及采样时变换，返回按比例缩放的彩色图。
+   * @param arguments 取图模式和索引或年龄。
+   * @param image_scale 返回彩色图的缩放因子，1.0 保持原尺寸。
+   */
+  ToolResult capture_pair(const Json & arguments, double image_scale);
   /** @brief 按缓存 ID/像素反投影，并转换到指定坐标系当前的位置。 */
   ToolResult get_depth_point(const Json & arguments);
   /** @brief 停止自身回调，释放未决请求、标定与图像缓存。 */
@@ -43,6 +47,7 @@ private:
     GetImage::Response::ConstSharedPtr images;  ///< 同一响应中的彩色、深度压缩图及采样信息。
     sensor_msgs::msg::CameraInfo::ConstSharedPtr info;  ///< 捕获时使用的彩色相机标定。
     geometry_msgs::msg::TransformStamped fixed_from_camera;  ///< 深度采样时光学系到固定系的变换。
+    cv::Size image_size;                   ///< 模型收到的彩色图实际像素尺寸。
     std::once_flag decode_once;             ///< 同一对深度只解码一次，允许并发查询。
     rgbd::DepthImage depth;                 ///< 首次查询后才占用解码后的像素内存。
   };

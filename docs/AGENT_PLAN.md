@@ -341,7 +341,7 @@ string error
 
 `capture_pair` 和 `get_depth_point` 共用 `plugins/tools/rgbd` 中的资源。
 
-`capture_pair` 的 `mode/detail` 与彩色取图相同，服务操作改为 `LATEST_PAIR/QUEUE_PAIR/QUEUE_PAIR_AT_AGE`。工具保存彩色、深度、CameraInfo 和采样时相机变换，向模型返回彩色图和 `data.image_pair_id`。
+`capture_pair` 的 `mode/detail` 与彩色取图相同，服务操作改为 `LATEST_PAIR/QUEUE_PAIR/QUEUE_PAIR_AT_AGE`。工具保存彩色、深度、CameraInfo 和采样时相机变换，向模型返回按 `capture_pair.settings.image_scale` 等比例缩放的彩色图和 `data.image_pair_id`。缩放因子缺省为 `1.0`，例如 `0.5` 将宽高各缩为一半；尺寸四舍五入到整数，最小为 1。
 
 ```json
 {
@@ -352,13 +352,15 @@ string error
 }
 ```
 
-以上是 `get_depth_point` 的参数。整数像素使用 `images[0].metadata.width/height` 对应的原始彩色网格，左上角为原点。结果的 `data` 包含 `image_pair_id/pixel_x/pixel_y/depth_m/frame_id/x/y/z`，坐标单位米，`depth_m` 为相机光轴 Z 深度。
+以上是 `get_depth_point` 的参数。整数像素使用 `images[0].metadata.width/height` 对应的返回彩色图网格，左上角为原点，x 向右、y 向下。`original_width/original_height` 表示缓存的原始网格。工具按实际宽高的像素中心比例映射到最近的原始深度像素，再使用原始标定反投影。结果的 `data` 包含 `image_pair_id/pixel_x/pixel_y/depth_pixel_x/depth_pixel_y/depth_m/frame_id/x/y/z`，其中 `depth_pixel_x/depth_pixel_y` 是实际读取的原始深度像素。x/y/z 的单位为米，`depth_m` 为相机光轴 Z 深度。
 
 深度已经对齐到彩色光学系及像素网格，投影使用彩色 CameraInfo 的 K/D。支持 `plumb_bob`、`rational_polynomial`、`equidistant` 相机模型和 compressedDepth PNG：16UC1 按毫米读取，32FC1 按头部量化参数恢复米制深度。
 
 捕获时以深度采样时间保存相机到固定系的变换。默认固定系为 `map`；查询其他目标系时，固定系中的点再换算到目标系当前的位置。历史取图依赖采样时刻仍可查询的 TF。越界或无效深度返回 `DEPTH_UNAVAILABLE`，ID 过期返回 `IMAGE_PAIR_NOT_FOUND`，坐标变换异常返回 `TF_UNAVAILABLE`。
 
-组配置为 `service_name`、`camera_info_topic`、`fixed_frame`、`timeout_sec`、`max_pairs`；后四项缺省为 `/camera/color/camera_info`、`map`、`2.0`、`8`。缓存按 FIFO 淘汰，同一 ID 可重复和并发查询；深度在首次查询时解码一次。相机模式在图像队列期间保持一致，CameraInfo 在捕获时保存快照。
+组配置为 `service_name`、`camera_info_topic`、`fixed_frame`、`timeout_sec`、`max_pairs`；后四项缺省为 `/camera/color/camera_info`、`map`、`2.0`、`8`。缓存按 FIFO 淘汰，同一 ID 可重复和并发查询；深度在首次查询时解码一次。相机模式在图像队列期间保持一致，CameraInfo 在捕获时保存快照。彩色图的实际分辨率及解码后的深度分辨率均与 CameraInfo 核对；缩放只处理返回的彩色图，缓存深度和标定保持原始网格。缩小使用面积重采样，放大使用线性插值，1.0 保留原压缩字节。
+
+模型按返回的 width/height 报告像素坐标。模型服务可能继续缩放图像，其内部视觉网格由服务决定；工具采用明确的外部图片坐标约定。参考 [OpenAI 图像输入说明](https://developers.openai.com/api/docs/guides/images-vision)。
 
 ## 5. SessionManager
 

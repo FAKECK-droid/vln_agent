@@ -82,7 +82,7 @@ add_library(vln_agent_rgbd_tools SHARED
   plugins/tools/rgbd/capture_pair.cpp
   plugins/tools/rgbd/get_depth_point.cpp
   plugins/tools/rgbd/utils.cpp)
-target_link_libraries(vln_agent_rgbd_tools vln_agent_tools opencv_core opencv_imgcodecs opencv_calib3d)
+target_link_libraries(vln_agent_rgbd_tools vln_agent_tools opencv_core opencv_imgproc opencv_imgcodecs opencv_calib3d)
 target_include_directories(vln_agent_rgbd_tools PUBLIC ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(vln_agent_rgbd_tools rgbd_image_queue sensor_msgs tf2_ros tf2_geometry_msgs)
 

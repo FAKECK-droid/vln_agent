@@ -1,10 +1,15 @@
 #include "vln_agent/plugins/tools/rgbd/capture_pair.hpp"
 #include "vln_agent/plugins/tools/rgbd/rgbd_runtime.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
+#include <stdexcept>
 #include <future>
 #include <map>
 
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <pluginlib/class_list_macros.hpp>
 #include <tf2_ros/buffer.h>
 
@@ -13,7 +18,7 @@
 
 namespace vln_agent
 {
-ToolResult RgbdRuntime::capture_pair(const Json & arguments)
+ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
 {
   static const std::map<std::string, std::uint8_t> operations{
     {"latest", GetImage::Request::LATEST_PAIR},
@@ -55,6 +60,32 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments)
   {
     return ToolResult::failure("UNSUPPORTED_CAMERA_MODEL", "不支持的畸变模型: " + info.distortion_model);
   }
+  const bool png = color.format.find("png") != std::string::npos;
+  std::vector<unsigned char> scaled_color;
+  const auto * color_bytes = &color.data;
+  try {
+    const auto original = cv::imdecode(color.data, cv::IMREAD_COLOR | cv::IMREAD_IGNORE_ORIENTATION);
+    if (original.empty() || original.cols != static_cast<int>(info.width) ||
+      original.rows != static_cast<int>(info.height))
+    {
+      return ToolResult::failure("UNALIGNED_IMAGE_PAIR", "彩色图分辨率必须与 CameraInfo 一致");
+    }
+    pair->image_size = original.size();
+    if (image_scale != 1.0) {
+      pair->image_size = {
+        std::max(1, static_cast<int>(std::lround(original.cols * image_scale))),
+        std::max(1, static_cast<int>(std::lround(original.rows * image_scale)))};
+      cv::Mat resized;
+      cv::resize(original, resized, pair->image_size, 0, 0,
+        image_scale < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
+      if (!cv::imencode(png ? ".png" : ".jpg", resized, scaled_color)) {
+        return ToolResult::failure("IMAGE_PAIR_UNAVAILABLE", "彩色图缩放编码失败");
+      }
+      color_bytes = &scaled_color;
+    }
+  } catch (const cv::Exception & error) {
+    return ToolResult::failure("IMAGE_PAIR_UNAVAILABLE", error.what());
+  }
   if (depth.header.stamp.sec == 0 && depth.header.stamp.nanosec == 0) {
     return ToolResult::failure("TF_UNAVAILABLE", "深度图缺少采样时间，无法保存采样时的相机位姿");
   }
@@ -73,7 +104,9 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments)
     while (pairs_.size() > max_pairs_) {pairs_.pop_front();}
   }
 
-  Json metadata{{"frame_id", info.header.frame_id}, {"width", info.width}, {"height", info.height},
+  Json metadata{{"frame_id", info.header.frame_id},
+    {"width", pair->image_size.width}, {"height", pair->image_size.height},
+    {"original_width", info.width}, {"original_height", info.height},
     {"image_pair_id", pair->id}, {"pair_id", response->pair_id},
     {"pixel_origin", "top_left"}, {"fixed_frame", fixed_frame_},
     {"queue_index", response->queue_index}, {"image_age_sec", response->image_age_sec},
@@ -93,15 +126,19 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments)
   }
   auto result = ToolResult::success({{"image_pair_id", pair->id}});
   result.payload["images"] = Json::array({std::move(description)});
-  const auto mime = color.format.find("png") != std::string::npos ? "image/png" : "image/jpeg";
+  const auto mime = png ? "image/png" : "image/jpeg";
   result.images.push_back({{"type", "input_image"},
-    {"image_url", std::string("data:") + mime + ";base64," + utils::encodeBase64(color.data)},
+    {"image_url", std::string("data:") + mime + ";base64," + utils::encodeBase64(*color_bytes)},
     {"detail", "high"}});
   return result;
 }
 
-void CapturePair::initialize(const ToolContext & context, const Json &)
+void CapturePair::initialize(const ToolContext & context, const Json & settings)
 {
+  image_scale_ = settings.value("image_scale", 1.0);
+  if (!std::isfinite(image_scale_) || image_scale_ <= 0) {
+    throw std::invalid_argument("capture_pair.image_scale 必须为有限正数");
+  }
   rgbd_ = context.resources->getOrCreate<RgbdRuntime>(
     context.group_id + "/rgbd", [&] {
       return std::make_shared<RgbdRuntime>(context.node, context.group_settings);
@@ -110,7 +147,7 @@ void CapturePair::initialize(const ToolContext & context, const Json &)
 
 ToolResult CapturePair::execute(const Json & arguments)
 {
-  return rgbd_->capture_pair(arguments);
+  return rgbd_->capture_pair(arguments, image_scale_);
 }
 }  // namespace vln_agent
 
