@@ -32,7 +32,7 @@ struct SegmentMask
 class Segmenter
 {
 public:
-  /** @brief 仅保存配置；首次 setImage 时载入引擎。 */
+  /** @brief 按 warmup_on_initialize 选择初始化预热，或首次 setImage 时载入引擎。 */
   explicit Segmenter(Json settings);
   ~Segmenter();
   /** @brief 原图为 BGR；同一 pair 重用编码，换 pair 时在 CUDA 上重新编码。 */
@@ -42,7 +42,7 @@ public:
 private:
   struct Impl;
   Json settings_;                ///< 引擎路径、精度与 CUDA Graph 设置。
-  std::unique_ptr<Impl> impl_;   ///< 惰性创建，释放时回收 CUDA 资源。
+  std::unique_ptr<Impl> impl_;   ///< 初始化预热或首次调用时创建，释放时回收 CUDA 资源。
   std::string image_id_;        ///< 仅标识当前驻留特征，不保存历史。
   cv::Size image_size_;         ///< 当前特征对应的原图尺寸。
 };

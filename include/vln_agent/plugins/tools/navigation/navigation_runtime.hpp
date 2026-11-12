@@ -22,6 +22,7 @@ namespace vln_agent
 {
 
 class ToolCallbacks;
+class RgbdRuntime;
 
 /** @brief 一组导航函数共用的 Action/Costmap 客户端、TF、任务状态和环境变换。 */
 class NavigationRuntime : public SharedResource,
@@ -65,6 +66,13 @@ public:
   ToolResult navigate_to_pixel_start_navigation(const Json & arguments);
   /** @brief 同一环境快照中的有序像素批次，转换后复用多点导航与自定义行为树。 */
   ToolResult navigate_through_pixels_start_navigation(const Json & arguments);
+  /**
+   * @brief 一次投影全部物体实例，生成停靠位姿后复用单点或多点导航。
+   * @param rgbd 已装载的 RGB-D 共享资源。
+   * @param arguments pair_id、use_segmentation、instances；实例可指定 stand_off_m，默认 0。
+   * @return 投影明细、全局停靠位姿及导航任务；任一实例投影失败时整次不启动。
+   */
+  ToolResult navigate_to_objects(RgbdRuntime & rgbd, const Json & arguments);
   /** @brief 唤醒函数等待，尽力取消本客户端活动目标并停止自身回调。 */
   void shutdown() noexcept override;
 

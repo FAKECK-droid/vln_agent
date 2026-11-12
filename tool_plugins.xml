@@ -1,5 +1,5 @@
 <class_libraries>
-  <library path="vln_agent_navigation_tools">
+  <library path="vln_agent_tool_plugins">
     <class name="vln_agent/NavigateToPoseStartNavigation"
            type="vln_agent::NavigateToPoseStartNavigation"
            base_class_type="vln_agent::ToolPluginBase">
@@ -55,8 +55,10 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>复用导航 Action 取消环顾任务。</description>
     </class>
-  </library>
-  <library path="vln_agent_rgbd_tools">
+    <class name="vln_agent/NavigateToObjects" type="vln_agent::NavigateToObjects"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>复用实例深度投影，顺序启动单点或多点物体导航。</description>
+    </class>
     <class name="vln_agent/CapturePair" type="vln_agent::CapturePair"
            base_class_type="vln_agent::ToolPluginBase">
       <description>保存 RGB-D 图像对，仅返回彩色图和图像对 ID。</description>

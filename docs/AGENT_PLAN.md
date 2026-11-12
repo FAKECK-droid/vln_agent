@@ -287,7 +287,7 @@ string error
 
 ### 4.1 NavigationRuntime
 
-`plugins/tools/navigation` 下的十一个插件共享 NavigateToPose / NavigateThroughPoses Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
+`plugins/tools/navigation` 下的十二个插件共享 NavigateToPose / NavigateThroughPoses Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
 
 | 工具 | 参数 | 结果 |
 | --- | --- | --- |
@@ -300,6 +300,7 @@ string error
 | `get_surroundings` | `costmap: local/global`、`range_m` | `data.environment_id`、`pose`、地图 PNG 与 `images[0].metadata` |
 | `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/goal` |
 | `navigate_through_pixels_start_navigation` | `environment_id`、`pixels: [{pixel_x,pixel_y,yaw}, ...]` | `data.environment_id/frame_id/task_id/status/goals` |
+| `navigate_to_objects` | `pair_id/use_segmentation/instances[]`，实例可含 `stand_off_m` | `data.task_id/status/action/poses/projection` |
 | `start_lookaround` | `{}` | 环顾任务的 `data.task_id/status` |
 | `cancel_lookaround` | `task_id` | 取消请求处理状态 |
 
@@ -318,6 +319,33 @@ string error
 `navigate_through_pixels_start_navigation` 复用同一快照转换和消费逻辑，将 `pixels` 全部转换后一次性调用多点导航，沿用 `navigate_through_poses_behavior_tree`。每个 yaw 仍是相对于截图朝向的弧度，0 朝图上方，正值逆时针。例如 `{"environment_id":"env_1","pixels":[{"pixel_x":256,"pixel_y":200,"yaw":0.0},{"pixel_x":300,"pixel_y":180,"yaw":1.57}]}`；实际有效像素范围以该图的 `map_rect` 为准。
 
 单次点数上限使用导航组 `settings.max_pixel_goals` 配置，缺省 8，必须为正整数；`get_surroundings` 同时返回 `data.max_pixel_goals`，供模型按当前上限组织批次。空数组、超限、无效像素或朝向都会整批返回 `INVALID_ARGUMENTS`，不会截断或发送部分目标；数量错误的 `data.max_pixel_goals` 提供当前上限。Action 不可用、繁忙或拒绝目标时保留环境 ID，可修正后重试；只有目标被接受后才消费该 ID。成功返回 `data.frame_id` 和按输入顺序排列的 `data.goals: [{x,y,yaw}, ...]`，反馈与取消复用 `navigate_through_poses_get_feedback`、`navigate_through_poses_cancel_navigation`。
+
+`navigate_to_objects` 接收 capture_pair 图片上模型检测得到的实例提示。参数与 depth_project 共用 pair_id、use_segmentation 和实例 box/points，投影坐标系固定为导航 map_frame，模型省去 target_frame。每个实例可指定 stand_off_m（米），缺省 0；模型 Schema 也允许 null 表示 0。例如：
+
+```json
+{
+  "pair_id": "pair_1",
+  "use_segmentation": true,
+  "instances": [
+    {
+      "box": {"x_min": 100, "y_min": 60, "x_max": 300, "y_max": 220},
+      "points": [{"x": 200, "y": 140, "label": 1}],
+      "stand_off_m": 0.5
+    },
+    {
+      "box": null,
+      "points": [{"x": 400, "y": 180, "label": 1}],
+      "stand_off_m": 0
+    }
+  ]
+}
+```
+
+一次 depth_project 完成全部实例的分割与三维均值，继续共享 pair 解码、标定射线及 SAM 图像特征。全部成功后按顺序生成停靠点：首点以当前小车位置为参照，后续点以前一停靠点为参照，沿参照点到物体投影的水平连线后退 stand_off_m。0 直接使用投影 x/y；地面导航使用 x/y，投影中的 z 保留在结果内。中间停靠点 yaw 指向下一停靠点；最后一点面向最后物体，零偏移时采用接近方向，两点重合时延续此前方向。
+
+一个实例复用 start_navigation，多个实例复用 start_through_poses_navigation，后者沿用配置的多点行为树。活动导航直接返回 NAVIGATION_BUSY，省去分割计算。任一实例投影失败时整次不启动，结果保留全部投影明细；Nav2 接受、拒绝及执行终态继续沿用现有 Action/行为树流程。
+
+成功结果的 data 含 task_id、status、action（navigate_to_pose 或 navigate_through_poses）、frame_id、poses 和 projection。poses 是实际发送的有序 x/y/yaw，projection 是完整 depth_project 的 data。按 action 使用相应前缀的反馈和取消工具。函数 settings.rgbd_resource 默认 rgbd/rgbd，执行时查询已有资源，工具组装载顺序可独立安排。纯几何生成完成后直接提交给 Nav2，规划与到达判定由已配置的规划器、控制器和目标检查器处理。navigation 与 RGB-D 工具统一编译到 vln_agent_tool_plugins，pluginlib 使用同一库装载所有工具注册；源码和共享资源继续按组保存。
 
 `start_lookaround` 读取当前 `map_frame → base_frame` 位姿，向同一 NavigateToPose Action 提交环顾 XML。默认路径为 `vln_behavior_tree` 安装目录的 `behavior_trees/lookaround.xml`，可通过 `lookaround_behavior_tree` 指定路径。启动和取消工具在请求确认后返回；环视图由行为树最终的 `lookaround_completed` 事件提交。环顾任务在 Action 结束后自动释放状态，过程信息由行为树事件上报。
 
@@ -386,7 +414,7 @@ string error
 
 - 彩色图沿用捕获时已解码的原图，深度按 pair 解码一次。
 - 同一标定共享惰性射线表，掩码归约按行并行执行，计算过程直接读取栅格。
-- 首次分割时创建一个 TensorRT 模型；最近一个 pair 的图像特征常驻 GPU。重复查询该 pair 只运行解码器；换图后重新编码。
+- 默认配置在插件初始化时创建并预热 TensorRT 模型；最近一个真实 pair 的图像特征常驻 GPU。重复查询该 pair 只运行解码器；换图后重新编码。
 - 单个 TensorRT context 由互斥锁串行使用，同一请求的实例逐个处理；正点查询可并发执行。
 - 图像缓存按 max_pairs（缺省 8）FIFO 淘汰。旧标定随引用它的 pair 释放，工具结果由调用方接收。
 
@@ -406,11 +434,14 @@ string error
 
 ```yaml
 segmentation:
+  warmup_on_initialize: true
   engine_directory: /path/to/segment_tools/models/tensorrt/engines
   encoder_precision: tf32
   decoder_precision: fp32
   cuda_graph: true
 ```
+
+warmup_on_initialize 在默认 agent.yaml 中开启。RGB-D 共享资源首次创建时，用临时 1024×1024 图像执行编码和常用的 2/3 token 提示解码；临时图不生成 pair_id，第一张真实图会重新编码。新提示长度仍可能重新捕获 CUDA Graph。自定义配置省略该开关或设为 false 时延迟到首次分割加载；缺少分割库的构建保留正点投影能力。预热失败作为初始化错误上报。
 
 编码器与解码器各自支持 fp16/tf32/fp32。库通过 CMake 的 `mobile_sam_trt` 包链接，默认搜索相邻 segment_tools 的 tensorrt_lib/install，也可指定 mobile_sam_trt_DIR。开发机缺少该库时可编译正点投影；分割请求返回 SEGMENTATION_UNAVAILABLE。`VLN_AGENT_WITH_MOBILE_SAM=OFF` 可显式关闭链接。真实分割测试在开发板通过 `VLN_SAM_ENGINE_DIR` 与 `VLN_SAM_TEST_IMAGE` 环境变量开启。
 

@@ -78,7 +78,7 @@ private:
   sensor_msgs::msg::CameraInfo::ConstSharedPtr info_;  ///< 最新标定；捕获时保存只读引用。
   std::shared_ptr<Calibration> calibration_; ///< 最新标定缓存，旧标定随其 pair 释放。
   std::mutex segmentation_mutex_;           ///< 序列化单个 TensorRT context 及其图像特征。
-  std::unique_ptr<rgbd::Segmenter> segmenter_; ///< 惰性加载；正点查询不初始化 CUDA。
+  std::unique_ptr<rgbd::Segmenter> segmenter_; ///< 按组配置预热或惰性加载的分割模型。
   std::deque<std::shared_ptr<Pair>> pairs_;  ///< 不保存工具输出 JSON/Base64。
 };
 }  // namespace vln_agent

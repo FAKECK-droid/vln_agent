@@ -32,7 +32,22 @@ struct Segmenter::Impl
 struct Segmenter::Impl {};
 #endif
 
-Segmenter::Segmenter(Json settings) : settings_(std::move(settings)) {}
+Segmenter::Segmenter(Json settings) : settings_(std::move(settings))
+{
+#ifdef VLN_AGENT_HAS_MOBILE_SAM
+  if (settings_.value("warmup_on_initialize", false)) {
+    // 只预热引擎和常用提示形状，临时图像不进入 RGB-D pair 缓存。
+    const cv::Size size(1024, 1024);
+    setImage("__warmup__", cv::Mat(size, CV_8UC3, cv::Scalar(0, 0, 0)));
+    InstancePrompt prompt;
+    prompt.points.push_back({512, 512, 1});
+    predict(prompt, size);  // 正点 + padding：2 个 token。
+    prompt.box = cv::Rect2f(256, 256, 512, 512);
+    predict(prompt, size);  // 正点 + 框：3 个 token。
+    image_id_.clear();     // 第一张真实图片必须重新编码。
+  }
+#endif
+}
 Segmenter::~Segmenter() = default;
 
 void Segmenter::setImage(const std::string & pair_id, const cv::Mat & bgr)

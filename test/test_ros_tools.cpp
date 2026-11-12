@@ -289,7 +289,7 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
     "navigate_to_pose_start_navigation", "navigate_to_pose_get_feedback", "navigate_to_pose_cancel_navigation",
     "navigate_through_poses_start_navigation", "navigate_through_poses_get_feedback", "navigate_through_poses_cancel_navigation",
     "get_surroundings", "navigate_to_pixel_start_navigation", "navigate_through_pixels_start_navigation",
-    "start_lookaround", "cancel_lookaround",
+    "navigate_to_objects", "start_lookaround", "cancel_lookaround",
     "capture_pair", "depth_project"};
   ASSERT_EQ(tools.size(), names.size());
   for (std::size_t i = 0; i < names.size(); ++i) {EXPECT_EQ(tools.at(i).at("name"), names.at(i));}
@@ -298,6 +298,32 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
     EXPECT_TRUE(tool.at("strict").get<bool>());
     EXPECT_FALSE(tool.contains("plugin"));
     EXPECT_FALSE(tool.contains("blocking"));
+  }
+}
+
+/** @brief 回归跨库装载后的工厂注册，覆盖两种组顺序与复合插件独立选用。 */
+TEST_F(RosToolsTest, ReloadsNavigationAndRgbdInBothOrdersIncludingObjectOnlyGroup)
+{
+  const Json rgbd{{"id", "rgbd"}, {"definition", share + "/plugins/tools/rgbd/tool.json"},
+    {"settings", {{"service_name", "/vln_agent_tests/unused_images"}}},
+    {"functions", Json::array({
+        {{"name", "capture_pair"}, {"plugin", "vln_agent/CapturePair"}, {"blocking", false}},
+        {{"name", "depth_project"}, {"plugin", "vln_agent/DepthProject"}, {"blocking", false}}})}};
+  const Json object{{"name", "navigate_to_objects"}, {"plugin", "vln_agent/NavigateToObjects"},
+    {"blocking", true}};
+  for (const bool object_only : {false, true}) {
+    auto navigation = navigationGroup();
+    if (object_only) {navigation["functions"] = Json::array();}
+    navigation["functions"].push_back(object);
+    for (const bool rgbd_first : {false, true}) {
+      for (int attempt = 0; attempt < 3; ++attempt) {
+        ToolManager manager(client_node);
+        manager.load(config.config(rgbd_first ? Json::array({rgbd, navigation}) :
+          Json::array({navigation, rgbd})));
+        EXPECT_EQ(manager.getTools().size(), object_only ? 3u : 6u);
+        manager.shutdown();
+      }
+    }
   }
 }
 

@@ -46,6 +46,11 @@ tool_manager:
         - name: navigate_through_pixels_start_navigation
           plugin: vln_agent/NavigateThroughPixelsStartNavigation
           blocking: true
+        - name: navigate_to_objects
+          plugin: vln_agent/NavigateToObjects
+          blocking: true
+          settings:
+            rgbd_resource: rgbd/rgbd
         - name: start_lookaround
           plugin: vln_agent/StartLookaround
           blocking: true
@@ -61,9 +66,10 @@ tool_manager:
         timeout_sec: 2.0
         max_pairs: 8
         segmentation:
+          warmup_on_initialize: true
           engine_directory: /home/yan/ros2_ws/src/scout_mini_vln/segment_tools/models/tensorrt/engines
           encoder_precision: tf32
-          decoder_precision: fp32
+          decoder_precision: fp16
           cuda_graph: true
       functions:
         - name: capture_pair

@@ -12,6 +12,9 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/action/navigate_through_poses.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
 #include <rgbd_image_queue/srv/get_image.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
@@ -388,7 +391,13 @@ TEST_F(RgbdToolsTest, SegmentsRealImageAndReusesImageFeaturesAcrossCalls)
   const auto bgr = cv::imread(image);
   ASSERT_FALSE(bgr.empty()); width = bgr.cols; height = bgr.rows;
   createSource(); cv::imencode(".png", bgr, color); color_format = "png";
-  ToolManager manager(host); manager.load(config.config(Json::array({group(8, 0.3, 0.5)})));
+  auto rgbd_group = group(8, 0.3, 0.5);
+  rgbd_group["settings"]["segmentation"]["warmup_on_initialize"] = true;
+  ToolManager manager(host);
+  const auto init_start = std::chrono::steady_clock::now();
+  manager.load(config.config(Json::array({rgbd_group})));
+  const double init_ms = std::chrono::duration<double, std::milli>(
+    std::chrono::steady_clock::now() - init_start).count();
   const auto id = payload(capture(manager)).at("data").at("pair_id");
   auto target = instance(106, 58);
   target["box"] = {{"x_min", 42}, {"y_min", 18}, {"x_max", 170}, {"y_max", 106}};
@@ -424,7 +433,219 @@ TEST_F(RgbdToolsTest, SegmentsRealImageAndReusesImageFeaturesAcrossCalls)
   }
   const auto plain = query(manager, id, 106, 58);
   EXPECT_TRUE(plain.at("ok"));
-  std::cout << "SAM_TWO_INSTANCES first_with_init_ms=" << first_ms <<
+  std::cout << "SAM_TWO_INSTANCES load_with_warmup_ms=" << init_ms <<
+    " first_after_warmup_ms=" << first_ms <<
     " cached_pair_mean_ms=" << warm_ms << std::endl;
+}
+
+/** @brief 复用 RGB-D 固件，仅增加接收单点/多点目标的假 Action。 */
+class ObjectNavigationTest : public RgbdToolsTest
+{
+protected:
+  using Single = nav2_msgs::action::NavigateToPose;
+  using Through = nav2_msgs::action::NavigateThroughPoses;
+  using SingleGoal = rclcpp_action::ServerGoalHandle<Single>;
+  using ThroughGoal = rclcpp_action::ServerGoalHandle<Through>;
+
+  void createNavigation()
+  {
+    createSource();
+    single_name = "/rgbd_test/object_single_" + std::to_string(getpid());
+    through_name = "/rgbd_test/object_through_" + std::to_string(getpid());
+    single_server = rclcpp_action::create_server<Single>(source, single_name,
+      [this](const rclcpp_action::GoalUUID &, std::shared_ptr<const Single::Goal>) {
+        return reject ? rclcpp_action::GoalResponse::REJECT :
+               rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      }, [](std::shared_ptr<SingleGoal>) {return rclcpp_action::CancelResponse::ACCEPT;},
+      [this](std::shared_ptr<SingleGoal> goal) {
+        std::lock_guard<std::mutex> lock(goals_mutex); singles.push_back(std::move(goal));
+      });
+    through_server = rclcpp_action::create_server<Through>(source, through_name,
+      [](const rclcpp_action::GoalUUID &, std::shared_ptr<const Through::Goal>) {
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      }, [](std::shared_ptr<ThroughGoal>) {return rclcpp_action::CancelResponse::ACCEPT;},
+      [this](std::shared_ptr<ThroughGoal> goal) {
+        std::lock_guard<std::mutex> lock(goals_mutex); throughs.push_back(std::move(goal));
+      });
+    const auto single_ready = rclcpp_action::create_client<Single>(source, single_name);
+    const auto through_ready = rclcpp_action::create_client<Through>(source, through_name);
+    ASSERT_TRUE(single_ready->wait_for_action_server(3s));
+    ASSERT_TRUE(through_ready->wait_for_action_server(3s));
+  }
+  Json navigationGroup()
+  {
+    return {{"id", "navigation"}, {"definition", share + "/plugins/tools/navigation/tool.json"},
+      {"settings", {{"action_name", single_name}, {"navigate_through_poses_action_name", through_name},
+          {"navigate_through_poses_behavior_tree", "/test/objects.xml"},
+          {"map_frame", "rgbd_test_map"}, {"base_frame", "rgbd_test_base"},
+          {"costmap_timeout_sec", 0.3}}},
+      {"functions", Json::array({
+          {{"name", "navigate_to_objects"}, {"plugin", "vln_agent/NavigateToObjects"}, {"blocking", false}},
+          {{"name", "navigate_to_pose_start_navigation"}, {"plugin", "vln_agent/NavigateToPoseStartNavigation"}, {"blocking", false}},
+          {{"name", "navigate_to_pose_cancel_navigation"}, {"plugin", "vln_agent/NavigateToPoseCancelNavigation"}, {"blocking", false}},
+          {{"name", "navigate_through_poses_cancel_navigation"}, {"plugin", "vln_agent/NavigateThroughPosesCancelNavigation"}, {"blocking", false}}})}};
+  }
+  Json navigate(ToolManager & manager, const Json & id, const Json & instances, bool segment = false)
+  {
+    return payload(invoke(manager, "navigate_to_objects", {{"pair_id", id},
+        {"use_segmentation", segment}, {"instances", instances}}));
+  }
+  std::shared_ptr<SingleGoal> single(std::size_t i = 0)
+  {
+    if (!eventually([&] {
+        std::lock_guard<std::mutex> lock(goals_mutex); return singles.size() > i;
+      })) {throw std::runtime_error("单点目标未到达假 Action");}
+    std::lock_guard<std::mutex> lock(goals_mutex); return singles.at(i);
+  }
+  std::shared_ptr<ThroughGoal> through(std::size_t i = 0)
+  {
+    if (!eventually([&] {
+        std::lock_guard<std::mutex> lock(goals_mutex); return throughs.size() > i;
+      })) {throw std::runtime_error("多点目标未到达假 Action");}
+    std::lock_guard<std::mutex> lock(goals_mutex); return throughs.at(i);
+  }
+  static double yaw(const geometry_msgs::msg::Pose & pose)
+  {
+    return 2 * std::atan2(pose.orientation.z, pose.orientation.w);
+  }
+
+  std::string single_name, through_name;
+  rclcpp_action::Server<Single>::SharedPtr single_server;
+  rclcpp_action::Server<Through>::SharedPtr through_server;
+  std::mutex goals_mutex;
+  std::vector<std::shared_ptr<SingleGoal>> singles;
+  std::vector<std::shared_ptr<ThroughGoal>> throughs;
+  std::atomic_bool reject{false};
+};
+
+TEST_F(ObjectNavigationTest, DefaultsToSurfaceAndUsesSingleActionWithSharedCancel)
+{
+  createNavigation();
+  ToolManager manager(host);
+  // 先装载 navigation，执行时才查询同组已装载的 RGB-D 资源。
+  manager.load(config.config(Json::array({navigationGroup(), group()})));
+  const auto id = payload(capture(manager)).at("data").at("pair_id");
+  const auto result = navigate(manager, id, Json::array({instance(5, 4)}));
+  ASSERT_TRUE(result.at("ok")) << result;
+  const auto & data = result.at("data");
+  EXPECT_EQ(data.at("action"), "navigate_to_pose");
+  EXPECT_EQ(data.at("projection").at("success_count"), 1);
+  const auto goal = single(); const auto & pose = goal->get_goal()->pose;
+  EXPECT_EQ(pose.header.frame_id, "rgbd_test_map");
+  EXPECT_NEAR(pose.pose.position.x, 9.2, 1e-9);
+  EXPECT_NEAR(pose.pose.position.y, 21, 1e-9);
+  EXPECT_DOUBLE_EQ(pose.pose.position.z, 0);
+  EXPECT_NEAR(yaw(pose.pose), std::atan2(14, 3.2), 1e-9);
+  // 活动普通导航阻止复合调用；即使要求分割也应直接返回。
+  EXPECT_EQ(navigate(manager, id, Json::array({instance(5, 4)}), true).at("code"), "NAVIGATION_BUSY");
+  const auto canceled = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
+      {{"task_id", data.at("task_id")}}));
+  ASSERT_TRUE(canceled.at("ok"));
+  ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
+  goal->canceled(std::make_shared<Single::Result>());
+}
+
+TEST_F(ObjectNavigationTest, OffsetsOrderedGoalsPointsIntermediateYawForwardAndFacesLastObject)
+{
+  createNavigation();
+  ToolManager manager(host); manager.load(config.config(Json::array({navigationGroup(), group()})));
+  const auto id = payload(capture(manager)).at("data").at("pair_id");
+  auto a = instance(5, 4), b = instance(7, 5);
+  a["stand_off_m"] = 0.6; b["stand_off_m"] = 0.4;
+  const double approach_a = std::atan2(14, 3.2);
+  const double ax = 9.2 - 0.6 * std::cos(approach_a), ay = 21 - 0.6 * std::sin(approach_a);
+  const double approach_b = std::atan2(22 - ay, 8.8 - ax);
+  const double bx = 8.8 - 0.4 * std::cos(approach_b), by = 22 - 0.4 * std::sin(approach_b);
+  const auto result = navigate(manager, id, Json::array({a, b}));
+  ASSERT_TRUE(result.at("ok")) << result;
+  EXPECT_EQ(result.at("data").at("action"), "navigate_through_poses");
+  const auto goal = through(); const auto & request = *goal->get_goal();
+  EXPECT_EQ(request.behavior_tree, "/test/objects.xml");
+  ASSERT_EQ(request.poses.size(), 2u);
+  EXPECT_NEAR(request.poses[0].pose.position.x, ax, 1e-9);
+  EXPECT_NEAR(request.poses[0].pose.position.y, ay, 1e-9);
+  EXPECT_NEAR(yaw(request.poses[0].pose), std::atan2(by - ay, bx - ax), 1e-9);
+  EXPECT_NEAR(request.poses[1].pose.position.x, bx, 1e-9);
+  EXPECT_NEAR(request.poses[1].pose.position.y, by, 1e-9);
+  EXPECT_NEAR(yaw(request.poses[1].pose), approach_b, 1e-9);
+  EXPECT_EQ(request.poses[0].header.stamp, request.poses[1].header.stamp);
+  EXPECT_EQ(payload(invoke(manager, "navigate_to_pose_start_navigation",
+      {{"frame_id", "rgbd_test_map"}, {"x", 1}, {"y", 2}, {"yaw", 0}})).at("code"), "NAVIGATION_BUSY");
+  const auto canceled = payload(invoke(manager, "navigate_through_poses_cancel_navigation",
+      {{"task_id", result.at("data").at("task_id")}}));
+  ASSERT_TRUE(canceled.at("ok")); ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
+  goal->canceled(std::make_shared<Through::Result>());
+}
+
+TEST_F(ObjectNavigationTest, ZeroOffsetAndCoincidentFinalGoalsKeepApproachYaw)
+{
+  createNavigation();
+  ToolManager manager(host); manager.load(config.config(Json::array({navigationGroup(), group()})));
+  const auto id = payload(capture(manager)).at("data").at("pair_id");
+  auto a = instance(5, 4), b = instance(7, 5); a["stand_off_m"] = nullptr;
+  const auto result = navigate(manager, id, Json::array({a, b, b}));
+  ASSERT_TRUE(result.at("ok")) << result;
+  const auto goal = through(); const auto & poses = goal->get_goal()->poses;
+  ASSERT_EQ(poses.size(), 3u);
+  const double direction = std::atan2(1, -0.4);
+  EXPECT_NEAR(poses[0].pose.position.x, 9.2, 1e-9);
+  EXPECT_NEAR(poses[1].pose.position.x, 8.8, 1e-9);
+  for (const auto & pose : poses) {EXPECT_NEAR(yaw(pose.pose), direction, 1e-9);}
+  goal->succeed(std::make_shared<Through::Result>());
+}
+
+TEST_F(ObjectNavigationTest, ProjectionFailureStartsNoActionAndRetainsEveryInstanceResult)
+{
+  createNavigation();
+  ToolManager manager(host); manager.load(config.config(Json::array({navigationGroup(), group()})));
+  const auto id = payload(capture(manager)).at("data").at("pair_id");
+  const auto partial = navigate(manager, id, Json::array({instance(5, 4), instance(0, 0)}));
+  EXPECT_FALSE(partial.at("ok")); EXPECT_EQ(partial.at("code"), "INSTANCE_PROJECTION_FAILED");
+  EXPECT_EQ(partial.at("data").at("instances").size(), 2u);
+  EXPECT_EQ(partial.at("data").at("instances").at(1).at("code"), "DEPTH_UNAVAILABLE");
+  EXPECT_EQ(navigate(manager, "missing_pair", Json::array({instance(5, 4)})).at("code"), "IMAGE_PAIR_NOT_FOUND");
+  {std::lock_guard<std::mutex> lock(goals_mutex); EXPECT_TRUE(singles.empty()); EXPECT_TRUE(throughs.empty());}
+  reject = true;
+  const auto rejected = navigate(manager, id, Json::array({instance(5, 4)}));
+  EXPECT_EQ(rejected.at("code"), "NAVIGATION_REJECTED");
+  EXPECT_EQ(rejected.at("data").at("projection").at("success_count"), 1);
+  reject = false;
+  const auto next = navigate(manager, id, Json::array({instance(5, 4)}));
+  ASSERT_TRUE(next.at("ok")) << next;
+  single()->succeed(std::make_shared<Single::Result>());
+}
+
+TEST_F(ObjectNavigationTest, RealSegmentationFeedsOrderedNavigationWithoutFetchingAnotherFrame)
+{
+  const auto engines = std::getenv("VLN_SAM_ENGINE_DIR");
+  const auto image = std::getenv("VLN_SAM_TEST_IMAGE");
+  if (!engines || !image) {GTEST_SKIP() << "开发板真实 SAM 测试由环境变量开启";}
+  const auto bgr = cv::imread(image); ASSERT_FALSE(bgr.empty());
+  width = bgr.cols; height = bgr.rows; createNavigation();
+  cv::imencode(".png", bgr, color); color_format = "png";
+  auto rgbd_group = group(8, 0.3, 0.5);
+  rgbd_group["settings"]["segmentation"]["warmup_on_initialize"] = true;
+  ToolManager manager(host); manager.load(config.config(Json::array({navigationGroup(), rgbd_group})));
+  const auto id = payload(capture(manager)).at("data").at("pair_id");
+  auto a = instance(106, 58), b = instance(125, 60);
+  a["box"] = {{"x_min", 42}, {"y_min", 18}, {"x_max", 170}, {"y_max", 106}};
+  b["box"] = {{"x_min", 75}, {"y_min", 40}, {"x_max", 150}, {"y_max", 100}};
+  std::size_t reads; {std::lock_guard<std::mutex> lock(mutex); reads = requests.size();}
+  // 第一次真实分割直接通过复合工具，验证初始化预热后仍重新编码真实 pair。
+  const auto result = navigate(manager, id, Json::array({a, b}), true);
+  ASSERT_TRUE(result.at("ok")) << result;
+  const auto projected = project(manager, id, Json::array({a, b}), "rgbd_test_map", true);
+  ASSERT_TRUE(projected.at("ok")) << projected;
+  EXPECT_EQ(result.at("data").at("projection").at("instances"), projected.at("data").at("instances"));
+  const auto goal = through(); ASSERT_EQ(goal->get_goal()->poses.size(), 2u);
+  const auto & points = projected.at("data").at("instances");
+  for (std::size_t i = 0; i < points.size(); ++i) {
+    const auto & pose = goal->get_goal()->poses[i].pose;
+    EXPECT_NEAR(pose.position.x, points[i].at("x").get<double>(), 1e-9);
+    EXPECT_NEAR(pose.position.y, points[i].at("y").get<double>(), 1e-9);
+    EXPECT_GT(points[i].at("sample_count").get<int>(), 100);
+  }
+  {std::lock_guard<std::mutex> lock(mutex); EXPECT_EQ(requests.size(), reads);}
+  goal->succeed(std::make_shared<Through::Result>());
 }
 }  // namespace vln_agent::test
