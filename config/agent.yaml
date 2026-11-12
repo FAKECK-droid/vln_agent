@@ -37,17 +37,6 @@ tool_manager:
         - name: cancel_lookaround
           plugin: vln_agent/CancelLookaround
           blocking: true
-    - id: capture_image
-      definition: ../plugins/tools/capture_image/tool.json
-      settings:
-        service_name: /rgbd_image_queue/get_image
-      functions:
-        - name: capture_image
-          plugin: vln_agent/CaptureImage
-          blocking: false
-          settings:
-            timeout_sec: 2.0
-
     - id: rgbd
       definition: ../plugins/tools/rgbd/tool.json
       settings:
@@ -56,17 +45,19 @@ tool_manager:
         fixed_frame: map
         timeout_sec: 2.0
         max_pairs: 8
+        segmentation:
+          engine_directory: /home/yan/ros2_ws/src/scout_mini_vln/segment_tools/models/tensorrt/engines
+          encoder_precision: tf32
+          decoder_precision: fp32
+          cuda_graph: true
       functions:
         - name: capture_pair
           plugin: vln_agent/CapturePair
           blocking: false
           settings:
             image_scale: 0.8
-        - name: get_depth_point
-          plugin: vln_agent/GetDepthPoint
-          blocking: false
-        - name: get_depth_points
-          plugin: vln_agent/GetDepthPoints
+        - name: depth_project
+          plugin: vln_agent/DepthProject
           blocking: false
 
 

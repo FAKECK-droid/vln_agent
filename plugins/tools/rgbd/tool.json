@@ -2,7 +2,7 @@
   {
     "type": "function",
     "name": "capture_pair",
-    "description": "获取并保存一对已对齐的彩色/深度图，只返回按配置缩放的彩色图和 data.image_pair_id。随后用 get_depth_point 单点查询或 get_depth_points 批量查询返回图片上的像素，图片实际尺寸见 images[0].metadata.width/height；左上角为 (0,0)，x 向右、y 向下，使用该尺寸下的零基整数像素。图像对缓存有上限，较旧 ID 会被淘汰。latest 取最新，index/age 取历史。",
+    "description": "获取并保存已对齐的彩色/深度图、标定与采样时位姿，返回按配置缩放的彩色图和 data.pair_id。随后用 depth_project 查询实例位置。按 images[0].metadata.width/height 网格给点和框，左上角原点，x 向右、y 向下；工具处理原始深度映射。latest 取最新，index/age 取历史。缓存有上限，旧 pair_id 会被淘汰。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -33,88 +33,116 @@
   },
   {
     "type": "function",
-    "name": "get_depth_point",
-    "description": "根据 capture_pair 的图像对 ID 和返回彩色图上的零基整数像素，映射回原始对齐深度网格，取最近像素并返回目标坐标系中的三维坐标（米）。缩放及尺寸取整由工具处理，按 images[0].metadata.width/height 选点，勿自行换算到原图或归一化坐标。无有效深度直接报错。深度采样时相机位姿已保存在固定坐标系（默认 map）；目标为其他坐标系时，换算到该坐标系当前的位置。可重复查询同一图像对。",
+    "name": "depth_project",
+    "description": "查询同一缓存 pair 的多个实例并返回目标坐标系中的可见表面三维均值（米）。use_segmentation=true 时用各实例独立的点和框调用 MobileSAM，对掩码内全部有效原始深度投影并求均值；false 时忽略框及负点，只对正点的有效深度求均值。所有提示使用 capture_pair 返回图的实际尺寸，无需自行缩放。结果 data.instances 保持输入顺序，逐项返回 index/ok/sample_count/x/y/z/depth_m 或 code/message，分割时附 mask_score。部分实例失败保留其余结果，全失败则顶层 ok=false。坐标使用采样时固定系位姿；其他 target_frame 使用当前 TF。均值表示可见表面，不等同于物体体积中心或停车点。",
     "async": true,
     "strict": true,
     "parameters": {
       "type": "object",
       "properties": {
-        "image_pair_id": {
+        "pair_id": {
           "type": "string",
-          "description": "capture_pair 返回的 data.image_pair_id。"
-        },
-        "pixel_x": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "返回彩色图的横坐标，左上角为 0，向右增大，整数范围 0 到 images[0].metadata.width-1。"
-        },
-        "pixel_y": {
-          "type": "integer",
-          "minimum": 0,
-          "description": "返回彩色图的纵坐标，向下增大，整数范围 0 到 images[0].metadata.height-1。"
+          "description": "capture_pair 返回的 data.pair_id。"
         },
         "target_frame": {
           "type": "string",
           "description": "输出坐标系，例如 map 或 base_link。"
-        }
-      },
-      "required": [
-        "image_pair_id",
-        "pixel_x",
-        "pixel_y",
-        "target_frame"
-      ],
-      "additionalProperties": false
-    }
-  },
-  {
-    "type": "function",
-    "name": "get_depth_points",
-    "description": "批量查询 capture_pair 的同一个缓存图像对，返回指定坐标系中的三维坐标（米）。pixels 为返回彩色图上的 1 到 64 个零基整数像素，使用 images[0].metadata.width/height 网格。复用 pair、深度解码和坐标变换，data.points 按输入顺序逐点返回 ok 与坐标或 code/message；单点失败保留其余结果。data 包含 image_pair_id、frame_id、success_count。全部失败时顶层 ok=false，保留第一项错误及全部明细。使用深度采样时保存的相机位姿，其他目标系按当前 TF 换算。",
-    "async": true,
-    "strict": true,
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "image_pair_id": {
-          "type": "string",
-          "description": "capture_pair 返回的 data.image_pair_id。"
         },
-        "pixels": {
+        "use_segmentation": {
+          "type": "boolean",
+          "description": "true 分割实例掩码；false 只使用正类提示点。"
+        },
+        "instances": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 64,
           "items": {
             "type": "object",
             "properties": {
-              "pixel_x": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "返回彩色图横坐标，左上角为 0，向右增大。"
+              "box": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "x_min": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "左边界。"
+                  },
+                  "y_min": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "上边界。"
+                  },
+                  "x_max": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "右边界，可等于图片宽度。"
+                  },
+                  "y_max": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "下边界，可等于图片高度。"
+                  }
+                },
+                "required": [
+                  "x_min",
+                  "y_min",
+                  "x_max",
+                  "y_max"
+                ],
+                "additionalProperties": false,
+                "description": "实例提示框，按返回图片的边界坐标填写；无需框时填 null。"
               },
-              "pixel_y": {
-                "type": "integer",
-                "minimum": 0,
-                "description": "返回彩色图纵坐标，向下增大。"
+              "points": {
+                "type": "array",
+                "maxItems": 63,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "返回图片上的横向零基像素。"
+                    },
+                    "y": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "返回图片上的纵向零基像素。"
+                    },
+                    "label": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        1
+                      ],
+                      "description": "1 前景正点，0 背景负点。"
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                "description": "本实例独立的提示点。分割时纯点最多 63，带框最多 62；关闭分割时只读取 label=1 的点。"
               }
             },
             "required": [
-              "pixel_x",
-              "pixel_y"
+              "box",
+              "points"
             ],
             "additionalProperties": false
-          }
-        },
-        "target_frame": {
-          "type": "string",
-          "description": "输出坐标系，例如 map 或 base_link。"
+          },
+          "description": "每项对应一个检测实例，提示相互独立，结果顺序一致。"
         }
       },
       "required": [
-        "image_pair_id",
-        "pixels",
-        "target_frame"
+        "pair_id",
+        "target_frame",
+        "use_segmentation",
+        "instances"
       ],
       "additionalProperties": false
     }

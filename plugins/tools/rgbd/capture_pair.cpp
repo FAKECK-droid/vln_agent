@@ -45,6 +45,14 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
   {
     std::lock_guard<std::mutex> lock(mutex_);
     pair->info = info_;
+    if (pair->info) {
+      const auto & info = *pair->info;
+      if (!calibration_ || !rgbd::sameCalibration(*calibration_->info, info)) {
+        calibration_ = std::make_shared<Calibration>();
+        calibration_->info = pair->info;
+      }
+      pair->calibration = calibration_;
+    }
   }
   if (!pair->info || pair->info->k[0] <= 0 || pair->info->k[4] <= 0) {
     return ToolResult::failure("CAMERA_INFO_UNAVAILABLE", "尚未收到有效的彩色 CameraInfo");
@@ -70,6 +78,7 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
     {
       return ToolResult::failure("UNALIGNED_IMAGE_PAIR", "彩色图分辨率必须与 CameraInfo 一致");
     }
+    pair->color = original;
     pair->image_size = original.size();
     if (image_scale != 1.0) {
       pair->image_size = {
@@ -107,7 +116,7 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
   Json metadata{{"frame_id", info.header.frame_id},
     {"width", pair->image_size.width}, {"height", pair->image_size.height},
     {"original_width", info.width}, {"original_height", info.height},
-    {"image_pair_id", pair->id}, {"pair_id", response->pair_id},
+    {"pair_id", pair->id}, {"source_pair_id", response->pair_id},
     {"pixel_origin", "top_left"}, {"fixed_frame", fixed_frame_},
     {"queue_index", response->queue_index}, {"image_age_sec", response->image_age_sec},
     {"stamp_delta_sec", response->stamp_delta_sec}};
@@ -124,7 +133,7 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
       description["metadata"]["depth_time_stamp"] = utc(depth.header.stamp);
     }
   }
-  auto result = ToolResult::success({{"image_pair_id", pair->id}});
+  auto result = ToolResult::success({{"pair_id", pair->id}});
   result.payload["images"] = Json::array({std::move(description)});
   const auto mime = png ? "image/png" : "image/jpeg";
   result.images.push_back({{"type", "input_image"},

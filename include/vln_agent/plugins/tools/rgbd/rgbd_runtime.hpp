@@ -20,6 +20,7 @@ namespace tf2_ros {class Buffer; class TransformListener;}
 namespace vln_agent
 {
 class ToolCallbacks;
+namespace rgbd {class Segmenter;}
 
 /** @brief RGB-D 工具共享的取图客户端、标定、TF 和有界图像对缓存。 */
 class RgbdRuntime : public SharedResource
@@ -35,28 +36,27 @@ public:
    * @param image_scale 返回彩色图的缩放因子，1.0 保持原尺寸。
    */
   ToolResult capture_pair(const Json & arguments, double image_scale);
-  /** @brief 按缓存 ID/像素反投影，并转换到指定坐标系当前的位置。 */
-  ToolResult get_depth_point(const Json & arguments);
-  /**
-   * @brief 固定同一个 pair 后批量投影，复用深度解码和目标坐标变换。
-   * @param id capture_pair 返回的图像对 ID。
-   * @param pixels 返回彩色图上的整数像素。
-   * @param target 输出坐标系；与 get_depth_point 使用相同时间约定。
-   * @return 按输入顺序排列的逐点结果，单点无深度不会丢弃其余结果。
-   */
-  std::vector<ToolResult> getDepthPoints(
-    const std::string & id, const std::vector<cv::Point> & pixels, const std::string & target);
+  /** @brief 使用实例掩码或正点深度，返回目标坐标系中的三维均值。 */
+  ToolResult depth_project(const Json & arguments);
   /** @brief 停止自身回调，释放未决请求、标定与图像缓存。 */
   void shutdown() noexcept override;
 
 private:
   using GetImage = rgbd_image_queue::srv::GetImage;
+  struct Calibration
+  {
+    sensor_msgs::msg::CameraInfo::ConstSharedPtr info; ///< 固定的 K/D、尺寸和畸变模型。
+    std::once_flag rays_once;  ///< 仅在首次掩码投影时构建原始像素射线表。
+    cv::Mat rays;              ///< CV_64FC2 去畸变射线，同一标定的各 pair 共享。
+  };
   struct Pair
   {
     std::string id;                         ///< 本资源内的图像对 ID，与服务端 pair_id 分开。
     GetImage::Response::ConstSharedPtr images;  ///< 同一响应中的彩色、深度压缩图及采样信息。
     sensor_msgs::msg::CameraInfo::ConstSharedPtr info;  ///< 捕获时使用的彩色相机标定。
     geometry_msgs::msg::TransformStamped fixed_from_camera;  ///< 深度采样时光学系到固定系的变换。
+    std::shared_ptr<Calibration> calibration; ///< 同一标定共享射线表。
+    cv::Mat color;                         ///< 捕获时已解码的原始 BGR，供 SAM 编码。
     cv::Size image_size;                   ///< 模型收到的彩色图实际像素尺寸。
     std::once_flag decode_once;             ///< 同一对深度只解码一次，允许并发查询。
     rgbd::DepthImage depth;                 ///< 首次查询后才占用解码后的像素内存。
@@ -76,6 +76,9 @@ private:
   bool closed_{false};                     ///< 关闭后不再向缓存写入图像。
   std::uint64_t next_id_{0};                ///< 只保存计数，不保存调用历史。
   sensor_msgs::msg::CameraInfo::ConstSharedPtr info_;  ///< 最新标定；捕获时保存只读引用。
+  std::shared_ptr<Calibration> calibration_; ///< 最新标定缓存，旧标定随其 pair 释放。
+  std::mutex segmentation_mutex_;           ///< 序列化单个 TensorRT context 及其图像特征。
+  std::unique_ptr<rgbd::Segmenter> segmenter_; ///< 惰性加载；正点查询不初始化 CUDA。
   std::deque<std::shared_ptr<Pair>> pairs_;  ///< 不保存工具输出 JSON/Base64。
 };
 }  // namespace vln_agent

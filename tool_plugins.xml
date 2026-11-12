@@ -36,25 +36,14 @@
       <description>复用导航 Action 取消环顾任务。</description>
     </class>
   </library>
-  <library path="vln_agent_camera_tools">
-    <class name="vln_agent/CaptureImage"
-           type="vln_agent::CaptureImage"
-           base_class_type="vln_agent::ToolPluginBase">
-      <description>读取最新相机图像并返回 JPEG。</description>
-    </class>
-  </library>
   <library path="vln_agent_rgbd_tools">
     <class name="vln_agent/CapturePair" type="vln_agent::CapturePair"
            base_class_type="vln_agent::ToolPluginBase">
       <description>保存 RGB-D 图像对，仅返回彩色图和图像对 ID。</description>
     </class>
-    <class name="vln_agent/GetDepthPoint" type="vln_agent::GetDepthPoint"
+    <class name="vln_agent/DepthProject" type="vln_agent::DepthProject"
            base_class_type="vln_agent::ToolPluginBase">
-      <description>读取保存的深度像素并换算到目标坐标系。</description>
-    </class>
-    <class name="vln_agent/GetDepthPoints" type="vln_agent::GetDepthPoints"
-           base_class_type="vln_agent::ToolPluginBase">
-      <description>批量查询同一 pair 的像素深度与三维坐标，保留逐点失败结果。</description>
+      <description>按实例提示分割或读取正点深度，返回目标坐标系中的三维均值。</description>
     </class>
   </library>
 </class_libraries>

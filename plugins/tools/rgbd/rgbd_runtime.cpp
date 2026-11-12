@@ -1,6 +1,7 @@
 #include "vln_agent/plugins/tools/rgbd/rgbd_runtime.hpp"
 
 #include <stdexcept>
+#include "vln_agent/plugins/tools/rgbd/segmentation.hpp"
 
 #include <tf2_ros/buffer.h>
 #include <tf2_ros/transform_listener.h>
@@ -14,6 +15,7 @@ RgbdRuntime::RgbdRuntime(rclcpp::Node & node, const Json & settings)
 {
   fixed_frame_ = settings.value("fixed_frame", std::string("map"));
   timeout_sec_ = settings.value("timeout_sec", 2.0);
+  segmenter_ = std::make_unique<rgbd::Segmenter>(settings.value("segmentation", Json::object()));
   max_pairs_ = settings.value("max_pairs", std::size_t{8});
   if (max_pairs_ == 0) {throw std::invalid_argument("max_pairs 必须大于零");}
   bool simulated = false;
@@ -57,6 +59,7 @@ void RgbdRuntime::shutdown() noexcept
   // 先停止标定回调，再释放缓存，防止关闭期间的最后一条回调重新写入标定。
   std::lock_guard<std::mutex> lock(mutex_);
   pairs_.clear();
+  calibration_.reset();
   info_.reset();
 }
 }  // namespace vln_agent

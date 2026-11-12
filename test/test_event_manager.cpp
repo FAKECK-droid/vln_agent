@@ -32,7 +32,7 @@ protected:
   {
     const Json payload{{"source", "robot"}, {"origin", "/bt/main/InspectDoor"},
       {"time_stamp", "2026-10-28T06:00:00.000Z"}, {"event", "status"},
-      {"instruction", {{"function", "capture_image"}}},
+      {"instruction", {{"function", "capture_pair"}}},
       {"data", {{"value", value}, {"slot", slot}, {"message", "请检查当前画面"}}}};
     return {{"role", "user"},
       {"content", Json::array({{{"type", "input_text"}, {"text", payload.dump()}}})}};

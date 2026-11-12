@@ -57,13 +57,13 @@ ros2 run vln_agent vln_agent_node --ros-args \
 | 约定 | 已核对的本地源码/文档 | 提示词处理 |
 | --- | --- | --- |
 | 单文件提示词与首次 system 输入 | [src/vln_agent.cpp](../src/vln_agent.cpp)、[AGENT_PLAN §5](../docs/AGENT_PLAN.md) | 一个自包含 MD，原生 function_call，不要求业务文本 JSON |
-| tools 实际列表与参数 | [navigation/tool.json](../plugins/tools/navigation/tool.json)、[rgbd/tool.json](../plugins/tools/rgbd/tool.json)、[capture_image/tool.json](../plugins/tools/capture_image/tool.json) | 十个现有函数；不假定规划中的工具已接入 |
+| tools 实际列表与参数 | [navigation/tool.json](../plugins/tools/navigation/tool.json)、[rgbd/tool.json](../plugins/tools/rgbd/tool.json) | 当前已注册函数；不假定规划中的工具已接入 |
 | 调用结果与物理任务分别完成 | [AGENT_PLAN §2–4](../docs/AGENT_PLAN.md)、[navigate_to_pose_start_navigation.cpp](../plugins/tools/navigation/navigate_to_pose_start_navigation.cpp) | 区分 call_id/task_id、ok/status 和导航事件 |
 | 导航/环顾共用一个任务槽 | [navigation_runtime.cpp](../plugins/tools/navigation/navigation_runtime.cpp)、[start_lookaround.cpp](../plugins/tools/navigation/start_lookaround.cpp) | 禁止并行运动，NAVIGATION_BUSY 不当作路径失败 |
 | 完成/失败后释放活动记录 | [navigate_to_pose_start_navigation.cpp](../plugins/tools/navigation/navigate_to_pose_start_navigation.cpp)、[navigate_to_pose_get_feedback.cpp](../plugins/tools/navigation/navigate_to_pose_get_feedback.cpp) | 结束后直接推进替代目标；TASK_NOT_FOUND 不代表成功 |
 | 像素图尺寸、方向和 ID 消费 | [get_surroundings.cpp](../plugins/tools/navigation/get_surroundings.cpp)、[utils.cpp](../plugins/tools/navigation/utils.cpp)、[navigate_to_pixel_start_navigation.cpp](../plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp) | 完整图坐标、map_rect 内选点、截图相对 yaw；目标接受后重新取环境 ID |
-| 缩放彩色图与原深度映射 | [rgbd/tool.json](../plugins/tools/rgbd/tool.json)、[get_depth_point.cpp](../plugins/tools/rgbd/get_depth_point.cpp)、[capture_pair.cpp](../plugins/tools/rgbd/capture_pair.cpp) | 使用返回 width/height 下的整数像素，工具负责缩放换算 |
-| 采样时固定系与当前目标系 | [get_depth_point.cpp](../plugins/tools/rgbd/get_depth_point.cpp) | map 点对应历史采样；其他 target_frame 使用当前变换；动态物体重新观察 |
+| 缩放彩色图与原深度映射 | [rgbd/tool.json](../plugins/tools/rgbd/tool.json)、[depth_project.cpp](../plugins/tools/rgbd/depth_project.cpp)、[capture_pair.cpp](../plugins/tools/rgbd/capture_pair.cpp) | 使用返回 width/height 下的整数像素，工具负责缩放换算 |
+| 采样时固定系与当前目标系 | [depth_project.cpp](../plugins/tools/rgbd/depth_project.cpp) | map 点对应历史采样；其他 target_frame 使用当前变换；动态物体重新观察 |
 | 新输入推动请求，不具备定时器 | [VLNAgent::step](../src/vln_agent.cpp)、[session_manager.cpp](../src/session/session_manager.cpp) | 一次图像返回再判断下一次，不承诺采样 Hz 或伪造 sleep |
 | 图片描述两种组织方式 | [AGENT_PLAN §2](../docs/AGENT_PLAN.md)；相邻 `vln_behavior_tree/docs/BEHAVIOR_TREE_PLAN.md` §3、§6 | 同时识别 metadata 嵌套与事件平铺字段 |
 | BT 事件通常没有 task_id，环顾会触发子导航事件 | 相邻 `vln_behavior_tree` 的 `plugins/events/navigation_event.cpp`、`behavior_trees/lookaround.xml` 和接口文档 §8–9 | 结合动作类型、目标、origin、时序关联；环顾以 lookaround_completed 为图像完成信号 |

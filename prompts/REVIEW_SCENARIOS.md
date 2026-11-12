@@ -21,7 +21,7 @@
 预期：按需取最新图并描述。看到门不等于获得去门口的指令；不自动接近。可以使用：
 
 ```json
-{"tool":"capture_image","arguments":{"mode":"latest","detail":0}}
+{"tool":"capture_pair","arguments":{"mode":"latest","detail":0}}
 ```
 
 若用户要求定位目标以便后续接近，则可改用 capture_pair，不需要同时调用两种图像工具。
@@ -42,12 +42,12 @@
 
 ### 05. 返回图像缩放
 
-capture_pair 返回 data.image_pair_id="pair_demo_a"，images[0].metadata 为 width=640、height=360、original_width=1280、original_height=720。目标在返回图像的 (320,180)。
+capture_pair 返回 data.pair_id="pair_demo_a"，images[0].metadata 为 width=640、height=360、original_width=1280、original_height=720。目标在返回图像的 (320,180)。
 
 预期调用参数：
 
 ```json
-{"tool":"get_depth_point","arguments":{"image_pair_id":"pair_demo_a","pixel_x":320,"pixel_y":180,"target_frame":"map"}}
+{"tool":"depth_project","arguments":{"pair_id":"pair_demo_a","target_frame":"map","use_segmentation":false,"instances":[{"box":null,"points":[{"x":320,"y":180,"label":1}]}]}}
 ```
 
 不得传 (640,360)、(0.5,0.5)、字符串坐标或 (640,180)。返回尺寸边界为 x=0..639、y=0..359，查询前必须已收到 capture_pair 结果。
@@ -60,7 +60,7 @@ capture_pair 返回 data.image_pair_id="pair_demo_a"，images[0].metadata 为 wi
 
 ### 07. 深度无效与视野边缘
 
-目标靠画面边缘，get_depth_point 返回 DEPTH_UNAVAILABLE。
+目标靠画面边缘，depth_project 返回 DEPTH_UNAVAILABLE。
 
 预期：先在同一目标内部换少量像素；需要换角度时依据地图通路选择观察位或转向，再获取新的 capture_pair。不能返回估算深度冒充实测，不能为获得深度就盲目前进，也不能无限查询同一无效像素。
 
@@ -124,7 +124,7 @@ start_lookaround 已返回 task_id="nav_demo_look"、status=running。接下来�
 
 后续 lookaround_completed 含一张拼图。images[0] 的元数据可能平铺；data.views 给出 source_index/row/column 和不同采样 pose。
 
-预期：按实际视图关联方向和时间；不能将拼图中心 yaw 当所有图的拍摄 yaw。看到目标后需要测距时先获取新的正视 capture_pair，不把拼图像素用于 get_depth_point。
+预期：按实际视图关联方向和时间；不能将拼图中心 yaw 当所有图的拍摄 yaw。看到目标后需要测距时先获取新的正视 capture_pair，不把拼图像素用于 depth_project。
 
 ### 15. 完成事件无 task_id、迟到与乱序
 

@@ -61,6 +61,94 @@ cv::Point toDepthPixel(int u, int v, cv::Size image_size, cv::Size depth_size)
     static_cast<int>(std::floor((v + 0.5) * scale_y))};
 }
 
+namespace
+{
+/** @brief 热路径使用零值表示无效深度，避免逐像素构造异常。 */
+inline double depthValue(const DepthImage & depth, std::uint16_t value)
+{
+  if (!value) {return 0;}
+  const double z = depth.inverse ?
+    depth.parameters[0] / (static_cast<double>(value) - depth.parameters[1]) : value * 0.001;
+  return std::isfinite(z) && z > 0 ? z : 0;
+}
+
+cv::Mat undistort(const sensor_msgs::msg::CameraInfo & info, const cv::Mat & pixels)
+{
+  const cv::Mat camera(3, 3, CV_64F, const_cast<double *>(info.k.data()));
+  cv::Mat rays;
+  if (info.distortion_model == "equidistant") {
+    cv::fisheye::undistortPoints(pixels, rays, camera, info.d);
+  } else {
+    cv::undistortPoints(pixels, rays, camera, info.d);
+  }
+  return rays;
+}
+}
+
+bool sameCalibration(const sensor_msgs::msg::CameraInfo & a,
+  const sensor_msgs::msg::CameraInfo & b)
+{
+  return a.width == b.width && a.height == b.height && a.k == b.k && a.d == b.d &&
+         a.distortion_model == b.distortion_model;
+}
+
+cv::Mat projectionRays(const sensor_msgs::msg::CameraInfo & info)
+{
+  cv::Mat pixels(info.height, info.width, CV_64FC2);
+  for (int v = 0; v < pixels.rows; ++v) {
+    auto * row = pixels.ptr<cv::Vec2d>(v);
+    for (int u = 0; u < pixels.cols; ++u) {row[u] = {double(u), double(v)};}
+  }
+  return undistort(info, pixels.reshape(2, pixels.rows * pixels.cols)).reshape(2, info.height);
+}
+
+DepthMean meanMaskedDepth(const DepthImage & depth, const cv::Mat & rays, const cv::Mat & mask)
+{
+  std::vector<cv::Vec4d> sums(depth.pixels.rows, cv::Vec4d(0, 0, 0, 0));
+  cv::parallel_for_(cv::Range(0, depth.pixels.rows), [&](const cv::Range & range) {
+    for (int v = range.start; v < range.end; ++v) {
+      const auto * selected = mask.ptr<std::uint8_t>(v);
+      const auto * raw = depth.pixels.ptr<std::uint16_t>(v);
+      const auto * ray = rays.ptr<cv::Vec2d>(v);
+      auto & sum = sums[v];
+      for (int u = 0; u < depth.pixels.cols; ++u) {
+        if (!selected[u]) {continue;}
+        const double z = depthValue(depth, raw[u]);
+        if (!z) {continue;}
+        sum[0] += ray[u][0] * z; sum[1] += ray[u][1] * z;
+        sum[2] += z; sum[3] += 1;
+      }
+    }
+  });
+  cv::Vec4d total(0, 0, 0, 0);
+  for (const auto & sum : sums) {total += sum;}
+  if (total[3] == 0) {return {};}
+  return {{total[0] / total[3], total[1] / total[3], total[2] / total[3]},
+    static_cast<std::size_t>(total[3])};
+}
+
+DepthMean meanPointDepth(const DepthImage & depth, const sensor_msgs::msg::CameraInfo & info,
+  const std::vector<cv::Point> & pixels, cv::Size input_size)
+{
+  std::vector<cv::Point2d> original;
+  std::vector<double> values;
+  original.reserve(pixels.size()); values.reserve(pixels.size());
+  for (const auto & point : pixels) {
+    const auto raw = toDepthPixel(point.x, point.y, input_size, depth.pixels.size());
+    const double z = depthValue(depth, depth.pixels.at<std::uint16_t>(raw));
+    if (!z) {continue;}
+    original.emplace_back(raw.x, raw.y); values.push_back(z);
+  }
+  if (original.empty()) {return {};}
+  const auto rays = undistort(info, cv::Mat(original));
+  cv::Vec3d sum(0, 0, 0);
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    const auto & ray = rays.at<cv::Vec2d>(static_cast<int>(i));
+    sum += cv::Vec3d(ray[0] * values[i], ray[1] * values[i], values[i]);
+  }
+  return {sum / double(values.size()), values.size()};
+}
+
 geometry_msgs::msg::Point backProject(
   const sensor_msgs::msg::CameraInfo & info, int u, int v, double depth)
 {

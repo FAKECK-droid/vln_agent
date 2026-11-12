@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <vector>
 
 #include <geometry_msgs/msg/point.hpp>
 #include <opencv2/core.hpp>
@@ -31,6 +32,24 @@ double depthAt(const DepthImage & image, int u, int v);
  */
 cv::Point toDepthPixel(int u, int v, cv::Size image_size, cv::Size depth_size);
 
+/** @brief 判断两次标定是否共享同一像素投影几何。 */
+bool sameCalibration(const sensor_msgs::msg::CameraInfo & a,
+  const sensor_msgs::msg::CameraInfo & b);
+/** @brief 原始网格的去畸变 (x/z,y/z) 射线表，同一标定只需构建一次。 */
+cv::Mat projectionRays(const sensor_msgs::msg::CameraInfo & info);
+/** @brief 相机光学坐标系中的有效深度均值。 */
+struct DepthMean
+{
+  cv::Vec3d point{0, 0, 0}; ///< x/y/z 均值，单位米；z 也是平均光轴深度。
+  std::size_t count{0};    ///< 参与均值的有效像素数。
+};
+/** @brief 从原始掩码直接累加有效深度，按行并行归约，不创建点云。 */
+DepthMean meanMaskedDepth(const DepthImage & depth, const cv::Mat & rays,
+  const cv::Mat & mask);
+/** @brief 一次去畸变全部正点，按返回图实际尺寸映射原始深度网格并求均值。 */
+DepthMean meanPointDepth(const DepthImage & depth,
+  const sensor_msgs::msg::CameraInfo & info, const std::vector<cv::Point> & pixels,
+  cv::Size input_size);
 /** @brief 按 CameraInfo 的 K/D 去畸变并反投影到彩色光学坐标系，单位米。 */
 geometry_msgs::msg::Point backProject(
   const sensor_msgs::msg::CameraInfo & info, int u, int v, double depth);

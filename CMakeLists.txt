@@ -74,19 +74,30 @@ target_include_directories(vln_agent_navigation_tools PUBLIC ${OpenCV_INCLUDE_DI
 ament_target_dependencies(vln_agent_navigation_tools
   rclcpp_action nav2_msgs geometry_msgs action_msgs tf2_ros tf2_geometry_msgs ament_index_cpp)
 
-add_library(vln_agent_camera_tools SHARED plugins/tools/capture_image/capture_image.cpp)
-target_link_libraries(vln_agent_camera_tools vln_agent_tools)
-ament_target_dependencies(vln_agent_camera_tools rgbd_image_queue)
-
 add_library(vln_agent_rgbd_tools SHARED
   plugins/tools/rgbd/rgbd_runtime.cpp
   plugins/tools/rgbd/capture_pair.cpp
-  plugins/tools/rgbd/get_depth_point.cpp
-  plugins/tools/rgbd/get_depth_points.cpp
+  plugins/tools/rgbd/depth_project.cpp
+  plugins/tools/rgbd/segmentation.cpp
   plugins/tools/rgbd/utils.cpp)
 target_link_libraries(vln_agent_rgbd_tools vln_agent_tools opencv_core opencv_imgproc opencv_imgcodecs opencv_calib3d)
 target_include_directories(vln_agent_rgbd_tools PUBLIC ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(vln_agent_rgbd_tools rgbd_image_queue sensor_msgs tf2_ros tf2_geometry_msgs)
+option(VLN_AGENT_WITH_MOBILE_SAM "Use the MobileSAM TensorRT library when available" ON)
+if(VLN_AGENT_WITH_MOBILE_SAM)
+  find_package(mobile_sam_trt CONFIG QUIET HINTS
+    "${CMAKE_CURRENT_SOURCE_DIR}/../segment_tools/tensorrt_lib/install")
+  if(mobile_sam_trt_FOUND)
+    target_link_libraries(vln_agent_rgbd_tools mobile_sam_trt::mobile_sam_trt)
+    target_compile_definitions(vln_agent_rgbd_tools PRIVATE VLN_AGENT_HAS_MOBILE_SAM)
+    set_property(TARGET vln_agent_rgbd_tools APPEND PROPERTY INSTALL_RPATH
+      "$<TARGET_FILE_DIR:mobile_sam_trt::mobile_sam_trt>")
+    message(STATUS "RGB-D segmentation: MobileSAM TensorRT")
+  else()
+    message(STATUS "RGB-D segmentation: library unavailable; positive-point projection enabled")
+  endif()
+endif()
+
 
 add_library(vln_agent_interaction SHARED
   src/interaction/user_interaction_manager.cpp)
@@ -106,7 +117,7 @@ add_executable(vln_agent_node src/vln_agent.cpp)
 target_link_libraries(vln_agent_node vln_agent_interaction vln_agent_events)
 ament_target_dependencies(vln_agent_node rclcpp ament_index_cpp)
 
-foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_navigation_tools vln_agent_camera_tools vln_agent_rgbd_tools vln_agent_events vln_agent_node)
+foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_navigation_tools vln_agent_rgbd_tools vln_agent_events vln_agent_node)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
 endforeach()
 pluginlib_export_plugin_description_file(vln_agent tool_plugins.xml)
@@ -117,7 +128,7 @@ install(TARGETS vln_agent_utils vln_agent_session vln_agent_tools vln_agent_inte
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
-install(TARGETS vln_agent_navigation_tools vln_agent_camera_tools vln_agent_rgbd_tools vln_agent_ros_topic_interface
+install(TARGETS vln_agent_navigation_tools vln_agent_rgbd_tools vln_agent_ros_topic_interface
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
@@ -155,13 +166,16 @@ if(BUILD_TESTING)
   target_include_directories(test_ros_tools PRIVATE ${OpenCV_INCLUDE_DIRS})
   ament_target_dependencies(test_ros_tools
     rclcpp_action nav2_msgs action_msgs sensor_msgs rgbd_image_queue ament_index_cpp tf2_ros tf2_geometry_msgs)
-  ament_add_gtest(test_rgbd_tools test/test_rgbd_tools.cpp TIMEOUT 25)
+  ament_add_gtest(test_rgbd_tools test/test_rgbd_tools.cpp TIMEOUT 90)
   target_link_libraries(test_rgbd_tools vln_agent_rgbd_tools)
   ament_target_dependencies(test_rgbd_tools ament_index_cpp)
   target_compile_definitions(test_rgbd_tools PRIVATE
     VLN_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
   set_tests_properties(test_rgbd_tools PROPERTIES ENVIRONMENT
     "ROS_DOMAIN_ID=178;ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/ros-logs")
+
+  add_executable(benchmark_depth_project test/benchmark_depth_project.cpp)
+  target_link_libraries(benchmark_depth_project vln_agent_rgbd_tools)
 
   ament_add_gtest(test_navigation_utils test/test_navigation_utils.cpp TIMEOUT 20)
   target_link_libraries(test_navigation_utils vln_agent_navigation_tools)

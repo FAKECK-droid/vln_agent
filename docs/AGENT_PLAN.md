@@ -34,11 +34,11 @@ include/vln_agent/
   interaction/                 # 用户交互接口
   utils/                       # JSON、时间、Base64、URL
   plugins/
-    tools/{navigation,capture_image,rgbd}/
+    tools/{navigation,rgbd}/
     interfaces/ros_topic_interface/
 src/                           # 组件实现
 plugins/
-  tools/{navigation,capture_image,rgbd}/
+  tools/{navigation,rgbd}/
   interfaces/ros_topic_interface/
 srv/ToolCall.srv
 config/agent.yaml
@@ -174,7 +174,7 @@ Agent 从完整 `response.output[]` 中提交 `function_call`；交互层提取 
 
 ### 3.1 插件与配置
 
-每个函数对应一个 `ToolPluginBase` 派生类，工具名采用下划线，类名采用 PascalCase，例如 `get_depth_point` 对应 `GetDepthPoint`。
+每个函数对应一个 `ToolPluginBase` 派生类，工具名采用下划线，类名采用 PascalCase，例如 `depth_project` 对应 `DepthProject`。
 
 ```cpp
 void initialize(const ToolContext & context, const Json & settings) override;
@@ -325,57 +325,79 @@ string error
 
 导航动作函数的实现位于各插件 `.cpp`；`navigation_runtime.cpp` 管理资源生命周期和通用状态。
 
-### 4.2 CaptureImage
+### 4.2 RgbdRuntime
 
-`capture_image` 调用 `rgbd_image_queue/srv/GetImage` 并返回一张原始彩色压缩图。
+`capture_pair` 和 `depth_project` 共享 `plugins/tools/rgbd` 中的图像、标定、TF 与分割资源。
 
-| `mode` | `detail` | 服务操作 |
-| --- | --- | --- |
-| `latest` | `0` | `LATEST_COLOR` |
-| `index` | 历史索引，0 为最新 | `QUEUE_COLOR` |
-| `age` | 距当前的毫秒数 | `QUEUE_COLOR_AT_AGE` |
+`capture_pair` 的 `mode/detail` 对应 `LATEST_PAIR/QUEUE_PAIR/QUEUE_PAIR_AT_AGE`：latest 的 detail 为 0，index 为从 0 开始的历史索引，age 为距当前的毫秒数。工具保存原始彩色、对齐深度、CameraInfo 和深度采样时的相机变换，返回彩色图和 `data.pair_id`。`images[0].metadata.pair_id` 是同一工具缓存 ID，`source_pair_id` 记录取图服务的原始编号。
 
-组配置提供 `service_name`，函数配置 `timeout_sec` 缺省为 `2.0`。图片按 JPEG/PNG 类型编码为 data URL，配对 ID、索引、年龄等信息位于 `images[0].metadata`。
+彩色图按 `capture_pair.settings.image_scale` 缩放，缺省 1.0；输出宽高取整数，缩小使用面积重采样，放大使用线性插值。1.0 保留原压缩字节。点和框均使用返回图片实际的 `width/height`，左上角为原点，x 向右、y 向下；原始网格尺寸见 `original_width/original_height`。
 
-### 4.3 RgbdRuntime
-
-`capture_pair`、`get_depth_point` 和 `get_depth_points` 共用 `plugins/tools/rgbd` 中的资源。
-
-`capture_pair` 的 `mode/detail` 与彩色取图相同，服务操作改为 `LATEST_PAIR/QUEUE_PAIR/QUEUE_PAIR_AT_AGE`。工具保存彩色、深度、CameraInfo 和采样时相机变换，向模型返回按 `capture_pair.settings.image_scale` 等比例缩放的彩色图和 `data.image_pair_id`。缩放因子缺省为 `1.0`，例如 `0.5` 将宽高各缩为一半；尺寸四舍五入到整数，最小为 1。
+`depth_project` 在一次请求中处理同一 pair 的多个检测实例：
 
 ```json
 {
-  "image_pair_id": "pair_1",
-  "pixel_x": 640,
-  "pixel_y": 360,
-  "target_frame": "map"
+  "pair_id": "pair_1",
+  "target_frame": "map",
+  "use_segmentation": true,
+  "instances": [
+    {
+      "box": {"x_min": 100, "y_min": 60, "x_max": 300, "y_max": 220},
+      "points": [{"x": 200, "y": 140, "label": 1}]
+    },
+    {
+      "box": null,
+      "points": [
+        {"x": 400, "y": 180, "label": 1},
+        {"x": 420, "y": 180, "label": 0}
+      ]
+    }
+  ]
 }
 ```
 
-以上是 `get_depth_point` 的参数。整数像素使用 `images[0].metadata.width/height` 对应的返回彩色图网格，左上角为原点，x 向右、y 向下。`original_width/original_height` 表示缓存的原始网格。工具按实际宽高的像素中心比例映射到最近的原始深度像素，再使用原始标定反投影。结果的 `data` 包含 `image_pair_id/pixel_x/pixel_y/depth_pixel_x/depth_pixel_y/depth_m/frame_id/x/y/z`，其中 `depth_pixel_x/depth_pixel_y` 是实际读取的原始深度像素。x/y/z 的单位为米，`depth_m` 为相机光轴 Z 深度。
+- `box` 为可选框，填 null 表示纯点提示。框使用图片边界坐标，右/下边界可等于 width/height；点使用图片内的零基整数像素。
+- `label=1` 为前景，0 为背景。每个实例的提示相互独立。SAM 每实例最多 64 个 token：纯点包含一个 padding，最多 63 点；带框占两个 token，最多 62 点。
+- `use_segmentation=true` 时，MobileSAM 对各实例分别解码，输出原始彩色网格上的单掩码；累加掩码内所有有效原始深度的三维坐标并求均值。
+- `use_segmentation=false` 时，读取正点对应的原始深度并求三维均值，框和负点留给分割模式使用。无效深度跳过，同一实例至少有一个有效样本才能成功。
 
-深度已经对齐到彩色光学系及像素网格，投影使用彩色 CameraInfo 的 K/D。支持 `plumb_bob`、`rational_polynomial`、`equidistant` 相机模型和 compressedDepth PNG：16UC1 按毫米读取，32FC1 按头部量化参数恢复米制深度。
+结果的 `data` 包含 `pair_id/frame_id/use_segmentation/success_count/instances`。instances 与输入顺序对应，每项含 `index/ok`；成功项附 `sample_count/x/y/z/depth_m`，分割结果附 `mask_score`，失败项附 `code/message`。部分实例失败时保留其余结果；全部失败时顶层 ok=false，仍保留完整实例明细。x/y/z 是可见表面点的均值，depth_m 是这些样本的平均相机光轴 Z 深度；这些数值用于目标定位，停车位置由导航决策选择。
 
-捕获时以深度采样时间保存相机到固定系的变换。默认固定系为 `map`；查询其他目标系时，固定系中的点再换算到目标系当前的位置。历史取图依赖采样时刻仍可查询的 TF。越界或无效深度返回 `DEPTH_UNAVAILABLE`，ID 过期返回 `IMAGE_PAIR_NOT_FOUND`，坐标变换异常返回 `TF_UNAVAILABLE`。
+深度图和 CameraInfo 使用原始对齐网格。正点按实际宽高的像素中心比例取最近原始深度像素；分割提示还原为原图坐标，由 SAM 完成内部最长边 1024 的 CUDA 预处理，原图掩码直接对应深度图。`setResizedImage()` 适用于已完成 SAM 最长边缩放的输入，与发送给模型的 image_scale 独立。
 
-`get_depth_points` 在一次调用中查询同一 pair 的 1～64 个像素，复用 `getDepthPoints()`，按输入顺序返回逐点结果：
+支持 `plumb_bob/rational_polynomial/equidistant` 标定及 compressedDepth PNG。16UC1 按毫米恢复，32FC1 使用头部逆深度参数。投影使用 K/D 去畸变后得到的射线。捕获时按深度采样时间保存相机到固定系的变换；fixed_frame 缺省 map。其他 target_frame 使用调用时的目标系 TF，每批查询一次。三维点先在相机系求均值，再对均值施加组合刚性变换。
 
-```json
-{
-  "image_pair_id": "pair_1",
-  "pixels": [
-    {"pixel_x": 320, "pixel_y": 180},
-    {"pixel_x": 420, "pixel_y": 200}
-  ],
-  "target_frame": "map"
-}
+性能与资源：
+
+- 彩色图沿用捕获时已解码的原图，深度按 pair 解码一次。
+- 同一标定共享惰性射线表，掩码归约按行并行执行，计算过程直接读取栅格。
+- 首次分割时创建一个 TensorRT 模型；最近一个 pair 的图像特征常驻 GPU。重复查询该 pair 只运行解码器；换图后重新编码。
+- 单个 TensorRT context 由互斥锁串行使用，同一请求的实例逐个处理；正点查询可并发执行。
+- 图像缓存按 max_pairs（缺省 8）FIFO 淘汰。旧标定随引用它的 pair 释放，工具结果由调用方接收。
+
+开发板纯投影实测（OpenCV 6 线程，预热 10 次后采样 100 次，掩码覆盖全图，5% 深度为空）：
+
+| 原始分辨率 | 射线表首次构建 | 缓存后投影均值 | P95 | 射线表内存 |
+| --- | --- | --- | --- | --- |
+| 640×360 | 29.08 ms | 0.290 ms | 0.330 ms | 3.52 MiB |
+| 1280×720 | 108.31 ms | 1.060 ms | 1.175 ms | 14.06 MiB |
+| 1920×1080 | 241.88 ms | 2.146 ms | 2.491 ms | 31.64 MiB |
+
+掩码覆盖 25% 时对应均值为 0.119/0.447/0.774 ms；63 个正点的投影约 0.009 ms。这些数据只包含去畸变射线查询和三维均值，SAM、压缩图解码、TF 和 ROS 调度另外计时。424×235 样例图的两个实例，缓存图像后通过 ToolManager 完成分割和投影的均值为 20.18 ms，首次调用含引擎初始化为 1.85 s。样例使用恒定合成深度，验证接口和几何计算；实际相机的分割质量及深度噪声取决于现场数据。
+
+复测命令：`./build/vln_agent/benchmark_depth_project`。测量程序位于 `test/benchmark_depth_project.cpp`，随 BUILD_TESTING 编译。
+
+组配置包含 `service_name/camera_info_topic/fixed_frame/timeout_sec/max_pairs`，及 `segmentation`：
+
+```yaml
+segmentation:
+  engine_directory: /path/to/segment_tools/models/tensorrt/engines
+  encoder_precision: tf32
+  decoder_precision: fp32
+  cuda_graph: true
 ```
 
-返回 `data.image_pair_id/frame_id/success_count/points`。每个 points 元素包含输入 pixel_x/pixel_y 和 ok；成功项附带 depth_pixel_x/depth_pixel_y/depth_m/x/y/z，失败项附带 code/message。ID 和输出坐标系在批次层统一给出。部分点失败时其余点继续返回；全部失败时顶层 ok=false，顶层 code/message 取第一项错误，data.points 保留全部明细。同一个 pair 在整批期间固定，深度解码及目标坐标变换由已有共享实现复用，批量工具仅整理结果。
-
-组配置为 `service_name`、`camera_info_topic`、`fixed_frame`、`timeout_sec`、`max_pairs`；后四项缺省为 `/camera/color/camera_info`、`map`、`2.0`、`8`。缓存按 FIFO 淘汰，同一 ID 可重复和并发查询；深度在首次查询时解码一次。相机模式在图像队列期间保持一致，CameraInfo 在捕获时保存快照。彩色图的实际分辨率及解码后的深度分辨率均与 CameraInfo 核对；缩放只处理返回的彩色图，缓存深度和标定保持原始网格。缩小使用面积重采样，放大使用线性插值，1.0 保留原压缩字节。
-
-模型按返回的 width/height 报告像素坐标。模型服务可能继续缩放图像，其内部视觉网格由服务决定；工具采用明确的外部图片坐标约定。参考 [OpenAI 图像输入说明](https://developers.openai.com/api/docs/guides/images-vision)。
+编码器与解码器各自支持 fp16/tf32/fp32。库通过 CMake 的 `mobile_sam_trt` 包链接，默认搜索相邻 segment_tools 的 tensorrt_lib/install，也可指定 mobile_sam_trt_DIR。开发机缺少该库时可编译正点投影；分割请求返回 SEGMENTATION_UNAVAILABLE。`VLN_AGENT_WITH_MOBILE_SAM=OFF` 可显式关闭链接。真实分割测试在开发板通过 `VLN_SAM_ENGINE_DIR` 与 `VLN_SAM_TEST_IMAGE` 环境变量开启。
 
 ## 5. SessionManager
 
@@ -658,7 +680,7 @@ user_interaction:
 
 `state` 为 `unloaded/ready/closed`。事件缓存和 ROS 回调通过同一把互斥锁访问。一次消息中的多个事件按原顺序追加，`takeEvents()` 可以同时取出来自多个发布者的消息。
 
-事件中的 `instruction` 可表达文字指令或 `{"function":"capture_image"}` 这样的工具建议。Agent 将事件交给模型，模型结合上下文生成消息或函数调用；ToolManager 派发实际生成的 `function_call`。
+事件中的 `instruction` 可表达文字指令或 `{"function":"capture_pair"}` 这样的工具建议。Agent 将事件交给模型，模型结合上下文生成消息或函数调用；ToolManager 派发实际生成的 `function_call`。
 
 ## 8. VLNAgent 主循环
 
@@ -695,7 +717,7 @@ ROS 参数：
 | `UserInteractionManager` | 工具定义、一个交付批次和待交付用户输入，批次成功后释放 |
 | `EventManager` | 待交付事件，`takeEvents()` 后清空 |
 | `NavigationRuntime` | 当前导航任务及有限数量的环境变换 |
-| `RgbdRuntime` | 有限数量的图像对、标定和首次查询后解码的深度 |
+| `RgbdRuntime` | 有界图像对、共享标定射线表、惰性深度解码及一个 SAM 模型和当前图像特征 |
 
 待发输入、事件缓冲和本地有效上下文按数据交付及压缩进度保存。Agent 输入记录持续累积。
 
