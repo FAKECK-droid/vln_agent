@@ -211,14 +211,13 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
   ToolManager manager(client_node);
   manager.load(share + "/config/agent.yaml");
   const auto tools = manager.getTools();
-  ASSERT_EQ(tools.size(), 9u);
-  EXPECT_EQ(tools.at(0).at("name"), "navigate_to_pose_start_navigation");
-  EXPECT_EQ(tools.at(3).at("name"), "get_surroundings");
-  EXPECT_EQ(tools.at(4).at("name"), "navigate_to_pixel_start_navigation");
-  EXPECT_EQ(tools.at(5).at("name"), "start_lookaround");
-  EXPECT_EQ(tools.at(6).at("name"), "cancel_lookaround");
-  EXPECT_EQ(tools.at(7).at("name"), "capture_pair");
-  EXPECT_EQ(tools.at(8).at("name"), "depth_project");
+  const std::vector<std::string> names{
+    "navigate_to_pose_start_navigation", "navigate_to_pose_get_feedback", "navigate_to_pose_cancel_navigation",
+    "navigate_through_poses_start_navigation", "navigate_through_poses_get_feedback", "navigate_through_poses_cancel_navigation",
+    "get_surroundings", "navigate_to_pixel_start_navigation", "start_lookaround", "cancel_lookaround",
+    "capture_pair", "depth_project"};
+  ASSERT_EQ(tools.size(), names.size());
+  for (std::size_t i = 0; i < names.size(); ++i) {EXPECT_EQ(tools.at(i).at("name"), names.at(i));}
   for (const auto & tool : tools) {
     EXPECT_TRUE(tool.at("async").get<bool>());
     EXPECT_TRUE(tool.at("strict").get<bool>());

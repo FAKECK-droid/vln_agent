@@ -15,6 +15,21 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>请求取消共享导航任务。</description>
     </class>
+    <class name="vln_agent/NavigateThroughPosesStartNavigation"
+           type="vln_agent::NavigateThroughPosesStartNavigation"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>NavigateThroughPoses StartNavigation，共用导航任务槽。</description>
+    </class>
+    <class name="vln_agent/NavigateThroughPosesGetFeedback"
+           type="vln_agent::NavigateThroughPosesGetFeedback"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>NavigateThroughPoses GetFeedback，共用导航任务槽。</description>
+    </class>
+    <class name="vln_agent/NavigateThroughPosesCancelNavigation"
+           type="vln_agent::NavigateThroughPosesCancelNavigation"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>NavigateThroughPoses CancelNavigation，共用导航任务槽。</description>
+    </class>
     <class name="vln_agent/GetSurroundings"
            type="vln_agent::GetSurroundings"
            base_class_type="vln_agent::ToolPluginBase">

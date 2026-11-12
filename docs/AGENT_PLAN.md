@@ -287,13 +287,16 @@ string error
 
 ### 4.1 NavigationRuntime
 
-`plugins/tools/navigation` 下的七个插件共享 NavigateToPose Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
+`plugins/tools/navigation` 下的十个插件共享 NavigateToPose / NavigateThroughPoses Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
 
 | 工具 | 参数 | 结果 |
 | --- | --- | --- |
 | `navigate_to_pose_start_navigation` | `frame_id/x/y/yaw` | `data.task_id/status` |
 | `navigate_to_pose_get_feedback` | `task_id` | `data` 中的最新状态与反馈，可带公共 `pose` |
 | `navigate_to_pose_cancel_navigation` | `task_id` | 取消请求处理状态 |
+| `navigate_through_poses_start_navigation` | `frame_id`、非空 `poses: [{x,y,yaw}, ...]` | `data.task_id/status` |
+| `navigate_through_poses_get_feedback` | `task_id` | 最新状态、反馈、剩余位姿数量，可带公共 `pose` |
+| `navigate_through_poses_cancel_navigation` | `task_id` | 多点导航取消请求处理状态 |
 | `get_surroundings` | `costmap: local/global`、`range_m` | `data.environment_id`、`pose`、地图 PNG 与 `images[0].metadata` |
 | `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/goal` |
 | `start_lookaround` | `{}` | 环顾任务的 `data.task_id/status` |
@@ -301,7 +304,11 @@ string error
 
 普通导航在 Action 目标接受后返回，任务继续运行。`get_feedback` 返回的数值包括 `distance_remaining_m`、`navigation_time_sec`、`estimated_time_remaining_sec`、`number_of_recoveries`。任务状态为 `running/succeeded/failed/canceling/canceled/rejected`；取消确认后进入 `canceling`，最终 Action 结果决定终态。
 
-导航任务在 Action 成功、失败或取消后立即释放，结果由行为树事件上报。空闲时可直接启动下一个目标，活动任务期间返回 `NAVIGATION_BUSY`。`get_feedback` 可选查询活动任务，已结束任务返回 `TASK_NOT_FOUND`。共享资源同时维护一个物理导航任务。
+导航任务在 Action 成功、失败或取消后立即释放，结果由行为树事件上报。空闲时可直接启动下一个目标，活动任务期间返回 `NAVIGATION_BUSY`。`get_feedback` 可选查询活动任务，已结束任务返回 `TASK_NOT_FOUND`。共享资源同时维护一个物理导航任务，单点导航、多点导航、像素导航与环顾之间互斥。
+
+多点工具向 `/navigate_through_poses` 提交一个 NavigateThroughPoses 目标，不逐点调用单点导航。所有位姿使用同一 `frame_id` 和采样时间，按 `poses` 数组顺序传递；x/y 单位米，yaw 单位弧度，所有数值必须有限。每次请求显式设置 `behavior_tree`，缺省为 `/home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml`。该路径由 Nav2 服务端读取，开发机无需存在相同绝对路径；组设置可覆盖路径，但不允许空值回退至默认树。
+
+例如启动参数 `{"frame_id":"map","poses":[{"x":1.0,"y":2.0,"yaw":0.0},{"x":3.0,"y":4.0,"yaw":1.57}]}`。接受后用返回的 `data.task_id` 调用对应多点反馈、取消工具；多点工具与单点工具不交叉查询或取消任务。反馈除上述通用字段外还包含 `number_of_poses_remaining`。取消确认仅表示 `canceling`，最终 Action 结果才释放任务槽；成功、失败或取消后的 ID 返回 `TASK_NOT_FOUND`，行为树负责上报导航事件。
 
 `get_surroundings` 通过 GetCostmap 读取局部或全局地图，以机器人为中心生成正方形环境图。`range_m` 为边长，图片上方表示截图时机器人前方。地图区域默认 `image_size=512`，完整图片还包含标题、坐标和图例；有效地图范围与比例以返回的 `map_rect`、`meters_per_pixel` 为准。
 
@@ -314,6 +321,8 @@ string error
 | 字段 | 缺省值 |
 | --- | --- |
 | `action_name` | `/navigate_to_pose` |
+| `navigate_through_poses_action_name` | `/navigate_through_poses` |
+| `navigate_through_poses_behavior_tree` | `/home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml` |
 | `lookaround_behavior_tree` | 空，按包安装目录定位 |
 | `map_frame`、`base_frame` | `map`、`base_link` |
 | `local_costmap_service` | `/local_costmap/get_costmap` |

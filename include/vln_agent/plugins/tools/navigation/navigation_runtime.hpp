@@ -8,6 +8,7 @@
 #include <string>
 
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/action/navigate_through_poses.hpp>
 #include <nav2_msgs/srv/get_costmap.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -29,6 +30,8 @@ class NavigationRuntime : public SharedResource,
 public:
   using Action = nav2_msgs::action::NavigateToPose;
   using GoalHandle = rclcpp_action::ClientGoalHandle<Action>;
+  using ThroughPosesAction = nav2_msgs::action::NavigateThroughPoses;
+  using ThroughPosesGoalHandle = rclcpp_action::ClientGoalHandle<ThroughPosesAction>;
 
   /** @brief 创建客户端，不等待服务端；所有函数复用同一外部节点。 */
   NavigationRuntime(rclcpp::Node & node, const Json & settings);
@@ -36,6 +39,12 @@ public:
 
   /** @brief 等待目标接受或拒绝；接受后返回 task_id，不等待物理导航完成。 */
   ToolResult start_navigation(const Json & arguments);
+  /** @brief 按输入顺序提交多点目标，始终指定自定义多点行为树。 */
+  ToolResult start_through_poses_navigation(const Json & arguments);
+  /** @brief 查询活动多点任务，包含剩余位姿数量。 */
+  ToolResult get_through_poses_feedback(const Json & arguments);
+  /** @brief 请求取消多点任务，最终 Action 结果决定是否已取消。 */
+  ToolResult cancel_through_poses_navigation(const Json & arguments);
   /** @brief 以当前位姿启动环顾行为树；接受后返回 task_id，终态由行为树事件上报。 */
   ToolResult start_lookaround();
   /** @brief 读取活动任务反馈；任务结束后由结果回调释放。 */
@@ -61,7 +70,9 @@ private:
   struct Task
   {
     std::string id;                         ///< 当前导航任务的内部标志。
-    GoalHandle::SharedPtr goal;             ///< 接受目标后得到的句柄。
+    GoalHandle::SharedPtr goal;             ///< 单点目标句柄，与多点句柄二选一。
+    ThroughPosesGoalHandle::SharedPtr through_poses_goal;  ///< 多点目标句柄。
+    bool through_poses{false};              ///< 区分 Action，避免反馈和取消工具混用。
     std::string status{"running"};          ///< 物理任务状态，不是函数调用状态。
     bool responded{false};                 ///< 是否已经收到目标接受或拒绝回复。
     Json feedback = Json::object();         ///< 最近一次反馈的业务字段。
@@ -74,6 +85,14 @@ private:
    * @return 接受后的 task_id/status 或启动失败信息，不等待动作完成。
    */
   ToolResult sendGoal(const Action::Goal & goal);
+  ToolResult sendGoal(const ThroughPosesAction::Goal & goal);
+  /** @brief 两类 Action 共用目标确认、反馈及终态释放逻辑。 */
+  template<typename NavigationAction>
+  ToolResult sendActionGoal(
+    const typename NavigationAction::Goal & goal,
+    const typename rclcpp_action::Client<NavigationAction>::SharedPtr & client);
+  ToolResult getFeedback(const Json & arguments, bool through_poses);
+  ToolResult cancelNavigation(const Json & arguments, bool through_poses);
   /** @brief 持锁生成任务状态和最新反馈结果。 */
   ToolResult snapshot(const std::shared_ptr<Task> & task);
   /** @brief 判断任务是否进入终态。 */
@@ -81,7 +100,8 @@ private:
 
   rclcpp::Node & node_;                     ///< 外部节点，生命周期由宿主管理。
   std::unique_ptr<ToolCallbacks> callbacks_;  ///< 独占回调组及其执行线程。
-  rclcpp_action::Client<Action>::SharedPtr client_;  ///< 整组共用的导航客户端。
+  rclcpp_action::Client<Action>::SharedPtr client_;  ///< 整组共用的单点导航客户端。
+  rclcpp_action::Client<ThroughPosesAction>::SharedPtr through_poses_client_;  ///< 共用任务槽的多点客户端。
   rclcpp::Client<nav2_msgs::srv::GetCostmap>::SharedPtr global_costmap_client_;  ///< 整组共用的全局代价地图客户端。
   rclcpp::Client<nav2_msgs::srv::GetCostmap>::SharedPtr local_costmap_client_;   ///< 整组共用的局部代价地图客户端。
 
@@ -89,6 +109,7 @@ private:
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;  ///< 复用本组专用回调线程。
   std::string map_frame_;   ///< 环境快照和导航目标使用的坐标系。
   std::string lookaround_behavior_tree_;  ///< 环顾 XML 路径；为空时从 vln_behavior_tree 安装目录定位。
+  std::string through_poses_behavior_tree_;  ///< 多点导航专用 XML，不能留空回退到 Nav2 默认树。
   std::string base_frame_;  ///< 机器人本体坐标系。
   double costmap_timeout_sec_{2.0};  ///< 服务发现和响应等待各自的时限。
   int image_size_{512};  ///< 地图区域边长，不包括标题与图例。
