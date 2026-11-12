@@ -29,9 +29,6 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
   local_costmap_client_ = node_.create_client<nav2_msgs::srv::GetCostmap>(
     settings.value("local_costmap_service", std::string("/local_costmap/get_costmap")),
     rmw_qos_profile_services_default, callbacks_->group());
-  planner_action_ = settings.value("planner_action", std::string("/compute_path_to_pose"));
-  planning_timeout_sec_ = settings.value("planning_timeout_sec", 2.0);
-  resetPlanner();
   map_frame_ = settings.value("map_frame", std::string("map"));
   base_frame_ = settings.value("base_frame", std::string("base_link"));
   lookaround_behavior_tree_ = settings.value("lookaround_behavior_tree", std::string{});
@@ -41,25 +38,10 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_.get_clock());
   rclcpp::SubscriptionOptions options;
   options.callback_group = callbacks_->group();
-  footprint_subscription_ = node_.create_subscription<geometry_msgs::msg::PolygonStamped>(
-    settings.value("footprint_topic", std::string("/global_costmap/published_footprint")),
-    rclcpp::QoS(1),
-    [this](geometry_msgs::msg::PolygonStamped::ConstSharedPtr footprint) {
-      std::lock_guard<std::mutex> lock(mutex_);
-      footprint_ = std::move(footprint);
-    }, options);
   tf_buffer_->setUsingDedicatedThread(true);
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(
     *tf_buffer_, &node_, false, tf2_ros::DynamicListenerQoS(),
     tf2_ros::StaticListenerQoS(), options, options);
-}
-
-void NavigationRuntime::resetPlanner()
-{
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (closed_) {return;}
-  planner_ = rclcpp_action::create_client<PlanAction>(
-    &node_, planner_action_, callbacks_->group());
 }
 
 NavigationRuntime::~NavigationRuntime()
@@ -106,7 +88,6 @@ void NavigationRuntime::shutdown() noexcept
     if (task_ && !terminal(task_->status)) {goal = task_->goal;}
     task_.reset();
     environments_.clear();
-    footprint_.reset();
   }
   if (goal) {
     try {client_->async_cancel_goal(goal);}

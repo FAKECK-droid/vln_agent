@@ -287,7 +287,7 @@ string error
 
 ### 4.1 NavigationRuntime
 
-`plugins/tools/navigation` 下的九个插件共享 NavigateToPose/ComputePathToPose Action 客户端、TF、代价地图服务客户端、footprint、当前任务和环境变换。
+`plugins/tools/navigation` 下的七个插件共享 NavigateToPose Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
 
 | 工具 | 参数 | 结果 |
 | --- | --- | --- |
@@ -298,8 +298,6 @@ string error
 | `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/goal` |
 | `start_lookaround` | `{}` | 环顾任务的 `data.task_id/status` |
 | `cancel_lookaround` | `task_id` | 取消请求处理状态 |
-| `evaluate_navigation_goals` | `image_pair_id/goals[]`，每项目标为像素和 `stand_off_m` | `data.best_goal/goals`，包含全部评估 |
-| `navigate_to_image_target` | `image_pair_id/pixel_x/pixel_y/stand_off_m` | 选中的接近位姿、评分和 `data.task_id/status` |
 
 普通导航在 Action 目标接受后返回，任务继续运行。`get_feedback` 返回的数值包括 `distance_remaining_m`、`navigation_time_sec`、`estimated_time_remaining_sec`、`number_of_recoveries`。任务状态为 `running/succeeded/failed/canceling/canceled/rejected`；取消确认后进入 `canceling`，最终 Action 结果决定终态。
 
@@ -326,38 +324,6 @@ string error
 | `shutdown_timeout_sec` | `2.0` |
 
 导航动作函数的实现位于各插件 `.cpp`；`navigation_runtime.cpp` 管理资源生命周期和通用状态。
-
-图像目标导航使用已缓存的 pair；RGB-D 资源地址由 `rgbd_resource` 指定，默认 `rgbd/rgbd`。两个新插件位于 navigation 组，执行时从共享注册表取得 RGB-D 资源，装载顺序可独立安排。投影复用 `RgbdRuntime::getDepthPoints()`：每批固定同一个 pair，复用一次深度解码和目标系变换，继续使用深度采样时保存的相机 TF。
-
-`evaluate_navigation_goals` 接受 1～8 个返回彩色图像素，每项都包含 `pixel_x/pixel_y/stand_off_m`。`stand_off_m` 是小车中心与目标投影的水平距离；0 直接使用目标 x/y。工具使用当前机器人位置，在目标朝向机器人的一侧生成一个接近位姿，朝向目标，然后逐项评估。输入示例：
-
-```json
-{
-  "image_pair_id": "pair_1",
-  "goals": [
-    {"pixel_x": 320, "pixel_y": 180, "stand_off_m": 0.8},
-    {"pixel_x": 420, "pixel_y": 200, "stand_off_m": 1.0}
-  ]
-}
-```
-
-每批只读取一份全局代价地图、当前位姿和 Nav2 发布的实际 footprint。footprint 包含已发布的 padding，转换到 base_frame 后在候选位置旋转并栅格化，检查轮廓内部、未知区域和地图边界。障碍间距仅扫描 footprint 周围 1 米，作为保守的截断估计，供评分使用。原始 costmap 直接借用，评估结束即释放，本模块保留最新 footprint 和客户端。
-
-通过几何检查的目标串行提交 ComputePathToPose，所有候选使用同一个起点。活动导航时返回 NAVIGATION_BUSY，额外规划与新动作提交共用互斥锁，避免抢占本客户端的导航规划。规划超时取消已接受的规划目标并替换客户端，释放未决回调；停止本批后，已有评估明细随失败结果返回。
-
-每个函数的 settings 独立设置 `path_length_weight`、`clearance_weight`，缺省均为 1.0：
-
-```text
-score = path_length_weight × path_length_m
-      - clearance_weight × goal_clearance_m
-```
-
-分数越低越优先；相同分数保留输入靠前的目标。`data.goals` 保持输入顺序，每项包含 index、原像素、stand_off_m、投影 target、接近 goal 和 reachable。可达项附带 path_length_m、goal_clearance_m、score；失败项附带 reason。全局错误导致规划未完成时 reachable 为 null。`data.best_goal` 为评分最低的可达项，全部不可达时为 null；`selection_weights` 和 `clearance_cap_m` 描述本次评分配置。
-
-`navigate_to_image_target` 使用同样的像素和投影，在目标周围按 stand_off_m 等间隔生成 8 个接近位置；距离为 0 时只生成一个。复用同一评估器选最低分的可达位置，再直接调用 start_navigation，工具结果只提交一次。结果包含 pair ID、像素、stand_off_m、target、goal、路径/间距评分及 task_id/status。pair 保留用于后续查询，终态沿用当前行为树事件。
-
-新增 navigation 组配置：`planner_action=/compute_path_to_pose`、`footprint_topic=/global_costmap/published_footprint`、`planning_timeout_sec=2.0`、`rgbd_resource=rgbd/rgbd`。规划超时按单个候选的目标确认与结果合计计时。共享资源注册表的 `get<T>()` 查询已载入资源，类型检查沿用现有注册规则。
-
 
 ### 4.2 CaptureImage
 

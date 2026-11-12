@@ -15,10 +15,6 @@ tool_manager:
         costmap_timeout_sec: 2.0
         image_size: 512
         max_environments: 8
-        planner_action: /compute_path_to_pose
-        footprint_topic: /global_costmap/published_footprint
-        planning_timeout_sec: 2.0
-        rgbd_resource: rgbd/rgbd
       functions:
         - name: navigate_to_pose_start_navigation
           plugin: vln_agent/NavigateToPoseStartNavigation
@@ -41,18 +37,6 @@ tool_manager:
         - name: cancel_lookaround
           plugin: vln_agent/CancelLookaround
           blocking: true
-        - name: evaluate_navigation_goals
-          plugin: vln_agent/EvaluateNavigationGoals
-          blocking: false
-          settings:
-            path_length_weight: 1.0
-            clearance_weight: 1.0
-        - name: navigate_to_image_target
-          plugin: vln_agent/NavigateToImageTarget
-          blocking: true
-          settings:
-            path_length_weight: 1.0
-            clearance_weight: 1.0
     - id: capture_image
       definition: ../plugins/tools/capture_image/tool.json
       settings:

@@ -8,9 +8,6 @@
 #include <string>
 
 #include <nav2_msgs/action/navigate_to_pose.hpp>
-#include <nav2_msgs/action/compute_path_to_pose.hpp>
-#include <geometry_msgs/msg/polygon_stamped.hpp>
-#include "vln_agent/plugins/tools/navigation/goal_evaluation.hpp"
 #include <nav2_msgs/srv/get_costmap.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
@@ -24,7 +21,6 @@ namespace vln_agent
 {
 
 class ToolCallbacks;
-class RgbdRuntime;
 
 /** @brief 一组导航函数共用的 Action/Costmap 客户端、TF、任务状态和环境变换。 */
 class NavigationRuntime : public SharedResource,
@@ -58,16 +54,6 @@ public:
    * @return 像素工具自身的结果，成功时含 task_id，供查询和取消。
    */
   ToolResult navigate_to_pixel_start_navigation(const Json & arguments);
-  /**
-   * @brief 批量投影并评估图像目标，共用本批地图、位姿和 footprint。
-   * @param rgbd 已载入的图像对资源，始终查询指定 pair。
-   * @param arguments image_pair_id 与 goals 数组，各项含像素和 stand_off_m。
-   * @param scoring 选择权重。
-   * @param approaches 单个图像目标的接近方向数；评估工具为 1，导航工具为 8。
-   * @return best_goal 和所有 goals；全局基础设施错误时返回失败及已有明细。
-   */
-  ToolResult evaluateImageGoals(RgbdRuntime & rgbd, const Json & arguments,
-    const navigation::GoalScoring & scoring, std::size_t approaches = 1);
   /** @brief 唤醒函数等待，尽力取消本客户端活动目标并停止自身回调。 */
   void shutdown() noexcept override;
 
@@ -93,16 +79,6 @@ private:
   /** @brief 判断任务是否进入终态。 */
   static bool terminal(const std::string & status);
 
-  using PlanAction = nav2_msgs::action::ComputePathToPose;
-  /** @brief 超时后替换规划客户端，释放该客户端未决回调。 */
-  void resetPlanner();
-
-  std::mutex evaluation_mutex_;  ///< 串行评估与新动作提交，避免规划 Action 互相抢占。
-  rclcpp_action::Client<PlanAction>::SharedPtr planner_;  ///< 候选共享的规划客户端。
-  std::string planner_action_;       ///< 默认 /compute_path_to_pose。
-  double planning_timeout_sec_{2.0}; ///< 单候选端到端规划超时。
-  rclcpp::Subscription<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_subscription_;  ///< Nav2 实际 footprint。
-  geometry_msgs::msg::PolygonStamped::ConstSharedPtr footprint_;  ///< 仅保留最新轮廓。
   rclcpp::Node & node_;                     ///< 外部节点，生命周期由宿主管理。
   std::unique_ptr<ToolCallbacks> callbacks_;  ///< 独占回调组及其执行线程。
   rclcpp_action::Client<Action>::SharedPtr client_;  ///< 整组共用的导航客户端。

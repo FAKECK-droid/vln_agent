@@ -68,11 +68,8 @@ add_library(vln_agent_navigation_tools SHARED
   plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp
   plugins/tools/navigation/start_lookaround.cpp
   plugins/tools/navigation/cancel_lookaround.cpp
-  plugins/tools/navigation/utils.cpp
-  plugins/tools/navigation/goal_evaluation.cpp
-  plugins/tools/navigation/evaluate_navigation_goals.cpp
-  plugins/tools/navigation/navigate_to_image_target.cpp)
-target_link_libraries(vln_agent_navigation_tools vln_agent_tools vln_agent_rgbd_tools ${OpenCV_LIBS})
+  plugins/tools/navigation/utils.cpp)
+target_link_libraries(vln_agent_navigation_tools vln_agent_tools ${OpenCV_LIBS})
 target_include_directories(vln_agent_navigation_tools PUBLIC ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(vln_agent_navigation_tools
   rclcpp_action nav2_msgs geometry_msgs action_msgs tf2_ros tf2_geometry_msgs ament_index_cpp)
@@ -159,8 +156,8 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_ros_tools
     rclcpp_action nav2_msgs action_msgs sensor_msgs rgbd_image_queue ament_index_cpp tf2_ros tf2_geometry_msgs)
   ament_add_gtest(test_rgbd_tools test/test_rgbd_tools.cpp TIMEOUT 25)
-  target_link_libraries(test_rgbd_tools vln_agent_rgbd_tools vln_agent_navigation_tools)
-  ament_target_dependencies(test_rgbd_tools ament_index_cpp nav2_msgs rclcpp_action)
+  target_link_libraries(test_rgbd_tools vln_agent_rgbd_tools)
+  ament_target_dependencies(test_rgbd_tools ament_index_cpp)
   target_compile_definitions(test_rgbd_tools PRIVATE
     VLN_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
   set_tests_properties(test_rgbd_tools PROPERTIES ENVIRONMENT
