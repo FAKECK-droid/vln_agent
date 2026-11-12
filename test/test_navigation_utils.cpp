@@ -6,6 +6,7 @@
 #include <opencv2/imgproc.hpp>
 
 #include "vln_agent/plugins/tools/navigation/utils.hpp"
+#include "vln_agent/plugins/tools/navigation/goal_evaluation.hpp"
 
 namespace vln_agent::navigation::test
 {
@@ -17,6 +18,26 @@ nav2_msgs::msg::Costmap grid(int cells, double resolution)
   map.metadata.origin.orientation.w = 1;
   map.data.assign(cells * cells, 0);
   return map;
+}
+
+TEST(NavigationGoals, ChecksFullFootprintRotationUnknownSpaceAndRotatedGridOrigin)
+{
+  auto map = grid(100, 0.1);
+  std::vector<geometry_msgs::msg::Point> footprint;
+  for (const auto & xy : {cv::Point2d(0.4, 0.1), cv::Point2d(-0.4, 0.1),
+      cv::Point2d(-0.4, -0.1), cv::Point2d(0.4, -0.1)})
+  {
+    geometry_msgs::msg::Point p; p.x = xy.x; p.y = xy.y; footprint.push_back(p);
+  }
+  EXPECT_DOUBLE_EQ(checkGoal(map, {0, 0, 0}, footprint, {5, 5, 0}).clearance_m, 1);
+  map.data[50 * 100 + 52] = 254;  // 目标中心空闲，障碍位于较长的车体前方内部。
+  EXPECT_EQ(checkGoal(map, {0, 0, 0}, footprint, {5, 5, 0}).reason, "FOOTPRINT_COLLISION");
+  EXPECT_TRUE(checkGoal(map, {0, 0, 0}, footprint, {5, 5, M_PI / 2}).reason.empty());
+  EXPECT_EQ(checkGoal(map, {10, -2, M_PI / 2}, footprint, {5, 3, M_PI / 2}).reason,
+    "FOOTPRINT_COLLISION");
+  map.data[50 * 100 + 52] = 255;
+  EXPECT_EQ(checkGoal(map, {0, 0, 0}, footprint, {5, 5, 0}).reason, "UNKNOWN_SPACE");
+  EXPECT_EQ(checkGoal(map, {0, 0, 0}, footprint, {0.05, 5, 0}).reason, "GOAL_OUTSIDE_MAP");
 }
 
 TEST(NavigationImages, ImageAxesAndPixelCentersMapBackAtDifferentRobotHeadings)

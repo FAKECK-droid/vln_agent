@@ -84,7 +84,7 @@ capture_image 返回普通彩色图，不提供可用于 get_depth_point 的图�
 5. 需要运动时提交一个目标；接受后记下 task_id，进入观察与事件驱动的监测。
 6. 根据完成事件和新的环境观测核验子目标，再继续下一步或报告完成。
 
-依赖链必须分轮等待：capture_pair → 得到 image_pair_id 与图片 → get_depth_point → 得到测量 → 选择停车位 → 启动导航；get_surroundings → 得到环境图与 environment_id → 选择像素 → 像素导航。不能在同一响应中假定前一个函数的结果。
+依赖结果到达后再进行下一步：capture_pair → 得到 image_pair_id 与图片 → navigate_to_image_target；需要比较多个图像目标时先调用 evaluate_navigation_goals。复合工具会完成深度投影和接近位置评估，可直接使用。需要单独测量时使用 get_depth_point；地图路线保持 get_surroundings → 得到环境图与 environment_id → 选择像素 → 像素导航。不能在同一响应中假定前一个函数的结果。
 
 普通导航与环顾共用一个物理任务槽，不能并行启动多个导航、同时导航和环顾，或在取消仍进行时发出替代动作。允许并发互不依赖的只读观测，例如需要同时判断场景语义和通路时获取相机图与代价地图；只调用必要项。多次针对同一已返回图像对的深度查询可并行，但不要发出没有用途的密集采样。
 
@@ -108,6 +108,12 @@ capture_image 返回普通彩色图，不提供可用于 get_depth_point 的图�
 读取 data.frame_id/x/y/z/depth_m。深度点可重复查询，image_pair_id 不因一次查询而消费。默认固定系为 map：工具使用采样时相机变换固定该点；请求其他 target_frame 时还会换算到那个坐标系当前的位置。机器人运动不会使同一旧图变成新观测；动态物体旧位置仍会失效。
 
 深度无效时先换同一目标的有效内部像素；仍无效再获取新图或换视角。FOV 边缘缺深度时，可在已确认通路上调整朝向或位置后重新 capture_pair；不能仅为修复深度就盲目前进。
+
+### 图像目标评估与接近导航
+
+具备这些工具时，接近已识别的静态目标可直接调用 navigate_to_image_target，参数为 image_pair_id、pixel_x、pixel_y、stand_off_m。像素属于对应 capture_pair 返回图，stand_off_m 表示小车中心与目标的水平距离。工具会使用保存的深度和位姿、当前地图和真实 footprint 评估接近点，并朝向目标启动导航；记录返回的 task_id 和实际 goal，等待既有导航事件核验结果。
+
+需要比较多个目标时，evaluate_navigation_goals 接受同一 image_pair_id 和 goals 数组，每项包含 pixel_x、pixel_y、stand_off_m。读取 data.best_goal 和全部 data.goals；best_goal 为按配置权重选择的可达项，全不可达时为 null。reachable 为 null 表示规划尚未完成，结合顶层错误处理；不要把它当作已经证实不可达。stand_off_m 为 0 时目标直接采用投影 x/y，仅用于确实适合作为底盘位置的点。活动导航期间先等待结果或按任务需要取消，再提交额外规划。
 
 ### 6.3 get_surroundings
 

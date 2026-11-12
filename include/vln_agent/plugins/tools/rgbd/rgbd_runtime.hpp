@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -36,6 +37,15 @@ public:
   ToolResult capture_pair(const Json & arguments, double image_scale);
   /** @brief 按缓存 ID/像素反投影，并转换到指定坐标系当前的位置。 */
   ToolResult get_depth_point(const Json & arguments);
+  /**
+   * @brief 固定同一个 pair 后批量投影，复用深度解码和目标坐标变换。
+   * @param id capture_pair 返回的图像对 ID。
+   * @param pixels 返回彩色图上的整数像素。
+   * @param target 输出坐标系；与 get_depth_point 使用相同时间约定。
+   * @return 按输入顺序排列的逐点结果，单点无深度不会丢弃其余结果。
+   */
+  std::vector<ToolResult> getDepthPoints(
+    const std::string & id, const std::vector<cv::Point> & pixels, const std::string & target);
   /** @brief 停止自身回调，释放未决请求、标定与图像缓存。 */
   void shutdown() noexcept override;
 

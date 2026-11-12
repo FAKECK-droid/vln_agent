@@ -35,6 +35,14 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>复用导航 Action 取消环顾任务。</description>
     </class>
+    <class name="vln_agent/EvaluateNavigationGoals" type="vln_agent::EvaluateNavigationGoals"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>评估同一 pair 中的多个图像目标，按权重返回最佳目标及全部明细。</description>
+    </class>
+    <class name="vln_agent/NavigateToImageTarget" type="vln_agent::NavigateToImageTarget"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>从 pair 目标生成接近位置，评估后启动共享导航。</description>
+    </class>
   </library>
   <library path="vln_agent_camera_tools">
     <class name="vln_agent/CaptureImage"

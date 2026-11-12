@@ -11,6 +11,11 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <rgbd_image_queue/srv/get_image.hpp>
+#include <nav2_msgs/action/compute_path_to_pose.hpp>
+#include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/srv/get_costmap.hpp>
+#include <rclcpp_action/rclcpp_action.hpp>
+#include <geometry_msgs/msg/polygon_stamped.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
 
@@ -399,5 +404,287 @@ TEST_F(RgbdToolsTest, ReturnsClearErrorsForMissingServicePairOrCalibration)
   EXPECT_EQ(payload(invoke(manager, "capture_pair", args)).at("code"), "IMAGE_PAIR_UNAVAILABLE");
   missing_pair = false;
   EXPECT_EQ(payload(invoke(manager, "capture_pair", args)).at("code"), "CAMERA_INFO_UNAVAILABLE");
+}
+/** @brief 复用合成 pair，加入只计算路径的 Action、footprint 和导航接收端。 */
+class ImageNavigationTest : public RgbdToolsTest
+{
+protected:
+  using Plan = nav2_msgs::action::ComputePathToPose;
+  using Navigate = nav2_msgs::action::NavigateToPose;
+  using PlanGoal = rclcpp_action::ServerGoalHandle<Plan>;
+  using NavigateGoal = rclcpp_action::ServerGoalHandle<Navigate>;
+
+  void createNavigation()
+  {
+    createSource();
+    planner_name = "/rgbd_test/planner_" + std::to_string(getpid());
+    navigation_name = "/rgbd_test/navigation_" + std::to_string(getpid());
+    map_name = "/rgbd_test/map_" + std::to_string(getpid());
+    footprint_name = "/rgbd_test/footprint_" + std::to_string(getpid());
+    map.header.frame_id = "rgbd_test_map";
+    map.metadata.size_x = map.metadata.size_y = 300;
+    map.metadata.resolution = 0.1;
+    map.metadata.origin.orientation.w = 1;
+    map.data.assign(300 * 300, 0);
+    // 靠近第二个目标的独立障碍，让路径长度和净空两种权重选出不同目标。
+    map.data[200 * 300 + 100] = 254;
+    costmap = source->create_service<nav2_msgs::srv::GetCostmap>(map_name,
+      [this](nav2_msgs::srv::GetCostmap::Request::SharedPtr,
+        nav2_msgs::srv::GetCostmap::Response::SharedPtr reply) {
+        ++map_reads; reply->map = map;
+      });
+    geometry_msgs::msg::TransformStamped base;
+    base.header.frame_id = "rgbd_test_map"; base.child_frame_id = "rgbd_nav_base";
+    base.transform.translation.x = 9; base.transform.translation.y = 19;
+    base.transform.rotation.w = 1;
+    broadcaster->sendTransform(base);
+    footprint_pub = source->create_publisher<geometry_msgs::msg::PolygonStamped>(footprint_name, 1);
+    footprint_timer = source->create_wall_timer(10ms, [this] {
+        geometry_msgs::msg::PolygonStamped footprint;
+        footprint.header.frame_id = "rgbd_nav_base";
+        for (const auto & xy : {cv::Point2f(0.2, 0.15), cv::Point2f(-0.2, 0.15),
+            cv::Point2f(-0.2, -0.15), cv::Point2f(0.2, -0.15)})
+        {
+          geometry_msgs::msg::Point32 point; point.x = xy.x; point.y = xy.y;
+          footprint.polygon.points.push_back(point);
+        }
+        footprint_pub->publish(footprint);
+      });
+    planner = rclcpp_action::create_server<Plan>(source, planner_name,
+      [this](const rclcpp_action::GoalUUID &, std::shared_ptr<const Plan::Goal>) {
+        return reject_plan ? rclcpp_action::GoalResponse::REJECT :
+               rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      },
+      [this](std::shared_ptr<PlanGoal>) {
+        ++cancellations; return rclcpp_action::CancelResponse::ACCEPT;
+      },
+      [this](std::shared_ptr<PlanGoal> goal) {
+        ++plan_reads;
+        const int active = ++active_plans;
+        peak_plans.store(std::max(peak_plans.load(), active));
+        std::lock_guard<std::mutex> lock(plan_mutex);
+        pending_plans.push_back(std::move(goal));
+      });
+    plan_timer = source->create_wall_timer(5ms, [this] {
+        std::lock_guard<std::mutex> lock(plan_mutex);
+        for (auto it = pending_plans.begin(); it != pending_plans.end();) {
+          const auto & goal = *it;
+          auto result = std::make_shared<Plan::Result>();
+          if (goal->is_canceling()) {goal->canceled(result);}
+          else if (withhold_plan) {++it; continue;}
+          else if (fail_plan) {goal->abort(result);}
+          else {
+            result->path.header = goal->get_goal()->goal.header;
+            result->path.poses = {goal->get_goal()->start, goal->get_goal()->goal};
+            goal->succeed(result);
+          }
+          --active_plans;
+          it = pending_plans.erase(it);
+        }
+      });
+    navigator = rclcpp_action::create_server<Navigate>(source, navigation_name,
+      [](const rclcpp_action::GoalUUID &, std::shared_ptr<const Navigate::Goal>) {
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      },
+      [](std::shared_ptr<NavigateGoal>) {return rclcpp_action::CancelResponse::ACCEPT;},
+      [this](std::shared_ptr<NavigateGoal> goal) {
+        std::lock_guard<std::mutex> lock(navigation_mutex);
+        navigated.push_back(std::move(goal));
+      });
+  }
+
+  Json navigationGroup(double length_weight = 1, double clearance_weight = 1, double timeout = 0.5)
+  {
+    return {{"id", "navigation"}, {"definition", share + "/plugins/tools/navigation/tool.json"},
+      {"settings", {{"action_name", navigation_name}, {"planner_action", planner_name},
+          {"global_costmap_service", map_name}, {"footprint_topic", footprint_name},
+          {"map_frame", "rgbd_test_map"}, {"base_frame", "rgbd_nav_base"},
+          {"costmap_timeout_sec", 0.3}, {"planning_timeout_sec", timeout}}},
+      {"functions", Json::array({
+          {{"name", "evaluate_navigation_goals"}, {"plugin", "vln_agent/EvaluateNavigationGoals"},
+            {"blocking", false}, {"settings", {{"path_length_weight", length_weight},
+                {"clearance_weight", clearance_weight}}}},
+          {{"name", "navigate_to_image_target"}, {"plugin", "vln_agent/NavigateToImageTarget"},
+            {"blocking", true}, {"settings", {{"path_length_weight", length_weight},
+                {"clearance_weight", clearance_weight}}}}})}};
+  }
+  Json imageGoal(int x, int y, double stand_off = 0)
+  {
+    return {{"pixel_x", x}, {"pixel_y", y}, {"stand_off_m", stand_off}};
+  }
+  Json evaluate(ToolManager & manager, const Json & id, const Json & goals)
+  {
+    return payload(invoke(manager, "evaluate_navigation_goals",
+        {{"image_pair_id", id}, {"goals", goals}}));
+  }
+  void waitForFootprint(ToolManager & manager, const Json & id)
+  {
+    ASSERT_TRUE(eventually([&] {
+        const auto result = evaluate(manager, id, Json::array({imageGoal(2, 1)}));
+        return result.value("ok", false);
+      }));
+    map_reads = 0; plan_reads = 0; peak_plans = 0;
+  }
+
+  std::string planner_name, navigation_name, map_name, footprint_name;
+  nav2_msgs::msg::Costmap map;
+  rclcpp::Service<nav2_msgs::srv::GetCostmap>::SharedPtr costmap;
+  rclcpp::Publisher<geometry_msgs::msg::PolygonStamped>::SharedPtr footprint_pub;
+  rclcpp::TimerBase::SharedPtr footprint_timer, plan_timer;
+  rclcpp_action::Server<Plan>::SharedPtr planner;
+  rclcpp_action::Server<Navigate>::SharedPtr navigator;
+  std::mutex plan_mutex, navigation_mutex;
+  std::vector<std::shared_ptr<PlanGoal>> pending_plans;
+  std::vector<std::shared_ptr<NavigateGoal>> navigated;
+  std::atomic_int map_reads{0}, plan_reads{0}, active_plans{0}, peak_plans{0}, cancellations{0};
+  std::atomic_bool withhold_plan{false}, fail_plan{false}, reject_plan{false};
+};
+
+TEST_F(ImageNavigationTest, ReturnsAllPairGoalsAndSelectsBestAccordingToIndependentWeights)
+{
+  createNavigation();
+  for (const bool prefer_clearance : {false, true}) {
+    ToolManager manager(host);
+    // 导航插件先载入，执行时才查已载入的 rgbd，避免装载顺序依赖。
+    manager.load(config.config(Json::array({
+        navigationGroup(prefer_clearance ? 0 : 1, prefer_clearance ? 1 : 0),
+        group(8, 0.3, 0.5)})));
+    const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+    waitForFootprint(manager, id);
+    std::size_t image_reads;
+    {std::lock_guard<std::mutex> lock(mutex); image_reads = requests.size();}
+    const auto result = evaluate(manager, id,
+      Json::array({imageGoal(2, 1), imageGoal(1, 1), imageGoal(4, 0)}));
+    ASSERT_TRUE(result.at("ok")) << result;
+    const auto & data = result.at("data");
+    ASSERT_EQ(data.at("goals").size(), 3u);
+    EXPECT_TRUE(data.at("goals").at(0).at("reachable"));
+    EXPECT_TRUE(data.at("goals").at(1).at("reachable"));
+    EXPECT_FALSE(data.at("goals").at(2).at("reachable"));
+    EXPECT_EQ(data.at("goals").at(2).at("reason"), "DEPTH_UNAVAILABLE");
+    EXPECT_EQ(data.at("best_goal").at("index"), prefer_clearance ? 0 : 1);
+    EXPECT_EQ(map_reads, 1);
+    EXPECT_EQ(plan_reads, 2);
+    EXPECT_EQ(peak_plans, 1);
+    {std::lock_guard<std::mutex> lock(mutex); EXPECT_EQ(requests.size(), image_reads);}
+  }
+}
+
+TEST_F(ImageNavigationTest, StartsBestApproachFacingTargetAndSharesNavigationBusyState)
+{
+  createNavigation();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({navigationGroup(), group(8, 0.3, 0.5)})));
+  const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+  waitForFootprint(manager, id);
+  auto arguments = imageGoal(2, 1, 0.8); arguments["image_pair_id"] = id;
+  const auto result = payload(invoke(manager, "navigate_to_image_target", arguments));
+  ASSERT_TRUE(result.at("ok")) << result;
+  const auto & data = result.at("data");
+  EXPECT_EQ(data.at("status"), "running");
+  EXPECT_EQ(map_reads, 1);
+  EXPECT_LE(plan_reads.load(), 8);
+  EXPECT_EQ(peak_plans, 1);
+  const auto & target = data.at("target"); const auto & goal = data.at("goal");
+  const double dx = target.at("x").get<double>() - goal.at("x").get<double>();
+  const double dy = target.at("y").get<double>() - goal.at("y").get<double>();
+  EXPECT_NEAR(std::hypot(dx, dy), 0.8, 1e-9);
+  EXPECT_NEAR(std::cos(goal.at("yaw").get<double>()), dx / 0.8, 1e-9);
+  EXPECT_NEAR(std::sin(goal.at("yaw").get<double>()), dy / 0.8, 1e-9);
+  const auto busy = evaluate(manager, id, Json::array({imageGoal(1, 1)}));
+  EXPECT_EQ(busy.at("code"), "NAVIGATION_BUSY");
+  std::shared_ptr<NavigateGoal> accepted;
+  ASSERT_TRUE(eventually([&] {
+      std::lock_guard<std::mutex> lock(navigation_mutex);
+      if (navigated.empty()) {return false;}
+      accepted = navigated.front(); return true;
+    }));
+  EXPECT_NEAR(accepted->get_goal()->pose.pose.position.x, goal.at("x").get<double>(), 1e-9);
+  accepted->succeed(std::make_shared<Navigate::Result>());
+  ASSERT_TRUE(eventually([&] {
+      return evaluate(manager, id, Json::array({imageGoal(1, 1)})).value("ok", false);
+    }));
+  EXPECT_TRUE(query(manager, id, "rgbd_test_map", 2, 1).at("ok"));
+}
+
+TEST_F(ImageNavigationTest, ReportsNoPathAndTimeoutWithoutMovingAndCanEvaluateAgain)
+{
+  createNavigation();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({navigationGroup(1, 1, 0.1), group(8, 0.3, 0.5)})));
+  const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+  waitForFootprint(manager, id);
+  const auto goals = Json::array({imageGoal(2, 1)});
+  fail_plan = true;
+  const auto no_path = evaluate(manager, id, goals);
+  ASSERT_TRUE(no_path.at("ok"));
+  EXPECT_TRUE(no_path.at("data").at("best_goal").is_null());
+  EXPECT_EQ(no_path.at("data").at("goals").at(0).at("reason"), "NO_PATH");
+  fail_plan = false; withhold_plan = true;
+  const auto timeout = evaluate(manager, id, goals);
+  EXPECT_EQ(timeout.at("code"), "PLANNING_TIMEOUT");
+  EXPECT_TRUE(timeout.at("data").at("goals").at(0).at("reachable").is_null());
+  ASSERT_TRUE(eventually([&] {return cancellations.load() > 0 && active_plans.load() == 0;}));
+  withhold_plan = false;
+  ASSERT_TRUE(eventually([&] {
+      const auto recovered = evaluate(manager, id, goals);
+      return recovered.value("ok", false) &&
+             !recovered.at("data").at("best_goal").is_null();
+    }));
+  std::lock_guard<std::mutex> lock(navigation_mutex);
+  EXPECT_TRUE(navigated.empty());
+}
+
+TEST_F(ImageNavigationTest, InvalidDepthAndOccupiedApproachesSkipPlanningAndNeverStartMotion)
+{
+  createNavigation();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({navigationGroup(), group(8, 0.3, 0.5)})));
+  const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+  waitForFootprint(manager, id);
+  auto arguments = imageGoal(4, 0, 0.8); arguments["image_pair_id"] = id;
+  const auto invalid = payload(invoke(manager, "navigate_to_image_target", arguments));
+  EXPECT_EQ(invalid.at("code"), "NO_REACHABLE_GOAL");
+  EXPECT_EQ(invalid.at("data").at("goals").at(0).at("reason"), "DEPTH_UNAVAILABLE");
+  EXPECT_EQ(map_reads, 0); EXPECT_EQ(plan_reads, 0);
+
+  std::fill(map.data.begin(), map.data.end(), 254);
+  const auto occupied = evaluate(manager, id, Json::array({imageGoal(2, 1), imageGoal(1, 1)}));
+  ASSERT_TRUE(occupied.at("ok"));
+  EXPECT_TRUE(occupied.at("data").at("best_goal").is_null());
+  EXPECT_EQ(occupied.at("data").at("goals").size(), 2u);
+  for (const auto & item : occupied.at("data").at("goals")) {
+    EXPECT_FALSE(item.at("reachable"));
+    EXPECT_EQ(item.at("reason"), "GOAL_OCCUPIED");
+  }
+  arguments = imageGoal(2, 1, 0.8); arguments["image_pair_id"] = id;
+  EXPECT_EQ(payload(invoke(manager, "navigate_to_image_target", arguments)).at("code"),
+    "NO_REACHABLE_GOAL");
+  EXPECT_EQ(plan_reads, 0);
+  std::lock_guard<std::mutex> lock(navigation_mutex);
+  EXPECT_TRUE(navigated.empty());
+}
+
+TEST_F(ImageNavigationTest, ReentrantEvaluationSerializesSharedPlannerAndKeepsEveryResult)
+{
+  createNavigation();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({navigationGroup(), group(8, 0.3, 0.5)})));
+  const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+  waitForFootprint(manager, id);
+  std::vector<ToolCallHandle> handles;
+  for (int i = 0; i < 4; ++i) {
+    handles.push_back(invoke(manager, "evaluate_navigation_goals",
+        {{"image_pair_id", id}, {"goals", Json::array({imageGoal(2, 1), imageGoal(1, 1)})}}));
+  }
+  for (const auto & handle : handles) {
+    const auto result = payload(handle);
+    ASSERT_TRUE(result.at("ok")) << result;
+    EXPECT_EQ(result.at("data").at("goals").size(), 2u);
+    EXPECT_FALSE(result.at("data").at("best_goal").is_null());
+  }
+  EXPECT_EQ(map_reads, 4);
+  EXPECT_EQ(plan_reads, 8);
+  EXPECT_EQ(peak_plans, 1);
 }
 }  // namespace vln_agent::test

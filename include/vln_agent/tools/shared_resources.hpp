@@ -56,6 +56,18 @@ public:
     return resource;
   }
 
+  /** @brief 取得已经载入的同类型资源，供跨工具组复用；缺失时由 at() 抛异常。 */
+  template<class T>
+  std::shared_ptr<T> get(const std::string & name)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    const auto & entry = entries_.at(name);
+    if (entry.type != std::type_index(typeid(T))) {
+      throw std::invalid_argument("共享资源类型不一致: " + name);
+    }
+    return std::static_pointer_cast<T>(entry.resource);
+  }
+
   /** @brief 在注册表锁外关闭所有资源；对象保留到注册表和插件释放引用。 */
   void shutdown() noexcept;
 

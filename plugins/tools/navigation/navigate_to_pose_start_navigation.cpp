@@ -32,6 +32,7 @@ ToolResult NavigationRuntime::start_navigation(const Json & arguments)
 
 ToolResult NavigationRuntime::sendGoal(const Action::Goal & goal)
 {
+  std::lock_guard<std::mutex> evaluation_lock(evaluation_mutex_);
   if (!client_->action_server_is_ready()) {
     return ToolResult::failure("NAVIGATION_UNAVAILABLE", "导航 Action 服务尚未就绪");
   }
