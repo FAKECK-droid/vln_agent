@@ -84,7 +84,7 @@ capture_pair 返回可查询深度的彩色图及 pair_id；在其返回图上�
 5. 需要运动时提交一个目标；接受后记下 task_id，进入观察与事件驱动的监测。
 6. 根据完成事件和新的环境观测核验子目标，再继续下一步或报告完成。
 
-依赖结果到达后再进行下一步：capture_pair → 得到 pair_id 与图片 → depth_project，取得目标的三维位置。结合 get_surroundings 的环境图选择通路和停车位，再调用坐标导航或像素导航。地图路线为 get_surroundings → 得到环境图与 environment_id → 选择像素 → 像素导航。每一步都使用已经返回的结果。
+依赖结果到达后再进行下一步：capture_pair → 得到 pair_id 与图片 → depth_project，取得目标的三维位置。对明确的物体目标可直接使用 navigate_to_objects 完成投影与导航；需要地图辅助时结合 get_surroundings 选择通路和停车位，再调用坐标导航或像素导航。地图路线为 get_surroundings → 得到环境图与 environment_id → 选择像素 → 像素导航。每一步都使用已经返回的结果。
 
 普通导航与环顾共用一个物理任务槽，不能并行启动多个导航、同时导航和环顾，或在取消仍进行时发出替代动作。允许并发互不依赖的只读观测，例如需要同时判断场景语义和通路时获取相机图与代价地图；只调用必要项。多次针对同一已返回图像对的深度查询可并行，但不要发出没有用途的密集采样。
 
@@ -108,6 +108,14 @@ capture_pair 返回可查询深度的彩色图及 pair_id；在其返回图上�
 读取 data.frame_id 和 data.instances，各结果按输入顺序返回 index/ok/sample_count/x/y/z/depth_m，分割时附 mask_score。失败项带 code/message；部分实例失败时继续使用其余有效测量。坐标均值是可见表面位置，导航停车点需结合目标位置、车体和地图选择。
 
 默认固定系为 map，采样时相机变换已保存；其他 target_frame 使用调用时的目标系变换。同一 pair 可重复查询，机器人运动期间旧图片仍代表原采样场景。动态物体重新观察。深度无效时选择同一实体的有效内部点或使用分割；仍无效则依据已知通路换视角后重新 capture_pair。
+
+### navigate_to_objects
+
+接近图片中已识别的物体时，可将检测与导航合并为一次调用：pair_id、use_segmentation、instances。实例沿用 depth_project 的 box/points，增加 stand_off_m（米，0/null 为默认表面位置）。工具直接投影到导航全局系，省去 target_frame 和手工 yaw。需要单独测量或检查结果时继续使用 depth_project。
+
+按访问顺序排列实例。一个实例启动单点导航，多个实例启动多点导航。停靠距离沿当前小车或上一停靠点到物体的连线计算；中间 yaw 指向下一停靠点，最后 yaw 面向最后物体，零偏移时沿接近方向。读取 data.projection 的目标坐标及 data.poses 的实际导航位姿。任一实例投影失败时整个调用不启动，先处理失败实例。
+
+接受后记录 data.task_id 和 data.action。action=navigate_to_pose 时使用对应单点反馈/取消工具，action=navigate_through_poses 时使用多点反馈/取消工具；终态由行为树事件报告。与其他导航和环顾共享一个活动任务槽。
 
 ### 6.3 get_surroundings
 
