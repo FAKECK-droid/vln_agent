@@ -17,6 +17,7 @@ tool_manager:
         costmap_timeout_sec: 2.0
         image_size: 512
         max_environments: 8
+        max_pixel_goals: 8  # 单次多点像素导航的最大点数，必须为正整数
       functions:
         - name: navigate_to_pose_start_navigation
           plugin: vln_agent/NavigateToPoseStartNavigation
@@ -41,6 +42,9 @@ tool_manager:
           blocking: false
         - name: navigate_to_pixel_start_navigation
           plugin: vln_agent/NavigateToPixelStartNavigation
+          blocking: true
+        - name: navigate_through_pixels_start_navigation
+          plugin: vln_agent/NavigateThroughPixelsStartNavigation
           blocking: true
         - name: start_lookaround
           plugin: vln_agent/StartLookaround

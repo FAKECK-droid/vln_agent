@@ -63,6 +63,8 @@ public:
    * @return 像素工具自身的结果，成功时含 task_id，供查询和取消。
    */
   ToolResult navigate_to_pixel_start_navigation(const Json & arguments);
+  /** @brief 同一环境快照中的有序像素批次，转换后复用多点导航与自定义行为树。 */
+  ToolResult navigate_through_pixels_start_navigation(const Json & arguments);
   /** @brief 唤醒函数等待，尽力取消本客户端活动目标并停止自身回调。 */
   void shutdown() noexcept override;
 
@@ -91,6 +93,8 @@ private:
   ToolResult sendActionGoal(
     const typename NavigationAction::Goal & goal,
     const typename rclcpp_action::Client<NavigationAction>::SharedPtr & client);
+  /** @brief 单点与多点像素工具共用验证、快照转换及接受后消费逻辑。 */
+  ToolResult startPixelNavigation(const Json & arguments, bool through_pixels);
   ToolResult getFeedback(const Json & arguments, bool through_poses);
   ToolResult cancelNavigation(const Json & arguments, bool through_poses);
   /** @brief 持锁生成任务状态和最新反馈结果。 */
@@ -114,6 +118,7 @@ private:
   double costmap_timeout_sec_{2.0};  ///< 服务发现和响应等待各自的时限。
   int image_size_{512};  ///< 地图区域边长，不包括标题与图例。
   std::size_t max_environments_{8};  ///< 未消费环境快照的数量上限。
+  std::size_t max_pixel_goals_{8};  ///< 单次多点像素导航允许的最大目标数，必须为正整数。
   std::deque<navigation::Environment> environments_;  ///< 仅保存尚可引用的少量变换。
   std::uint64_t next_environment_id_{0};  ///< 递增 ID，仅计数而不保存历史。
 

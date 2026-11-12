@@ -40,6 +40,11 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>将环境图像素目标与朝向转换到 map 后启动导航。</description>
     </class>
+    <class name="vln_agent/NavigateThroughPixelsStartNavigation"
+           type="vln_agent::NavigateThroughPixelsStartNavigation"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>将同一环境图中的有序像素目标转换后启动多点导航。</description>
+    </class>
     <class name="vln_agent/StartLookaround"
            type="vln_agent::StartLookaround"
            base_class_type="vln_agent::ToolPluginBase">

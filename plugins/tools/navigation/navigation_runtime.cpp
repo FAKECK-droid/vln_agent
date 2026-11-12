@@ -46,6 +46,11 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
   costmap_timeout_sec_ = settings.value("costmap_timeout_sec", 2.0);
   image_size_ = settings.value("image_size", 512);
   max_environments_ = settings.value("max_environments", std::size_t{8});
+  const auto max_pixel_goals = settings.value("max_pixel_goals", Json(8));
+  if (!max_pixel_goals.is_number_integer() || max_pixel_goals <= 0) {
+    throw std::invalid_argument("max_pixel_goals 必须为正整数");
+  }
+  max_pixel_goals_ = max_pixel_goals.get<std::size_t>();
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_.get_clock());
   rclcpp::SubscriptionOptions options;
   options.callback_group = callbacks_->group();

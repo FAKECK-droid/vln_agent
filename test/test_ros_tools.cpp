@@ -10,6 +10,7 @@
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/action/navigate_through_poses.hpp>
 #include <nav2_msgs/srv/get_costmap.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
@@ -25,6 +26,8 @@ class RosToolsTest : public ::testing::Test
 protected:
   using Action = nav2_msgs::action::NavigateToPose;
   using ServerGoal = rclcpp_action::ServerGoalHandle<Action>;
+  using ThroughAction = nav2_msgs::action::NavigateThroughPoses;
+  using ThroughGoal = rclcpp_action::ServerGoalHandle<ThroughAction>;
 
   static void SetUpTestSuite() {rclcpp::init(0, nullptr);}
   static void TearDownTestSuite() {rclcpp::shutdown();}
@@ -78,6 +81,33 @@ protected:
     return goals.at(index);
   }
 
+  void createThroughServer()
+  {
+    through_server = rclcpp_action::create_server<ThroughAction>(
+      server_node, action_name + "_through",
+      [this](const rclcpp_action::GoalUUID &, std::shared_ptr<const ThroughAction::Goal>) {
+        return reject_through_goal ? rclcpp_action::GoalResponse::REJECT :
+               rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      },
+      [](std::shared_ptr<ThroughGoal>) {return rclcpp_action::CancelResponse::ACCEPT;},
+      [this](std::shared_ptr<ThroughGoal> goal) {
+        std::lock_guard<std::mutex> lock(goals_mutex);
+        through_goals.push_back(std::move(goal));
+      });
+    through_readiness = rclcpp_action::create_client<ThroughAction>(client_node, action_name + "_through");
+    ASSERT_TRUE(through_readiness->wait_for_action_server(3s));
+  }
+
+  std::shared_ptr<ThroughGoal> throughGoal(std::size_t index)
+  {
+    if (!eventually([&] {
+        std::lock_guard<std::mutex> lock(goals_mutex);
+        return through_goals.size() > index;
+      })) {throw std::runtime_error("假多点导航服务没有收到目标");}
+    std::lock_guard<std::mutex> lock(goals_mutex);
+    return through_goals.at(index);
+  }
+
   Json navigationGroup()
   {
     Json functions = Json::array();
@@ -108,6 +138,46 @@ protected:
     group["functions"].push_back({{"name", "navigate_to_pixel_start_navigation"},
         {"plugin", "vln_agent/NavigateToPixelStartNavigation"}, {"blocking", true}});
     return group;
+  }
+
+  Json throughPixelsGroup(std::size_t limit = 2)
+  {
+    auto group = surroundingsGroup();
+    group["settings"]["navigate_through_poses_action_name"] = action_name + "_through";
+    group["settings"]["max_pixel_goals"] = limit;
+    for (const auto & item : std::vector<std::pair<std::string, std::string>>{
+        {"get_feedback", "GetFeedback"}, {"cancel_navigation", "CancelNavigation"}})
+    {
+      group["functions"].push_back({{"name", "navigate_through_poses_" + item.first},
+          {"plugin", "vln_agent/NavigateThroughPoses" + item.second},
+          {"blocking", item.first != "get_feedback"}});
+    }
+    group["functions"].push_back({{"name", "navigate_through_pixels_start_navigation"},
+        {"plugin", "vln_agent/NavigateThroughPixelsStartNavigation"}, {"blocking", true}});
+    return group;
+  }
+
+  static Json throughPixelsArguments(const Json & environment)
+  {
+    const auto & metadata = environment.at("images").at(0).at("metadata");
+    const auto & rect = metadata.at("map_rect");
+    const auto cx = rect.at("x").get<double>() + (rect.at("width").get<double>() - 1) / 2;
+    const auto cy = rect.at("y").get<double>() + (rect.at("height").get<double>() - 1) / 2;
+    const auto meter = 1 / metadata.at("meters_per_pixel").get<double>();
+    return {{"environment_id", environment.at("data").at("environment_id")},
+      {"pixels", Json::array({
+          {{"pixel_x", cx}, {"pixel_y", cy - meter}, {"yaw", 0.0}},
+          {{"pixel_x", cx - 2 * meter}, {"pixel_y", cy - meter}, {"yaw", -M_PI / 2}}})}};
+  }
+
+  Json throughPixels(ToolManager & manager, const Json & arguments)
+  {
+    return payload(invoke(manager, "navigate_through_pixels_start_navigation", arguments));
+  }
+
+  Json throughFeedback(ToolManager & manager, const Json & id)
+  {
+    return payload(invoke(manager, "navigate_through_poses_get_feedback", {{"task_id", id}}));
   }
 
   /** @brief 与普通导航共用资源，只覆盖环顾 XML 路径供假 Action 检查。 */
@@ -196,6 +266,10 @@ protected:
   rclcpp_action::Client<Action>::SharedPtr readiness_client;
   std::mutex goals_mutex;
   std::vector<std::shared_ptr<ServerGoal>> goals;
+  rclcpp_action::Server<ThroughAction>::SharedPtr through_server;
+  rclcpp_action::Client<ThroughAction>::SharedPtr through_readiness;
+  std::vector<std::shared_ptr<ThroughGoal>> through_goals;
+  std::atomic_bool reject_through_goal{false};
   std::string share;
   std::string action_name;
   std::string local_costmap_name, global_costmap_name;
@@ -214,7 +288,8 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
   const std::vector<std::string> names{
     "navigate_to_pose_start_navigation", "navigate_to_pose_get_feedback", "navigate_to_pose_cancel_navigation",
     "navigate_through_poses_start_navigation", "navigate_through_poses_get_feedback", "navigate_through_poses_cancel_navigation",
-    "get_surroundings", "navigate_to_pixel_start_navigation", "start_lookaround", "cancel_lookaround",
+    "get_surroundings", "navigate_to_pixel_start_navigation", "navigate_through_pixels_start_navigation",
+    "start_lookaround", "cancel_lookaround",
     "capture_pair", "depth_project"};
   ASSERT_EQ(tools.size(), names.size());
   for (std::size_t i = 0; i < names.size(); ++i) {EXPECT_EQ(tools.at(i).at("name"), names.at(i));}
@@ -514,6 +589,151 @@ TEST_F(RosToolsTest, ReportsUnavailableAndEmptyCostmaps)
   createCostmapServers();
   EXPECT_EQ(payload(invoke(manager, "get_surroundings", {{"costmap", "local"}, {"range_m", 10}})).
     at("code"), "EMPTY_COSTMAP");
+}
+
+TEST_F(RosToolsTest, ThroughPixelsUsesOneSnapshotAndReusesMultiGoalFeedbackAndCancel)
+{
+  createThroughServer();
+  createCostmapServers();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({throughPixelsGroup()})));
+  const auto environment = surroundings(manager);
+  EXPECT_EQ(environment.at("data").at("max_pixel_goals"), 2);
+  const auto arguments = throughPixelsArguments(environment);
+  const auto result = throughPixels(manager, arguments);
+  ASSERT_TRUE(result.at("ok").get<bool>());
+  EXPECT_EQ(result.at("data").at("environment_id"), arguments.at("environment_id"));
+  EXPECT_EQ(result.at("data").at("frame_id"), "map");
+  EXPECT_EQ(result.at("data").at("status"), "running");
+  const auto accepted = throughGoal(0);
+  const auto & request = *accepted->get_goal();
+  EXPECT_TRUE(accepted->is_active());
+  EXPECT_EQ(request.behavior_tree,
+    "/home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml");
+  ASSERT_EQ(request.poses.size(), 2u);
+  const std::vector<double> x{8, 6}, y{-1, -1}, yaw{M_PI / 2, 0};
+  for (std::size_t i = 0; i < request.poses.size(); ++i) {
+    const auto & pose = request.poses[i];
+    EXPECT_EQ(pose.header.frame_id, "map");
+    EXPECT_EQ(pose.header.stamp, request.poses.front().header.stamp);
+    EXPECT_NEAR(pose.pose.position.x, x[i], 1e-6);
+    EXPECT_NEAR(pose.pose.position.y, y[i], 1e-6);
+    EXPECT_NEAR(pose.pose.orientation.z, std::sin(yaw[i] / 2), 1e-6);
+    EXPECT_NEAR(pose.pose.orientation.w, std::cos(yaw[i] / 2), 1e-6);
+    const auto & output = result.at("data").at("goals").at(i);
+    EXPECT_NEAR(output.at("x").get<double>(), x[i], 1e-6);
+    EXPECT_NEAR(output.at("y").get<double>(), y[i], 1e-6);
+    EXPECT_NEAR(output.at("yaw").get<double>(), yaw[i], 1e-6);
+  }
+  EXPECT_EQ(throughPixels(manager, arguments).at("code"), "ENVIRONMENT_NOT_FOUND");
+  EXPECT_EQ(payload(invoke(manager, "navigate_to_pixel_start_navigation",
+      {{"environment_id", arguments.at("environment_id")}, {"pixel_x", 300},
+        {"pixel_y", 300}, {"yaw", 0}})).at("code"), "ENVIRONMENT_NOT_FOUND");
+  const auto id = result.at("data").at("task_id");
+  auto feedback_sample = std::make_shared<ThroughAction::Feedback>();
+  feedback_sample->number_of_poses_remaining = 1;
+  accepted->publish_feedback(feedback_sample);
+  ASSERT_TRUE(eventually([&] {return throughFeedback(manager, id).at("data").contains("number_of_poses_remaining");}));
+  EXPECT_EQ(throughFeedback(manager, id).at("data").at("number_of_poses_remaining"), 1);
+  const auto canceled = payload(invoke(manager, "navigate_through_poses_cancel_navigation", {{"task_id", id}}));
+  EXPECT_EQ(canceled.at("data").at("status"), "canceling");
+  ASSERT_TRUE(eventually([&] {return accepted->is_canceling();}));
+  accepted->canceled(std::make_shared<ThroughAction::Result>());
+  EXPECT_TRUE(eventually([&] {return throughFeedback(manager, id).value("code", "") == "TASK_NOT_FOUND";}));
+}
+
+TEST_F(RosToolsTest, ThroughPixelsRejectsInvalidBatchAtomicallyAndEnforcesConfiguredLimit)
+{
+  createThroughServer();
+  createCostmapServers();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({throughPixelsGroup(2)})));
+  const auto arguments = throughPixelsArguments(surroundings(manager));
+  auto oversized = arguments;
+  oversized["pixels"].push_back(arguments.at("pixels").at(0));
+  const auto too_many = throughPixels(manager, oversized);
+  EXPECT_EQ(too_many.at("code"), "INVALID_ARGUMENTS");
+  EXPECT_EQ(too_many.at("data").at("max_pixel_goals"), 2);
+  auto empty = arguments; empty["pixels"] = Json::array();
+  auto wrong_type = arguments; wrong_type["pixels"] = Json::object();
+  auto outside = arguments; outside["pixels"][1]["pixel_x"] = 0;
+  auto missing = arguments; missing["pixels"][1].erase("yaw");
+  auto nonfinite = arguments; nonfinite["pixels"][1]["pixel_y"] = nullptr;
+  auto invalid_yaw = arguments; invalid_yaw["pixels"][1]["yaw"] = "north";
+  for (const auto & invalid : {empty, wrong_type, outside, missing, nonfinite, invalid_yaw}) {
+    EXPECT_EQ(throughPixels(manager, invalid).at("code"), "INVALID_ARGUMENTS");
+  }
+  {std::lock_guard<std::mutex> lock(goals_mutex); EXPECT_TRUE(through_goals.empty());}
+  // 无效批次没有消费 ID，修正后恰好达到上限的两个点可正常接受。
+  const auto accepted = throughPixels(manager, arguments);
+  ASSERT_TRUE(accepted.at("ok").get<bool>());
+  const auto handle = throughGoal(0);
+  ASSERT_EQ(handle->get_goal()->poses.size(), 2u);
+  handle->succeed(std::make_shared<ThroughAction::Result>());
+  EXPECT_TRUE(eventually([&] {return throughFeedback(manager, accepted.at("data").at("task_id")).
+        value("code", "") == "TASK_NOT_FOUND";}));
+}
+
+TEST_F(RosToolsTest, ThroughPixelsKeepsSnapshotWhenUnavailableBusyOrRejected)
+{
+  createServer();
+  createCostmapServers();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({throughPixelsGroup()})));
+  const auto arguments = throughPixelsArguments(surroundings(manager));
+  EXPECT_EQ(throughPixels(manager, arguments).at("code"), "NAVIGATION_UNAVAILABLE");
+  createThroughServer();
+  const auto single = start(manager);
+  ASSERT_TRUE(single.at("ok").get<bool>());
+  EXPECT_EQ(throughPixels(manager, arguments).at("code"), "NAVIGATION_BUSY");
+  goal(0)->succeed(std::make_shared<Action::Result>());
+  ASSERT_TRUE(eventually([&] {return feedback(manager, single.at("data").at("task_id")).
+        value("code", "") == "TASK_NOT_FOUND";}));
+  reject_through_goal = true;
+  EXPECT_EQ(throughPixels(manager, arguments).at("code"), "NAVIGATION_REJECTED");
+  reject_through_goal = false;
+  const auto accepted = throughPixels(manager, arguments);
+  ASSERT_TRUE(accepted.at("ok").get<bool>());
+  throughGoal(0)->succeed(std::make_shared<ThroughAction::Result>());
+  EXPECT_TRUE(eventually([&] {return throughFeedback(manager, accepted.at("data").at("task_id")).
+        value("code", "") == "TASK_NOT_FOUND";}));
+}
+
+TEST_F(RosToolsTest, ThroughPixelsDefaultsToEightGoals)
+{
+  createThroughServer();
+  createCostmapServers();
+  auto group = throughPixelsGroup();
+  group["settings"].erase("max_pixel_goals");
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({group})));
+  auto arguments = throughPixelsArguments(surroundings(manager));
+  while (arguments["pixels"].size() < 9) {
+    const auto pixel = arguments.at("pixels").at(0);
+    arguments["pixels"].push_back(pixel);
+  }
+  const auto rejected = throughPixels(manager, arguments);
+  EXPECT_EQ(rejected.at("code"), "INVALID_ARGUMENTS");
+  EXPECT_EQ(rejected.at("data").at("max_pixel_goals"), 8);
+  arguments["pixels"].erase(8);
+  const auto accepted = throughPixels(manager, arguments);
+  ASSERT_TRUE(accepted.at("ok").get<bool>());
+  const auto handle = throughGoal(0);
+  EXPECT_EQ(handle->get_goal()->poses.size(), 8u);
+  handle->succeed(std::make_shared<ThroughAction::Result>());
+  EXPECT_TRUE(eventually([&] {return throughFeedback(manager, accepted.at("data").at("task_id")).
+        value("code", "") == "TASK_NOT_FOUND";}));
+}
+
+TEST_F(RosToolsTest, ThroughPixelsRequiresPositiveIntegerConfiguration)
+{
+  for (const auto & value : std::vector<Json>{0, -1, 1.5, "2", true}) {
+    auto group = throughPixelsGroup();
+    group["settings"]["max_pixel_goals"] = value;
+    ToolManager manager(client_node);
+    EXPECT_THROW(manager.load(config.config(Json::array({group}))), std::invalid_argument);
+    EXPECT_TRUE(manager.getTools().empty());
+  }
 }
 
 }  // namespace vln_agent::test

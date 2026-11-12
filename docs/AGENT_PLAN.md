@@ -287,7 +287,7 @@ string error
 
 ### 4.1 NavigationRuntime
 
-`plugins/tools/navigation` 下的十个插件共享 NavigateToPose / NavigateThroughPoses Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
+`plugins/tools/navigation` 下的十一个插件共享 NavigateToPose / NavigateThroughPoses Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
 
 | 工具 | 参数 | 结果 |
 | --- | --- | --- |
@@ -299,6 +299,7 @@ string error
 | `navigate_through_poses_cancel_navigation` | `task_id` | 多点导航取消请求处理状态 |
 | `get_surroundings` | `costmap: local/global`、`range_m` | `data.environment_id`、`pose`、地图 PNG 与 `images[0].metadata` |
 | `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/goal` |
+| `navigate_through_pixels_start_navigation` | `environment_id`、`pixels: [{pixel_x,pixel_y,yaw}, ...]` | `data.environment_id/frame_id/task_id/status/goals` |
 | `start_lookaround` | `{}` | 环顾任务的 `data.task_id/status` |
 | `cancel_lookaround` | `task_id` | 取消请求处理状态 |
 
@@ -313,6 +314,10 @@ string error
 `get_surroundings` 通过 GetCostmap 读取局部或全局地图，以机器人为中心生成正方形环境图。`range_m` 为边长，图片上方表示截图时机器人前方。地图区域默认 `image_size=512`，完整图片还包含标题、坐标和图例；有效地图范围与比例以返回的 `map_rect`、`meters_per_pixel` 为准。
 
 像素导航使用完整图片左上角为原点，x 向右、y 向下。选择点位于 `map_rect` 内。`yaw=0` 朝图片上方，正值逆时针；转换后的朝向为截图时机器人 yaw 加输入 yaw。环境 ID 保存该次图片到地图的变换，默认最多 8 个，FIFO 淘汰；目标接受后消费对应 ID。
+
+`navigate_through_pixels_start_navigation` 复用同一快照转换和消费逻辑，将 `pixels` 全部转换后一次性调用多点导航，沿用 `navigate_through_poses_behavior_tree`。每个 yaw 仍是相对于截图朝向的弧度，0 朝图上方，正值逆时针。例如 `{"environment_id":"env_1","pixels":[{"pixel_x":256,"pixel_y":200,"yaw":0.0},{"pixel_x":300,"pixel_y":180,"yaw":1.57}]}`；实际有效像素范围以该图的 `map_rect` 为准。
+
+单次点数上限使用导航组 `settings.max_pixel_goals` 配置，缺省 8，必须为正整数；`get_surroundings` 同时返回 `data.max_pixel_goals`，供模型按当前上限组织批次。空数组、超限、无效像素或朝向都会整批返回 `INVALID_ARGUMENTS`，不会截断或发送部分目标；数量错误的 `data.max_pixel_goals` 提供当前上限。Action 不可用、繁忙或拒绝目标时保留环境 ID，可修正后重试；只有目标被接受后才消费该 ID。成功返回 `data.frame_id` 和按输入顺序排列的 `data.goals: [{x,y,yaw}, ...]`，反馈与取消复用 `navigate_through_poses_get_feedback`、`navigate_through_poses_cancel_navigation`。
 
 `start_lookaround` 读取当前 `map_frame → base_frame` 位姿，向同一 NavigateToPose Action 提交环顾 XML。默认路径为 `vln_behavior_tree` 安装目录的 `behavior_trees/lookaround.xml`，可通过 `lookaround_behavior_tree` 指定路径。启动和取消工具在请求确认后返回；环视图由行为树最终的 `lookaround_completed` 事件提交。环顾任务在 Action 结束后自动释放状态，过程信息由行为树事件上报。
 
@@ -330,6 +335,7 @@ string error
 | `costmap_timeout_sec` | `2.0` |
 | `image_size` | `512` |
 | `max_environments` | `8` |
+| `max_pixel_goals` | `8`，多点像素导航单次目标数上限，正整数 |
 | `shutdown_timeout_sec` | `2.0` |
 
 导航动作函数的实现位于各插件 `.cpp`；`navigation_runtime.cpp` 管理资源生命周期和通用状态。

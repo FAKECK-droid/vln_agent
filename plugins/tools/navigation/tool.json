@@ -166,7 +166,7 @@
   {
     "type": "function",
     "name": "get_surroundings",
-    "description": "获取机器人周围代价地图图片。图片以机器人为中心、机器人前方朝上，标有像素坐标、比例尺和固定代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 使用。 环境 ID 位于 data.environment_id；小车位姿位于 pose，地图像素范围和比例位于 images[0].metadata。",
+    "description": "获取机器人周围代价地图图片。图片以机器人为中心、机器人前方朝上，标有像素坐标、比例尺和固定代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 或 navigate_through_pixels_start_navigation 使用。 环境 ID 位于 data.environment_id，多点像素导航数量上限位于 data.max_pixel_goals；小车位姿位于 pose，地图像素范围和比例位于 images[0].metadata。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -224,6 +224,55 @@
         "pixel_x",
         "pixel_y",
         "yaw"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "navigate_through_pixels_start_navigation",
+    "description": "将同一 get_surroundings 环境图中的 pixels 按输入顺序转换为地图位姿，复用 NavigateThroughPoses 和自定义 vln_navthroughgoals.xml 启动多点导航。每个目标须位于 map_rect 内；点数上限见 get_surroundings 返回的 data.max_pixel_goals（由导航组 max_pixel_goals 配置），超限或任一点无效时整批拒绝，不截断。目标接受后消费 environment_id，返回 data.environment_id/frame_id/goals/task_id/status；使用 navigate_through_poses_get_feedback 和 navigate_through_poses_cancel_navigation 查询或取消。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "environment_id": {
+          "type": "string",
+          "description": "get_surroundings 结果 data.environment_id 中的环境 ID。"
+        },
+        "pixels": {
+          "type": "array",
+          "minItems": 1,
+          "description": "同一张完整环境图片中，按导航经过顺序排列的像素点及图片相对朝向。",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pixel_x": {
+                "type": "number",
+                "description": "完整图片中的目标横坐标，左上角为原点，向右增大。"
+              },
+              "pixel_y": {
+                "type": "number",
+                "description": "完整图片中的目标纵坐标，左上角为原点，向下增大。"
+              },
+              "yaw": {
+                "type": "number",
+                "description": "相对该张图片的目标朝向，单位弧度；0 朝上（截图时机器人前方），正值逆时针朝左，负值朝右。"
+              }
+            },
+            "required": [
+              "pixel_x",
+              "pixel_y",
+              "yaw"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "environment_id",
+        "pixels"
       ],
       "additionalProperties": false
     }

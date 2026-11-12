@@ -65,7 +65,8 @@ ToolResult NavigationRuntime::get_surroundings(const Json & arguments)
     while (environments_.size() > max_environments_) {environments_.pop_front();}
   }
   const auto & rect = environment.map_rect;
-  auto result = ToolResult::success({{"environment_id", environment.id}});
+  auto result = ToolResult::success({{"environment_id", environment.id},
+    {"max_pixel_goals", max_pixel_goals_}});
   result.payload["pose"] = utils::posePayload(map_frame_,
     environment.robot.x, environment.robot.y, environment.robot.yaw);
   bool simulated = false;

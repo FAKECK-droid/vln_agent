@@ -69,6 +69,7 @@ add_library(vln_agent_navigation_tools SHARED
   plugins/tools/navigation/navigate_through_poses_cancel_navigation.cpp
   plugins/tools/navigation/get_surroundings.cpp
   plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp
+  plugins/tools/navigation/navigate_through_pixels_start_navigation.cpp
   plugins/tools/navigation/start_lookaround.cpp
   plugins/tools/navigation/cancel_lookaround.cpp
   plugins/tools/navigation/utils.cpp)
