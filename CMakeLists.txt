@@ -124,7 +124,7 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY plugins/ DESTINATION share/${PROJECT_NAME}/plugins
   FILES_MATCHING PATTERN "tool.json")
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME} PATTERN "*.local.yaml" EXCLUDE)
-install(DIRECTORY docs DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY docs prompts DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(FILES third_party/libbase64/LICENSE third_party/libbase64/README.vendor.md
   DESTINATION share/${PROJECT_NAME}/licenses/libbase64)
