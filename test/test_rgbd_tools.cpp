@@ -104,6 +104,8 @@ protected:
     source = std::make_shared<rclcpp::Node>("rgbd_test_source");
     executor.add_node(source);
     spinner = std::thread([this] {executor.spin();});
+    // 立即跳过的用例也须先启动 spin，避免 cancel 早于 spin 被覆盖而卡在 join。
+    ASSERT_TRUE(eventually([this] {return executor.is_spinning();}));
     service_name = "/rgbd_test/get_image_" + std::to_string(getpid());
     info_name = "/rgbd_test/camera_info_" + std::to_string(getpid());
     share = ament_index_cpp::get_package_share_directory("vln_agent");
