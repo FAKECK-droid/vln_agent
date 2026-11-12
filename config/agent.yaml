@@ -61,7 +61,7 @@ tool_manager:
           plugin: vln_agent/CapturePair
           blocking: false
           settings:
-            image_scale: 1.0
+            image_scale: 0.8
         - name: get_depth_point
           plugin: vln_agent/GetDepthPoint
           blocking: false
