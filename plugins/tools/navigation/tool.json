@@ -76,6 +76,95 @@
   },
   {
     "type": "function",
+    "name": "navigate_through_poses_start_navigation",
+    "description": "使用自定义 vln_navthroughgoals.xml 行为树，按 poses 顺序启动连续多点导航，目标被接受后返回 data.task_id/status，不等待导航完成。与单点导航和环顾共用一个活动任务槽；终态由行为树事件上报。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "frame_id": {
+          "type": "string",
+          "description": "所有目标位姿共用的坐标系，例如 map。"
+        },
+        "poses": {
+          "type": "array",
+          "minItems": 1,
+          "description": "按导航经过顺序排列的非空位姿数组。",
+          "items": {
+            "type": "object",
+            "properties": {
+              "x": {
+                "type": "number",
+                "description": "目标 x 坐标，单位米。"
+              },
+              "y": {
+                "type": "number",
+                "description": "目标 y 坐标，单位米。"
+              },
+              "yaw": {
+                "type": "number",
+                "description": "目标朝向，单位弧度。"
+              }
+            },
+            "required": [
+              "x",
+              "y",
+              "yaw"
+            ],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": [
+        "frame_id",
+        "poses"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "navigate_through_poses_get_feedback",
+    "description": "查询当前活动多点导航的状态与反馈，包括 data.number_of_poses_remaining，当前小车位姿位于 pose；任务终态由行为树事件上报。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "多点导航启动结果 data.task_id 中的本地任务 ID。"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "navigate_through_poses_cancel_navigation",
+    "description": "请求取消指定多点导航任务，返回取消请求处理状态；canceling 表示请求被接受，最终 Action 结果决定是否已取消。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "task_id": {
+          "type": "string",
+          "description": "多点导航启动结果 data.task_id 中的本地任务 ID。"
+        }
+      },
+      "required": [
+        "task_id"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
     "name": "get_surroundings",
     "description": "获取机器人周围代价地图图片。图片以机器人为中心、机器人前方朝上，标有像素坐标、比例尺和固定代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 使用。 环境 ID 位于 data.environment_id；小车位姿位于 pose，地图像素范围和比例位于 images[0].metadata。",
     "async": true,

@@ -9,9 +9,14 @@ namespace vln_agent
 
 ToolResult NavigationRuntime::get_feedback(const Json & arguments)
 {
+  return getFeedback(arguments, false);
+}
+
+ToolResult NavigationRuntime::getFeedback(const Json & arguments, bool through_poses)
+{
   const auto id = arguments.at("task_id").get<std::string>();
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!task_ || task_->id != id) {
+  if (!task_ || task_->id != id || task_->through_poses != through_poses) {
     return ToolResult::failure("TASK_NOT_FOUND", "未知或已结束的导航任务: " + id);
   }
   return snapshot(task_);

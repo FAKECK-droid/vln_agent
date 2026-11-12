@@ -7,6 +7,8 @@ tool_manager:
       definition: ../plugins/tools/navigation/tool.json
       settings:
         action_name: /navigate_to_pose
+        navigate_through_poses_action_name: /navigate_through_poses
+        navigate_through_poses_behavior_tree: /home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml
         lookaround_behavior_tree: ""  # 空值使用 vln_behavior_tree 安装目录中的 behavior_trees/lookaround.xml
         local_costmap_service: /local_costmap/get_costmap
         global_costmap_service: /global_costmap/get_costmap
@@ -24,6 +26,15 @@ tool_manager:
           blocking: false
         - name: navigate_to_pose_cancel_navigation
           plugin: vln_agent/NavigateToPoseCancelNavigation
+          blocking: true
+        - name: navigate_through_poses_start_navigation
+          plugin: vln_agent/NavigateThroughPosesStartNavigation
+          blocking: true
+        - name: navigate_through_poses_get_feedback
+          plugin: vln_agent/NavigateThroughPosesGetFeedback
+          blocking: false
+        - name: navigate_through_poses_cancel_navigation
+          plugin: vln_agent/NavigateThroughPosesCancelNavigation
           blocking: true
         - name: get_surroundings
           plugin: vln_agent/GetSurroundings

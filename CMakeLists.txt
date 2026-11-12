@@ -64,6 +64,9 @@ add_library(vln_agent_navigation_tools SHARED
   plugins/tools/navigation/navigate_to_pose_start_navigation.cpp
   plugins/tools/navigation/navigate_to_pose_get_feedback.cpp
   plugins/tools/navigation/navigate_to_pose_cancel_navigation.cpp
+  plugins/tools/navigation/navigate_through_poses_start_navigation.cpp
+  plugins/tools/navigation/navigate_through_poses_get_feedback.cpp
+  plugins/tools/navigation/navigate_through_poses_cancel_navigation.cpp
   plugins/tools/navigation/get_surroundings.cpp
   plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp
   plugins/tools/navigation/start_lookaround.cpp
@@ -162,6 +165,14 @@ if(BUILD_TESTING)
     VLN_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
   set_tests_properties(test_rgbd_tools PROPERTIES ENVIRONMENT
     "ROS_DOMAIN_ID=178;ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/ros-logs")
+
+  ament_add_gtest(test_navigate_through_poses test/test_navigate_through_poses.cpp TIMEOUT 45)
+  target_link_libraries(test_navigate_through_poses vln_agent_tools)
+  ament_target_dependencies(test_navigate_through_poses rclcpp_action nav2_msgs action_msgs ament_index_cpp)
+  target_compile_definitions(test_navigate_through_poses PRIVATE
+    VLN_TEST_OUTPUT_DIR="${CMAKE_CURRENT_BINARY_DIR}/test-fixtures")
+  set_tests_properties(test_navigate_through_poses PROPERTIES ENVIRONMENT
+    "ROS_DOMAIN_ID=179;ROS_LOCALHOST_ONLY=1;ROS_LOG_DIR=${CMAKE_CURRENT_BINARY_DIR}/ros-logs")
 
   ament_add_gtest(test_navigation_utils test/test_navigation_utils.cpp TIMEOUT 20)
   target_link_libraries(test_navigation_utils vln_agent_navigation_tools)

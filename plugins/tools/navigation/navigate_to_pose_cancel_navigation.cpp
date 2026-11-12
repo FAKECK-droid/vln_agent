@@ -10,19 +10,26 @@ namespace vln_agent
 
 ToolResult NavigationRuntime::cancel_navigation(const Json & arguments)
 {
+  return cancelNavigation(arguments, false);
+}
+
+ToolResult NavigationRuntime::cancelNavigation(const Json & arguments, bool through_poses)
+{
   const auto id = arguments.at("task_id").get<std::string>();
   std::shared_ptr<Task> task;
   GoalHandle::SharedPtr goal;
+  ThroughPosesGoalHandle::SharedPtr through_poses_goal;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
-    if (!task_ || task_->id != id) {
+    if (!task_ || task_->id != id || task_->through_poses != through_poses) {
       return ToolResult::failure("TASK_NOT_FOUND", "未知或已消费的导航任务: " + id);
     }
     task = task_;
     if (terminal(task->status) || task->status == "canceling") {return snapshot(task);}
     goal = task->goal;
-    if (!goal) {return ToolResult::failure("NAVIGATION_NOT_READY", "目标尚未被接受");}
+    through_poses_goal = task->through_poses_goal;
+    if (!goal && !through_poses_goal) {return ToolResult::failure("NAVIGATION_NOT_READY", "目标尚未被接受");}
   }
 
   using CancelResponse = action_msgs::srv::CancelGoal::Response;
@@ -31,7 +38,7 @@ ToolResult NavigationRuntime::cancel_navigation(const Json & arguments)
   const auto weak = weak_from_this();
   const std::weak_ptr<Task> weak_task = task;
   try {
-    client_->async_cancel_goal(goal, [weak, weak_task, reply](CancelResponse::SharedPtr response) {
+    const auto callback = [weak, weak_task, reply](CancelResponse::SharedPtr response) {
         if (const auto self = weak.lock()) {
           {
             std::lock_guard<std::mutex> lock(self->mutex_);
@@ -45,7 +52,9 @@ ToolResult NavigationRuntime::cancel_navigation(const Json & arguments)
           }
           self->condition_.notify_all();
         }
-      });
+      };
+    if (through_poses) {through_poses_client_->async_cancel_goal(through_poses_goal, callback);}
+    else {client_->async_cancel_goal(goal, callback);}
   } catch (const rclcpp_action::exceptions::UnknownGoalHandleError &) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (terminal(task->status)) {return snapshot(task);}
