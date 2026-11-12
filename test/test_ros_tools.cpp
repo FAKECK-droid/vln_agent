@@ -266,7 +266,7 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
   ToolManager manager(client_node);
   manager.load(share + "/config/agent.yaml");
   const auto tools = manager.getTools();
-  ASSERT_EQ(tools.size(), 10u);
+  ASSERT_EQ(tools.size(), 11u);
   EXPECT_EQ(tools.at(0).at("name"), "navigate_to_pose_start_navigation");
   EXPECT_EQ(tools.at(3).at("name"), "get_surroundings");
   EXPECT_EQ(tools.at(4).at("name"), "navigate_to_pixel_start_navigation");
@@ -275,6 +275,7 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
   EXPECT_EQ(tools.at(7).at("name"), "capture_image");
   EXPECT_EQ(tools.at(8).at("name"), "capture_pair");
   EXPECT_EQ(tools.at(9).at("name"), "get_depth_point");
+  EXPECT_EQ(tools.at(10).at("name"), "get_depth_points");
   for (const auto & tool : tools) {
     EXPECT_TRUE(tool.at("async").get<bool>());
     EXPECT_TRUE(tool.at("strict").get<bool>());

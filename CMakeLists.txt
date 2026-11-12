@@ -13,6 +13,7 @@ find_package(Threads REQUIRED)
 find_package(Boost REQUIRED)
 find_package(OpenSSL REQUIRED)
 find_package(nav2_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(sensor_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
@@ -71,7 +72,7 @@ add_library(vln_agent_navigation_tools SHARED
 target_link_libraries(vln_agent_navigation_tools vln_agent_tools ${OpenCV_LIBS})
 target_include_directories(vln_agent_navigation_tools PUBLIC ${OpenCV_INCLUDE_DIRS})
 ament_target_dependencies(vln_agent_navigation_tools
-  rclcpp_action nav2_msgs action_msgs tf2_ros tf2_geometry_msgs ament_index_cpp)
+  rclcpp_action nav2_msgs geometry_msgs action_msgs tf2_ros tf2_geometry_msgs ament_index_cpp)
 
 add_library(vln_agent_camera_tools SHARED plugins/tools/capture_image/capture_image.cpp)
 target_link_libraries(vln_agent_camera_tools vln_agent_tools)
@@ -81,6 +82,7 @@ add_library(vln_agent_rgbd_tools SHARED
   plugins/tools/rgbd/rgbd_runtime.cpp
   plugins/tools/rgbd/capture_pair.cpp
   plugins/tools/rgbd/get_depth_point.cpp
+  plugins/tools/rgbd/get_depth_points.cpp
   plugins/tools/rgbd/utils.cpp)
 target_link_libraries(vln_agent_rgbd_tools vln_agent_tools opencv_core opencv_imgproc opencv_imgcodecs opencv_calib3d)
 target_include_directories(vln_agent_rgbd_tools PUBLIC ${OpenCV_INCLUDE_DIRS})
@@ -124,7 +126,7 @@ install(DIRECTORY include/ DESTINATION include)
 install(DIRECTORY plugins/ DESTINATION share/${PROJECT_NAME}/plugins
   FILES_MATCHING PATTERN "tool.json")
 install(DIRECTORY config DESTINATION share/${PROJECT_NAME} PATTERN "*.local.yaml" EXCLUDE)
-install(DIRECTORY docs DESTINATION share/${PROJECT_NAME})
+install(DIRECTORY docs prompts DESTINATION share/${PROJECT_NAME})
 install(FILES README.md DESTINATION share/${PROJECT_NAME})
 install(FILES third_party/libbase64/LICENSE third_party/libbase64/README.vendor.md
   DESTINATION share/${PROJECT_NAME}/licenses/libbase64)

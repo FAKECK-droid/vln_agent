@@ -38,6 +38,7 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_.get_clock());
   rclcpp::SubscriptionOptions options;
   options.callback_group = callbacks_->group();
+  tf_buffer_->setUsingDedicatedThread(true);
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(
     *tf_buffer_, &node_, false, tf2_ros::DynamicListenerQoS(),
     tf2_ros::StaticListenerQoS(), options, options);

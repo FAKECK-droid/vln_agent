@@ -339,7 +339,7 @@ string error
 
 ### 4.3 RgbdRuntime
 
-`capture_pair` 和 `get_depth_point` 共用 `plugins/tools/rgbd` 中的资源。
+`capture_pair`、`get_depth_point` 和 `get_depth_points` 共用 `plugins/tools/rgbd` 中的资源。
 
 `capture_pair` 的 `mode/detail` 与彩色取图相同，服务操作改为 `LATEST_PAIR/QUEUE_PAIR/QUEUE_PAIR_AT_AGE`。工具保存彩色、深度、CameraInfo 和采样时相机变换，向模型返回按 `capture_pair.settings.image_scale` 等比例缩放的彩色图和 `data.image_pair_id`。缩放因子缺省为 `1.0`，例如 `0.5` 将宽高各缩为一半；尺寸四舍五入到整数，最小为 1。
 
@@ -357,6 +357,21 @@ string error
 深度已经对齐到彩色光学系及像素网格，投影使用彩色 CameraInfo 的 K/D。支持 `plumb_bob`、`rational_polynomial`、`equidistant` 相机模型和 compressedDepth PNG：16UC1 按毫米读取，32FC1 按头部量化参数恢复米制深度。
 
 捕获时以深度采样时间保存相机到固定系的变换。默认固定系为 `map`；查询其他目标系时，固定系中的点再换算到目标系当前的位置。历史取图依赖采样时刻仍可查询的 TF。越界或无效深度返回 `DEPTH_UNAVAILABLE`，ID 过期返回 `IMAGE_PAIR_NOT_FOUND`，坐标变换异常返回 `TF_UNAVAILABLE`。
+
+`get_depth_points` 在一次调用中查询同一 pair 的 1～64 个像素，复用 `getDepthPoints()`，按输入顺序返回逐点结果：
+
+```json
+{
+  "image_pair_id": "pair_1",
+  "pixels": [
+    {"pixel_x": 320, "pixel_y": 180},
+    {"pixel_x": 420, "pixel_y": 200}
+  ],
+  "target_frame": "map"
+}
+```
+
+返回 `data.image_pair_id/frame_id/success_count/points`。每个 points 元素包含输入 pixel_x/pixel_y 和 ok；成功项附带 depth_pixel_x/depth_pixel_y/depth_m/x/y/z，失败项附带 code/message。ID 和输出坐标系在批次层统一给出。部分点失败时其余点继续返回；全部失败时顶层 ok=false，顶层 code/message 取第一项错误，data.points 保留全部明细。同一个 pair 在整批期间固定，深度解码及目标坐标变换由已有共享实现复用，批量工具仅整理结果。
 
 组配置为 `service_name`、`camera_info_topic`、`fixed_frame`、`timeout_sec`、`max_pairs`；后四项缺省为 `/camera/color/camera_info`、`map`、`2.0`、`8`。缓存按 FIFO 淘汰，同一 ID 可重复和并发查询；深度在首次查询时解码一次。相机模式在图像队列期间保持一致，CameraInfo 在捕获时保存快照。彩色图的实际分辨率及解码后的深度分辨率均与 CameraInfo 核对；缩放只处理返回的彩色图，缓存深度和标定保持原始网格。缩小使用面积重采样，放大使用线性插值，1.0 保留原压缩字节。
 

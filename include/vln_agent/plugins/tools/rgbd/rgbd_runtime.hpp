@@ -5,6 +5,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <vector>
 
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -36,6 +37,15 @@ public:
   ToolResult capture_pair(const Json & arguments, double image_scale);
   /** @brief 按缓存 ID/像素反投影，并转换到指定坐标系当前的位置。 */
   ToolResult get_depth_point(const Json & arguments);
+  /**
+   * @brief 固定同一个 pair 后批量投影，复用深度解码和目标坐标变换。
+   * @param id capture_pair 返回的图像对 ID。
+   * @param pixels 返回彩色图上的整数像素。
+   * @param target 输出坐标系；与 get_depth_point 使用相同时间约定。
+   * @return 按输入顺序排列的逐点结果，单点无深度不会丢弃其余结果。
+   */
+  std::vector<ToolResult> getDepthPoints(
+    const std::string & id, const std::vector<cv::Point> & pixels, const std::string & target);
   /** @brief 停止自身回调，释放未决请求、标定与图像缓存。 */
   void shutdown() noexcept override;
 
@@ -53,7 +63,7 @@ private:
   };
 
   rclcpp::Node & node_;                     ///< 生命周期由宿主节点管理。
-  std::unique_ptr<ToolCallbacks> callbacks_;  ///< 两个插件共用的独占回调组与线程。
+  std::unique_ptr<ToolCallbacks> callbacks_;  ///< 同组插件共用的独占回调组与线程。
   rclcpp::Client<GetImage>::SharedPtr client_;  ///< 不通过 Session 或其他组件取图。
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_subscription_;  ///< 仅保留最新标定。
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;  ///< 按采样时间查询相机位姿的有界 TF 缓存。

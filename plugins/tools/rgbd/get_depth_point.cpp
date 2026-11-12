@@ -12,22 +12,27 @@ namespace vln_agent
 {
 ToolResult RgbdRuntime::get_depth_point(const Json & arguments)
 {
-  const auto id = arguments.at("image_pair_id").get<std::string>();
-  const int u = arguments.at("pixel_x").get<int>(), v = arguments.at("pixel_y").get<int>();
-  const auto target = arguments.at("target_frame").get<std::string>();
+  return getDepthPoints(arguments.at("image_pair_id").get<std::string>(),
+    {{arguments.at("pixel_x").get<int>(), arguments.at("pixel_y").get<int>()}},
+    arguments.at("target_frame").get<std::string>()).front();
+}
+
+std::vector<ToolResult> RgbdRuntime::getDepthPoints(
+  const std::string & id, const std::vector<cv::Point> & pixels, const std::string & target)
+{
+  const auto failed = [&](const std::string & code, const std::string & message) {
+      return std::vector<ToolResult>(pixels.size(), ToolResult::failure(code, message));
+    };
   std::shared_ptr<Pair> pair;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     const auto found = std::find_if(pairs_.begin(), pairs_.end(),
       [&](const auto & item) {return item->id == id;});
     if (found == pairs_.end()) {
-      return ToolResult::failure("IMAGE_PAIR_NOT_FOUND", "图像对已淘汰或不存在: " + id);
+      return failed("IMAGE_PAIR_NOT_FOUND", "图像对已淘汰或不存在: " + id);
     }
     pair = *found;
   }
-  double depth;
-  cv::Point pixel;
-  geometry_msgs::msg::PointStamped point;
   try {
     std::call_once(pair->decode_once, [&] {
       auto decoded = rgbd::decodeDepth(pair->images->depth);
@@ -38,26 +43,39 @@ ToolResult RgbdRuntime::get_depth_point(const Json & arguments)
       }
       pair->depth = std::move(decoded);
     });
-    pixel = rgbd::toDepthPixel(u, v, pair->image_size, pair->depth.pixels.size());
-    depth = rgbd::depthAt(pair->depth, pixel.x, pixel.y);
-    point.point = rgbd::backProject(*pair->info, pixel.x, pixel.y, depth);
   } catch (const std::exception & error) {
-    return ToolResult::failure("DEPTH_UNAVAILABLE", error.what());
+    return failed("DEPTH_UNAVAILABLE", error.what());
   }
-  tf2::doTransform(point, point, pair->fixed_from_camera);
+  geometry_msgs::msg::TransformStamped target_from_fixed;
   if (target != fixed_frame_) {
     try {
-      const auto transform = tf_buffer_->lookupTransform(
+      target_from_fixed = tf_buffer_->lookupTransform(
         target, fixed_frame_, tf2::TimePointZero, tf2::durationFromSec(timeout_sec_));
-      tf2::doTransform(point, point, transform);
     } catch (const tf2::TransformException & error) {
-      return ToolResult::failure("TF_UNAVAILABLE", error.what());
+      return failed("TF_UNAVAILABLE", error.what());
     }
   }
-  return ToolResult::success({{"image_pair_id", id}, {"pixel_x", u}, {"pixel_y", v},
-    {"depth_pixel_x", pixel.x}, {"depth_pixel_y", pixel.y},
-    {"depth_m", depth}, {"frame_id", target},
-    {"x", point.point.x}, {"y", point.point.y}, {"z", point.point.z}});
+  std::vector<ToolResult> results;
+  results.reserve(pixels.size());
+  for (const auto & input : pixels) {
+    try {
+      const auto pixel = rgbd::toDepthPixel(
+        input.x, input.y, pair->image_size, pair->depth.pixels.size());
+      const double depth = rgbd::depthAt(pair->depth, pixel.x, pixel.y);
+      geometry_msgs::msg::PointStamped point;
+      point.point = rgbd::backProject(*pair->info, pixel.x, pixel.y, depth);
+      tf2::doTransform(point, point, pair->fixed_from_camera);
+      if (target != fixed_frame_) {tf2::doTransform(point, point, target_from_fixed);}
+      results.push_back(ToolResult::success({
+        {"image_pair_id", id}, {"pixel_x", input.x}, {"pixel_y", input.y},
+        {"depth_pixel_x", pixel.x}, {"depth_pixel_y", pixel.y},
+        {"depth_m", depth}, {"frame_id", target},
+        {"x", point.point.x}, {"y", point.point.y}, {"z", point.point.z}}));
+    } catch (const std::exception & error) {
+      results.push_back(ToolResult::failure("DEPTH_UNAVAILABLE", error.what()));
+    }
+  }
+  return results;
 }
 
 void GetDepthPoint::initialize(const ToolContext & context, const Json &)

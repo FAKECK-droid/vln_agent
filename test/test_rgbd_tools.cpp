@@ -116,7 +116,8 @@ protected:
       {"functions", Json::array({
           {{"name", "capture_pair"}, {"plugin", "vln_agent/CapturePair"}, {"blocking", false},
             {"settings", {{"image_scale", scale}}}},
-          {{"name", "get_depth_point"}, {"plugin", "vln_agent/GetDepthPoint"}, {"blocking", false}}})}};
+          {{"name", "get_depth_point"}, {"plugin", "vln_agent/GetDepthPoint"}, {"blocking", false}},
+          {{"name", "get_depth_points"}, {"plugin", "vln_agent/GetDepthPoints"}, {"blocking", false}}})}};
   }
   void createSource(bool with_calibration = true)
   {
@@ -400,4 +401,118 @@ TEST_F(RgbdToolsTest, ReturnsClearErrorsForMissingServicePairOrCalibration)
   missing_pair = false;
   EXPECT_EQ(payload(invoke(manager, "capture_pair", args)).at("code"), "CAMERA_INFO_UNAVAILABLE");
 }
+TEST_F(RgbdToolsTest, BatchDepthReturnsOrderedPartialResultsWithoutFetchingMoreImages)
+{
+  createSource();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({group()})));
+  const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+  std::size_t image_reads;
+  {std::lock_guard<std::mutex> lock(mutex); image_reads = requests.size();}
+  const auto result = payload(invoke(manager, "get_depth_points",
+      {{"image_pair_id", id}, {"target_frame", "rgbd_test_map"}, {"pixels", Json::array({
+          {{"pixel_x", 5}, {"pixel_y", 4}}, {{"pixel_x", 0}, {"pixel_y", 0}},
+          {{"pixel_x", 8}, {"pixel_y", 0}}, {{"pixel_x", 7}, {"pixel_y", 5}}})}}));
+  ASSERT_TRUE(result.at("ok")) << result;
+  const auto & data = result.at("data");
+  EXPECT_EQ(data.at("image_pair_id"), id);
+  EXPECT_EQ(data.at("frame_id"), "rgbd_test_map");
+  EXPECT_EQ(data.at("success_count"), 2);
+  const auto & points = data.at("points");
+  ASSERT_EQ(points.size(), 4u);
+  EXPECT_EQ(points.at(0).at("pixel_x"), 5);
+  EXPECT_TRUE(points.at(0).at("ok"));
+  EXPECT_NEAR(points.at(0).at("x").get<double>(), 9.2, 1e-9);
+  EXPECT_EQ(points.at(1).at("pixel_x"), 0);
+  EXPECT_FALSE(points.at(1).at("ok"));
+  EXPECT_EQ(points.at(1).at("code"), "DEPTH_UNAVAILABLE");
+  EXPECT_EQ(points.at(2).at("pixel_x"), 8);
+  EXPECT_FALSE(points.at(2).at("ok"));
+  EXPECT_EQ(points.at(2).at("code"), "DEPTH_UNAVAILABLE");
+  EXPECT_EQ(points.at(3).at("pixel_x"), 7);
+  EXPECT_TRUE(points.at(3).at("ok"));
+  EXPECT_NEAR(points.at(3).at("x").get<double>(), 8.8, 1e-9);
+  for (const auto & point : points) {
+    EXPECT_FALSE(point.contains("image_pair_id"));
+    EXPECT_FALSE(point.contains("frame_id"));
+  }
+  {std::lock_guard<std::mutex> lock(mutex); EXPECT_EQ(requests.size(), image_reads);}
+}
+
+TEST_F(RgbdToolsTest, BatchDepthUsesScaledPixelsAndFrozenPoseWithCurrentTargetFrame)
+{
+  createSource();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({group(8, 0.3, 0.5)})));
+  const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+  Json arguments{{"image_pair_id", id}, {"target_frame", "rgbd_test_map"},
+    {"pixels", Json::array({{{"pixel_x", 2}, {"pixel_y", 1}},
+        {{"pixel_x", 3}, {"pixel_y", 2}}})}};
+  const auto mapped = payload(invoke(manager, "get_depth_points", arguments));
+  ASSERT_TRUE(mapped.at("ok")) << mapped;
+  const auto & points = mapped.at("data").at("points");
+  EXPECT_EQ(points.at(0).at("depth_pixel_x"), 5);
+  EXPECT_EQ(points.at(0).at("depth_pixel_y"), 3);
+  EXPECT_NEAR(points.at(0).at("x").get<double>(), 9.6, 1e-9);
+  EXPECT_EQ(points.at(1).at("depth_pixel_x"), 7);
+  EXPECT_EQ(points.at(1).at("depth_pixel_y"), 5);
+  EXPECT_NEAR(points.at(1).at("x").get<double>(), 8.8, 1e-9);
+  sendTransforms(100, 200);
+  arguments["target_frame"] = "rgbd_test_optical";
+  ASSERT_TRUE(eventually([&] {
+      const auto current = payload(invoke(manager, "get_depth_points", arguments));
+      return current.value("ok", false) &&
+             std::abs(current.at("data").at("points").at(0).at("x").get<double>() + 179) < 1e-9;
+    }));
+  arguments["target_frame"] = "rgbd_test_map";
+  const auto unchanged = payload(invoke(manager, "get_depth_points", arguments));
+  EXPECT_EQ(unchanged.at("data").at("points"), points);
+}
+
+TEST_F(RgbdToolsTest, BatchDepthKeepsAllFailuresAndEnforcesTheBatchSize)
+{
+  createSource();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({group()})));
+  const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+  Json arguments{{"image_pair_id", id}, {"target_frame", "rgbd_test_map"},
+    {"pixels", Json::array({{{"pixel_x", 0}, {"pixel_y", 0}},
+        {{"pixel_x", 8}, {"pixel_y", 0}}})}};
+  const auto no_depth = payload(invoke(manager, "get_depth_points", arguments));
+  EXPECT_FALSE(no_depth.at("ok"));
+  EXPECT_EQ(no_depth.at("code"), "DEPTH_UNAVAILABLE");
+  EXPECT_EQ(no_depth.at("data").at("success_count"), 0);
+  EXPECT_EQ(no_depth.at("data").at("points").size(), 2u);
+  arguments["image_pair_id"] = "missing_pair";
+  const auto missing = payload(invoke(manager, "get_depth_points", arguments));
+  EXPECT_FALSE(missing.at("ok"));
+  EXPECT_EQ(missing.at("code"), "IMAGE_PAIR_NOT_FOUND");
+  EXPECT_EQ(missing.at("data").at("points").size(), 2u);
+  arguments["pixels"] = Json::array();
+  EXPECT_EQ(payload(invoke(manager, "get_depth_points", arguments)).at("code"), "INVALID_ARGUMENTS");
+  for (int i = 0; i < 65; ++i) {
+    arguments["pixels"].push_back({{"pixel_x", 1}, {"pixel_y", 1}});
+  }
+  EXPECT_EQ(payload(invoke(manager, "get_depth_points", arguments)).at("code"), "INVALID_ARGUMENTS");
+}
+
+TEST_F(RgbdToolsTest, BatchDepthAllowsReentrantCallsOnTheSamePair)
+{
+  createSource();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({group()})));
+  const auto id = payload(capture(manager)).at("data").at("image_pair_id");
+  const Json arguments{{"image_pair_id", id}, {"target_frame", "rgbd_test_map"},
+    {"pixels", Json::array({{{"pixel_x", 5}, {"pixel_y", 4}},
+        {{"pixel_x", 7}, {"pixel_y", 5}}})}};
+  std::vector<ToolCallHandle> handles;
+  for (int i = 0; i < 4; ++i) {handles.push_back(invoke(manager, "get_depth_points", arguments));}
+  for (const auto & handle : handles) {
+    const auto result = payload(handle);
+    ASSERT_TRUE(result.at("ok")) << result;
+    EXPECT_EQ(result.at("data").at("success_count"), 2);
+    EXPECT_NEAR(result.at("data").at("points").at(0).at("x").get<double>(), 9.2, 1e-9);
+  }
+}
+
 }  // namespace vln_agent::test

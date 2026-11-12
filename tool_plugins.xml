@@ -52,5 +52,9 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>读取保存的深度像素并换算到目标坐标系。</description>
     </class>
+    <class name="vln_agent/GetDepthPoints" type="vln_agent::GetDepthPoints"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>批量查询同一 pair 的像素深度与三维坐标，保留逐点失败结果。</description>
+    </class>
   </library>
 </class_libraries>

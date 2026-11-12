@@ -12,6 +12,8 @@
 
 组件接口、数据格式与工具说明见 [架构与接口文档](docs/AGENT_PLAN.md)。
 
+完整视觉语言导航提示词与接入说明见 [提示词套件](prompts/README.md)。运行时可将 `system_prompt_path` 指向 `prompts/vln_system.md`；已有简版保留供比较与回退。
+
 ## 环境与依赖
 
 - Ubuntu 22.04、ROS 2 Humble。
