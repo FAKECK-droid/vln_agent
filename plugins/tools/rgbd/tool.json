@@ -2,7 +2,7 @@
   {
     "type": "function",
     "name": "capture_pair",
-    "description": "获取并保存一对已对齐的彩色/深度图，只返回按配置缩放的彩色图和 data.image_pair_id。随后用 get_depth_point 查询返回图片上的像素，图片实际尺寸见 images[0].metadata.width/height；左上角为 (0,0)，x 向右、y 向下，使用该尺寸下的零基整数像素。图像对缓存有上限，较旧 ID 会被淘汰。latest 取最新，index/age 取历史。",
+    "description": "获取并保存一对已对齐的彩色/深度图，只返回按配置缩放的彩色图和 data.image_pair_id。随后用 get_depth_point 单点查询或 get_depth_points 批量查询返回图片上的像素，图片实际尺寸见 images[0].metadata.width/height；左上角为 (0,0)，x 向右、y 向下，使用该尺寸下的零基整数像素。图像对缓存有上限，较旧 ID 会被淘汰。latest 取最新，index/age 取历史。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -63,6 +63,57 @@
         "image_pair_id",
         "pixel_x",
         "pixel_y",
+        "target_frame"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "get_depth_points",
+    "description": "批量查询 capture_pair 的同一个缓存图像对，返回指定坐标系中的三维坐标（米）。pixels 为返回彩色图上的 1 到 64 个零基整数像素，使用 images[0].metadata.width/height 网格。复用 pair、深度解码和坐标变换，data.points 按输入顺序逐点返回 ok 与坐标或 code/message；单点失败保留其余结果。data 包含 image_pair_id、frame_id、success_count。全部失败时顶层 ok=false，保留第一项错误及全部明细。使用深度采样时保存的相机位姿，其他目标系按当前 TF 换算。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "image_pair_id": {
+          "type": "string",
+          "description": "capture_pair 返回的 data.image_pair_id。"
+        },
+        "pixels": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "properties": {
+              "pixel_x": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "返回彩色图横坐标，左上角为 0，向右增大。"
+              },
+              "pixel_y": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "返回彩色图纵坐标，向下增大。"
+              }
+            },
+            "required": [
+              "pixel_x",
+              "pixel_y"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "target_frame": {
+          "type": "string",
+          "description": "输出坐标系，例如 map 或 base_link。"
+        }
+      },
+      "required": [
+        "image_pair_id",
+        "pixels",
         "target_frame"
       ],
       "additionalProperties": false

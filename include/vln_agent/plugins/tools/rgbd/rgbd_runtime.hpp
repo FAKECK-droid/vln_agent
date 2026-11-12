@@ -63,7 +63,7 @@ private:
   };
 
   rclcpp::Node & node_;                     ///< 生命周期由宿主节点管理。
-  std::unique_ptr<ToolCallbacks> callbacks_;  ///< 两个插件共用的独占回调组与线程。
+  std::unique_ptr<ToolCallbacks> callbacks_;  ///< 同组插件共用的独占回调组与线程。
   rclcpp::Client<GetImage>::SharedPtr client_;  ///< 不通过 Session 或其他组件取图。
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_subscription_;  ///< 仅保留最新标定。
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;  ///< 按采样时间查询相机位姿的有界 TF 缓存。

@@ -81,6 +81,9 @@ tool_manager:
         - name: get_depth_point
           plugin: vln_agent/GetDepthPoint
           blocking: false
+        - name: get_depth_points
+          plugin: vln_agent/GetDepthPoints
+          blocking: false
 
 
 session_manager:

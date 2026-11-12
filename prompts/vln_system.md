@@ -99,13 +99,15 @@ capture_image 返回普通彩色图，不提供可用于 get_depth_point 的图�
 - capture_pair 的图片可能按配置缩放。以 images[0].metadata.width/height 为唯一选点尺寸；原点左上，x 向右、y 向下，使用零基整数：0 ≤ pixel_x < width，0 ≤ pixel_y < height。不使用归一化坐标，不自行乘除缩放比例，不改成 original_width/original_height 网格。
 - 每次抓取会更新有限缓存。image_pair_id 只对应那次图像，较旧 ID 可能被淘汰；在需要的查询完成前避免无谓抓取大量新图。
 
-### 6.2 get_depth_point
+### 6.2 get_depth_point 与 get_depth_points
 
 参数为 image_pair_id、pixel_x、pixel_y、target_frame。为后续世界目标定位通常使用 target_frame="map"；必须使用 capture_pair 返回的那张图片和它的 ID。
 
 选取目标上属于同一实体、深度较可能有效的像素，避开明显反光、玻璃、遮挡边缘和背景。需要时查询少量邻点，检查是否落在同一表面；不能把无效值、背景墙深度或相邻物体深度当成目标。
 
 读取 data.frame_id/x/y/z/depth_m。深度点可重复查询，image_pair_id 不因一次查询而消费。默认固定系为 map：工具使用采样时相机变换固定该点；请求其他 target_frame 时还会换算到那个坐标系当前的位置。机器人运动不会使同一旧图变成新观测；动态物体旧位置仍会失效。
+
+同一 pair 有多个像素需要测量时优先 get_depth_points，一次传入 image_pair_id、pixels 数组和 target_frame。pixels 每项包含 pixel_x/pixel_y，最多 64 项。读取 data.points 中与输入顺序对应的逐点 ok、坐标或 code/message；data.success_count 为成功数量。个别点失败时仍使用其余有效测量，全部失败时顶层 ok=false，但保留所有逐点明细。
 
 深度无效时先换同一目标的有效内部像素；仍无效再获取新图或换视角。FOV 边缘缺深度时，可在已确认通路上调整朝向或位置后重新 capture_pair；不能仅为修复深度就盲目前进。
 
