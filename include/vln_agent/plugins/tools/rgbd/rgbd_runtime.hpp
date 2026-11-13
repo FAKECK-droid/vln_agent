@@ -39,6 +39,8 @@ public:
    * @param image_scale 返回彩色图的缩放因子，1.0 保持原尺寸。
    */
   ToolResult capture_pair(const Json & arguments, double image_scale);
+  /** @brief 只读取取图服务 STATUS，返回最新配对可用性与年龄，不传输图像。 */
+  Json camera_state();
   /** @brief 使用实例掩码或正点深度，返回目标坐标系中的三维均值。 */
   ToolResult depth_project(const Json & arguments);
   /** @brief 采集一整轮，原图缓存与拼图映射一起发布，turn 在每张采图后执行。 */

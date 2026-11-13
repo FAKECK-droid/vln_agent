@@ -58,6 +58,8 @@ public:
    * @return data.environment_id、公共 pose、images 元数据与原生 PNG。
    */
   ToolResult get_surroundings(const Json & arguments);
+  /** @brief 读取当前 TF 位姿和本资源活动任务；不要求调用方持有 task_id。 */
+  ToolResult get_robot_state();
   /**
    * @brief 使用快照还原像素位置与相对图片 yaw，复用 start_navigation。
    * @param arguments environment_id、pixel_x、pixel_y、yaw；yaw=0 朝图上方，正值逆时针。

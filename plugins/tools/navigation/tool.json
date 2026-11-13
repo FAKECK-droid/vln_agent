@@ -165,6 +165,19 @@
   },
   {
     "type": "function",
+    "name": "get_robot_state",
+    "description": "查询当前机器人位姿、活动任务 ID、Action 类型与最新反馈，以及 TF 和相机最新图像对的年龄。无需 task_id，不触发运动或采图；TF/相机不可用时单独标明。motion 表示本工具组管理的任务，idle 不代表底盘速度测量。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
     "name": "get_surroundings",
     "description": "获取机器人周围代价地图图片。图片以机器人为中心、机器人前方朝上，标有像素坐标、比例尺和固定代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 或 navigate_through_pixels_start_navigation 使用。 环境 ID 位于 data.environment_id，多点像素导航数量上限位于 data.max_pixel_goals；小车位姿位于 pose，地图像素范围和比例位于 images[0].metadata。",
     "async": true,

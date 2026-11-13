@@ -69,6 +69,7 @@ add_library(vln_agent_tool_plugins SHARED
   plugins/tools/navigation/navigate_through_poses_get_feedback.cpp
   plugins/tools/navigation/navigate_through_poses_cancel_navigation.cpp
   plugins/tools/navigation/get_surroundings.cpp
+  plugins/tools/navigation/get_robot_state.cpp
   plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp
   plugins/tools/navigation/navigate_through_pixels_start_navigation.cpp
   plugins/tools/navigation/navigate_to_objects.cpp

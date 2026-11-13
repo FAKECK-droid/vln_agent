@@ -287,7 +287,7 @@ string error
 
 ### 4.1 NavigationRuntime
 
-`plugins/tools/navigation` 下的十二个插件共享 NavigateToPose / NavigateThroughPoses Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
+`plugins/tools/navigation` 下的十三个插件共享 NavigateToPose / NavigateThroughPoses Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
 
 | 工具 | 参数 | 结果 |
 | --- | --- | --- |
@@ -297,6 +297,7 @@ string error
 | `navigate_through_poses_start_navigation` | `frame_id`、非空 `poses: [{x,y,yaw}, ...]` | `data.task_id/status` |
 | `navigate_through_poses_get_feedback` | `task_id` | 最新状态、反馈、剩余位姿数量，可带公共 `pose` |
 | `navigate_through_poses_cancel_navigation` | `task_id` | 多点导航取消请求处理状态 |
+| `get_robot_state` | `{}` | `pose`、`data.motion/task/tf/camera` |
 | `get_surroundings` | `costmap: local/global`、`range_m` | `data.environment_id`、`pose`、地图 PNG 与 `images[0].metadata` |
 | `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/goal` |
 | `navigate_through_pixels_start_navigation` | `environment_id`、`pixels: [{pixel_x,pixel_y,yaw}, ...]` | `data.environment_id/frame_id/task_id/status/goals` |
@@ -311,6 +312,12 @@ string error
 多点工具向 `/navigate_through_poses` 提交一个 NavigateThroughPoses 目标，不逐点调用单点导航。所有位姿使用同一 `frame_id` 和采样时间，按 `poses` 数组顺序传递；x/y 单位米，yaw 单位弧度，所有数值必须有限。每次请求显式设置 `behavior_tree`，缺省为 `/home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml`。该路径由 Nav2 服务端读取，开发机无需存在相同绝对路径；组设置可覆盖路径，但不允许空值回退至默认树。
 
 例如启动参数 `{"frame_id":"map","poses":[{"x":1.0,"y":2.0,"yaw":0.0},{"x":3.0,"y":4.0,"yaw":1.57}]}`。接受后用返回的 `data.task_id` 调用对应多点反馈、取消工具；多点工具与单点工具不交叉查询或取消任务。反馈除上述通用字段外还包含 `number_of_poses_remaining`。取消确认仅表示 `canceling`，最终 Action 结果才释放任务槽；成功、失败或取消后的 ID 返回 `TASK_NOT_FOUND`，行为树负责上报导航事件。
+
+`get_robot_state` 无需任务 ID。`data.motion` 为 `idle/navigate_to_pose/navigate_through_poses/lookaround`，表示本组管理的任务类型；不测量底盘速度。`data.task` 包含活动任务的 `task_id/status/action` 和已有最新反馈，无活动目标时为 null，已结束任务不保留。环视停顿和转向之间仍返回 lookaround；默认配置的 lookaround 是 blocking 调用，后续状态查询须等该轮返回，状态工具不绕过调度屏障。
+
+位姿直接取本组 `map_frame → base_frame` 的最新 TF，仍使用公共 `pose`；`data.tf` 含 available、两个坐标系及 age_sec。找不到 TF 时省略 pose，任务状态仍成功返回；零时间戳的静态变换年龄为 null。年龄按 ROS 时钟计算，仿真时间不会伪装成 UTC。
+
+函数 settings.rgbd_resource 缺省为空（不查询相机、camera 为 null）；默认配置启用 rgbd/rgbd。相机复用 RGB-D 服务的 STATUS，只读取最新源图像对的可用性与年龄，不拉取图像或修改工具缓存。`data.camera.status` 为 ready/no_pair/unavailable/timeout/error；latest_pair_available 和 latest_pair_age_sec 未知时为 null。ready 表示存在配对，时效由年龄判断，不替代已缓存图像的采样时间。TF 或相机不可用不会覆盖其余状态；相机等待沿用 RGB-D timeout_sec，返回的各项是独立采样的状态。
 
 `get_surroundings` 通过 GetCostmap 读取局部或全局地图，以机器人为中心生成正方形环境图。`range_m` 为边长，图片上方表示截图时机器人前方。地图区域默认 `image_size=512`，完整图片还包含标题、坐标和图例；有效地图范围与比例以返回的 `map_rect`、`meters_per_pixel` 为准。
 

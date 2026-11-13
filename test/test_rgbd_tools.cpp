@@ -139,6 +139,14 @@ protected:
           std::lock_guard<std::mutex> lock(mutex);
           requests.emplace_back(request->operation, request->detail);
         }
+        if (request->operation == GetImage::Request::STATUS) {
+          std::this_thread::sleep_for(std::chrono::milliseconds(status_delay_ms.load()));
+          reply->success = !status_failure;
+          reply->message = "test status failure";
+          reply->latest_available = !missing_pair;
+          reply->latest_age_sec = 0.25;
+          return;
+        }
         reply->success = !missing_pair;
         reply->message = missing_pair ? "no paired image" : "ok";
         reply->has_color = reply->has_depth = !missing_pair;
@@ -226,11 +234,55 @@ protected:
   std::string color_format{"jpeg"};
   std::mutex mutex;
   std::vector<std::pair<std::uint8_t, std::uint32_t>> requests;
-  std::atomic_bool missing_pair{false};
+  std::atomic_bool missing_pair{false}, status_failure{false};
+  std::atomic_int status_delay_ms{0};
   int sequence{0};
   int width{8}, height{6};
 };
 
+
+/** @brief 相机时效只读 STATUS；空帧、错误、超时均不丢失导航/TF 状态。 */
+TEST_F(RgbdToolsTest, RobotStateReadsOnlyCameraStatusAndKeepsPartialResults)
+{
+  const Json navigation{{"id", "navigation"},
+    {"definition", share + "/plugins/tools/navigation/tool.json"},
+    {"settings", {{"map_frame", "rgbd_test_map"}, {"base_frame", "rgbd_test_base"}}},
+    {"functions", Json::array({{{"name", "get_robot_state"},
+        {"plugin", "vln_agent/GetRobotState"}, {"blocking", false},
+        {"settings", {{"rgbd_resource", "rgbd/rgbd"}}}}})}};
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({navigation, group(8, 0.05)})));
+  const auto read = [&] {return payload(invoke(manager, "get_robot_state", Json::object()));};
+  const auto unavailable = read();
+  ASSERT_TRUE(unavailable.at("ok"));
+  EXPECT_EQ(unavailable.at("data").at("camera").at("status"), "unavailable");
+  EXPECT_TRUE(unavailable.at("data").at("camera").at("latest_pair_available").is_null());
+  createSource();
+  Json current;
+  ASSERT_TRUE(eventually([&] {
+      current = read();
+      return current.contains("pose") && current.at("data").at("camera").at("status") == "ready";
+    }));
+  EXPECT_TRUE(current.at("data").at("camera").at("latest_pair_available"));
+  EXPECT_DOUBLE_EQ(current.at("data").at("camera").at("latest_pair_age_sec"), 0.25);
+  missing_pair = true;
+  current = read();
+  EXPECT_EQ(current.at("data").at("camera").at("status"), "no_pair");
+  EXPECT_FALSE(current.at("data").at("camera").at("latest_pair_available"));
+  EXPECT_TRUE(current.at("data").at("camera").at("latest_pair_age_sec").is_null());
+  status_failure = true;
+  EXPECT_EQ(read().at("data").at("camera").at("status"), "error");
+  status_failure = false;
+  status_delay_ms = 150;
+  current = read();
+  EXPECT_TRUE(current.at("ok"));
+  EXPECT_TRUE(current.contains("pose"));
+  EXPECT_EQ(current.at("data").at("motion"), "idle");
+  EXPECT_EQ(current.at("data").at("camera").at("status"), "timeout");
+  std::lock_guard<std::mutex> lock(mutex);
+  ASSERT_FALSE(requests.empty());
+  for (const auto & request : requests) {EXPECT_EQ(request.first, GetImage::Request::STATUS);}
+}
 
 TEST(RgbdMathTest, MaskMeansUseAllValidDepthAndMatchPointProjection)
 {
@@ -790,11 +842,17 @@ TEST_F(ObjectNavigationTest, LookaroundWaitsForTurnAndShutdownCancelsWithoutPubl
 {
   createNavigation();
   ToolManager manager(host);
-  manager.load(config.config(Json::array({lookaroundGroup(), group()})));
+  auto navigation = lookaroundGroup();
+  navigation["functions"].push_back({{"name", "get_robot_state"},
+      {"plugin", "vln_agent/GetRobotState"}, {"blocking", false}});
+  manager.load(config.config(Json::array({navigation, group()})));
   capture(manager);
   const auto handle = invoke(manager, "lookaround", Json::object());
   const auto goal = single();
   EXPECT_EQ(handle.result.wait_for(20ms), std::future_status::timeout);
+  const auto state = payload(invoke(manager, "get_robot_state", Json::object()));
+  EXPECT_EQ(state.at("data").at("motion"), "lookaround");
+  EXPECT_EQ(state.at("data").at("task").at("action"), "navigate_to_pose");
   const auto blocked = payload(invoke(manager, "navigate_to_pose_start_navigation",
       {{"frame_id", "rgbd_test_map"}, {"x", 6}, {"y", 7}, {"yaw", 0}}));
   EXPECT_EQ(blocked.at("code"), "NAVIGATION_BUSY");

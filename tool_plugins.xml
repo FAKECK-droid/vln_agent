@@ -30,6 +30,10 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>NavigateThroughPoses CancelNavigation，共用导航任务槽。</description>
     </class>
+    <class name="vln_agent/GetRobotState" type="vln_agent::GetRobotState"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>查询当前机器人位姿、活动任务与 TF/相机时效。</description>
+    </class>
     <class name="vln_agent/GetSurroundings"
            type="vln_agent::GetSurroundings"
            base_class_type="vln_agent::ToolPluginBase">

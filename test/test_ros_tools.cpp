@@ -14,6 +14,7 @@
 #include <nav2_msgs/srv/get_costmap.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
+#include <tf2_ros/transform_broadcaster.h>
 #include <rclcpp/rclcpp.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 
@@ -124,6 +125,19 @@ protected:
       {"definition", share + "/plugins/tools/navigation/tool.json"},
       {"settings", {{"action_name", action_name}}},
       {"functions", functions}};
+  }
+
+  Json stateGroup()
+  {
+    auto group = navigationGroup();
+    group["functions"].push_back({{"name", "get_robot_state"},
+        {"plugin", "vln_agent/GetRobotState"}, {"blocking", false}});
+    return group;
+  }
+
+  Json state(ToolManager & manager)
+  {
+    return payload(invoke(manager, "get_robot_state", Json::object()));
   }
 
   Json surroundingsGroup(std::size_t capacity = 2)
@@ -276,7 +290,7 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
   const std::vector<std::string> names{
     "navigate_to_pose_start_navigation", "navigate_to_pose_get_feedback", "navigate_to_pose_cancel_navigation",
     "navigate_through_poses_start_navigation", "navigate_through_poses_get_feedback", "navigate_through_poses_cancel_navigation",
-    "get_surroundings", "navigate_to_pixel_start_navigation", "navigate_through_pixels_start_navigation",
+    "get_robot_state", "get_surroundings", "navigate_to_pixel_start_navigation", "navigate_through_pixels_start_navigation",
     "navigate_to_objects", "navigate_to_objects_surround", "lookaround",
     "capture_pair", "depth_project", "depth_project_surround"};
   ASSERT_EQ(tools.size(), names.size());
@@ -329,6 +343,122 @@ TEST_F(RosToolsTest, FailedInitializationStopsCallbackThreadsAndRollsBackPlugins
     manager.load(config.config(Json::array()));
     manager.shutdown();
   }
+}
+
+/** @brief 无相机资源、无 TF 时仍可查询任务；静态 TF 不伪造采样时效。 */
+TEST_F(RosToolsTest, RobotStateLoadsAloneAndKeepsStateWhenTfIsMissing)
+{
+  auto group = stateGroup();
+  group["functions"] = Json::array({group.at("functions").back()});
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({group})));
+  const auto missing = state(manager);
+  ASSERT_TRUE(missing.at("ok")) << missing;
+  EXPECT_EQ(missing.at("data").at("motion"), "idle");
+  EXPECT_TRUE(missing.at("data").at("task").is_null());
+  EXPECT_TRUE(missing.at("data").at("camera").is_null());
+  EXPECT_FALSE(missing.at("data").at("tf").at("available"));
+  EXPECT_FALSE(missing.contains("pose"));
+
+  createCostmapServers();
+  Json located;
+  ASSERT_TRUE(eventually([&] {located = state(manager); return located.contains("pose");}));
+  EXPECT_EQ(located.at("pose").at("frame_id"), "map");
+  EXPECT_NEAR(located.at("pose").at("x").get<double>(), 8, 1e-9);
+  EXPECT_NEAR(located.at("pose").at("y").get<double>(), -2, 1e-9);
+  EXPECT_NEAR(located.at("pose").at("yaw").get<double>(), M_PI / 2, 1e-9);
+  EXPECT_TRUE(located.at("data").at("tf").at("available"));
+  EXPECT_TRUE(located.at("data").at("tf").at("age_sec").is_null());
+  EXPECT_FALSE(located.at("pose").contains("time_stamp"));
+  EXPECT_EQ(local_reads.load() + global_reads.load(), 0);
+  EXPECT_TRUE(goals.empty());
+}
+
+/** @brief 使用配置坐标系和 ROS 时间计算动态 TF 年龄，仿真时间不转换成 UTC。 */
+TEST_F(RosToolsTest, RobotStateReportsDynamicTfAgeAndRespectsSimulatedTime)
+{
+  auto group = stateGroup();
+  group["settings"]["map_frame"] = "state_map";
+  group["settings"]["base_frame"] = "state_base";
+  auto broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(server_node);
+  for (const bool simulated : {false, true}) {
+    client_node->set_parameter(rclcpp::Parameter("use_sim_time", simulated));
+    ToolManager manager(client_node);
+    manager.load(config.config(Json::array({group})));
+    geometry_msgs::msg::TransformStamped transform;
+    transform.header.frame_id = "state_map";
+    transform.child_frame_id = "state_base";
+    transform.header.stamp = simulated ? rclcpp::Time(4, 0) : server_node->now() - 2s;
+    transform.transform.translation.x = 3;
+    transform.transform.rotation.w = 1;
+    Json located;
+    ASSERT_TRUE(eventually([&] {
+        broadcaster->sendTransform(transform);
+        located = state(manager);
+        return located.contains("pose");
+      }));
+    EXPECT_EQ(located.at("pose").at("frame_id"), "state_map");
+    EXPECT_DOUBLE_EQ(located.at("pose").at("x"), 3);
+    EXPECT_EQ(located.at("data").at("tf").at("child_frame_id"), "state_base");
+    EXPECT_EQ(located.at("pose").contains("time_stamp"), !simulated);
+    const double age = located.at("data").at("tf").at("age_sec");
+    if (simulated) {EXPECT_DOUBLE_EQ(age, -4);}
+    else {EXPECT_GE(age, 2); EXPECT_LT(age, 5);}
+  }
+}
+
+/** @brief 无需已知 ID，状态工具识别单点、多点、取消中与终态释放，不使用旧反馈位姿。 */
+TEST_F(RosToolsTest, RobotStateTracksSingleAndMultiGoalFeedbackAndCancellation)
+{
+  createServer(); createThroughServer();
+  auto group = stateGroup();
+  group["settings"]["navigate_through_poses_action_name"] = action_name + "_through";
+  group["functions"].push_back({{"name", "navigate_through_poses_start_navigation"},
+      {"plugin", "vln_agent/NavigateThroughPosesStartNavigation"}, {"blocking", true}});
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({group})));
+  Json started;
+  ASSERT_TRUE(eventually([&] {started = start(manager); return started.value("ok", false);}));
+  const auto id = started.at("data").at("task_id");
+  const auto single = goal(0);
+  auto feedback = std::make_shared<Action::Feedback>();
+  feedback->distance_remaining = 5;
+  feedback->current_pose.header.frame_id = "map";
+  feedback->current_pose.pose.position.x = 99;
+  feedback->current_pose.pose.orientation.w = 1;
+  single->publish_feedback(feedback);
+  Json current;
+  ASSERT_TRUE(eventually([&] {
+      current = state(manager);
+      return current.at("data").at("task").contains("distance_remaining_m");
+    }));
+  EXPECT_EQ(current.at("data").at("motion"), "navigate_to_pose");
+  EXPECT_EQ(current.at("data").at("task").at("task_id"), id);
+  EXPECT_EQ(current.at("data").at("task").at("action"), "navigate_to_pose");
+  EXPECT_DOUBLE_EQ(current.at("data").at("task").at("distance_remaining_m"), 5);
+  EXPECT_FALSE(current.contains("pose"));
+  ASSERT_TRUE(payload(invoke(manager, "navigate_to_pose_cancel_navigation", {{"task_id", id}})).at("ok"));
+  EXPECT_EQ(state(manager).at("data").at("task").at("status"), "canceling");
+  ASSERT_TRUE(eventually([&] {return single->is_canceling();}));
+  single->canceled(std::make_shared<Action::Result>());
+  ASSERT_TRUE(eventually([&] {return state(manager).at("data").at("motion") == "idle";}));
+
+  const auto multi = payload(invoke(manager, "navigate_through_poses_start_navigation",
+      {{"frame_id", "map"}, {"poses", Json::array({{{"x", 1}, {"y", 2}, {"yaw", 0}}})}}));
+  ASSERT_TRUE(multi.at("ok")) << multi;
+  const auto through = throughGoal(0);
+  auto remaining = std::make_shared<ThroughAction::Feedback>();
+  remaining->number_of_poses_remaining = 1;
+  through->publish_feedback(remaining);
+  ASSERT_TRUE(eventually([&] {
+      current = state(manager);
+      return current.at("data").at("task").contains("number_of_poses_remaining");
+    }));
+  EXPECT_EQ(current.at("data").at("motion"), "navigate_through_poses");
+  EXPECT_EQ(current.at("data").at("task").at("task_id"), multi.at("data").at("task_id"));
+  EXPECT_EQ(current.at("data").at("task").at("number_of_poses_remaining"), 1);
+  through->succeed(std::make_shared<ThroughAction::Result>());
+  ASSERT_TRUE(eventually([&] {return state(manager).at("data").at("task").is_null();}));
 }
 
 TEST_F(RosToolsTest, KeepsActiveFeedbackAndRestartsAfterCancelAndSuccessWithoutPolling)

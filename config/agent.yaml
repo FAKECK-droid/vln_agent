@@ -36,6 +36,11 @@ tool_manager:
         - name: navigate_through_poses_cancel_navigation
           plugin: vln_agent/NavigateThroughPosesCancelNavigation
           blocking: true
+        - name: get_robot_state
+          plugin: vln_agent/GetRobotState
+          blocking: false
+          settings:
+            rgbd_resource: rgbd/rgbd
         - name: get_surroundings
           plugin: vln_agent/GetSurroundings
           blocking: false

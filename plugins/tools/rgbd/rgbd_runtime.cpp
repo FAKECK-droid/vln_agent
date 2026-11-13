@@ -1,5 +1,7 @@
 #include "vln_agent/plugins/tools/rgbd/rgbd_runtime.hpp"
 
+#include <chrono>
+#include <future>
 #include <stdexcept>
 #include "vln_agent/plugins/tools/rgbd/segmentation.hpp"
 
@@ -45,6 +47,31 @@ RgbdRuntime::RgbdRuntime(rclcpp::Node & node, const Json & settings)
 RgbdRuntime::~RgbdRuntime()
 {
   shutdown();
+}
+
+Json RgbdRuntime::camera_state()
+{
+  Json state{{"status", "unavailable"}, {"latest_pair_available", nullptr},
+    {"latest_pair_age_sec", nullptr}};
+  if (!client_->service_is_ready()) {return state;}
+  auto request = std::make_shared<GetImage::Request>();
+  request->operation = GetImage::Request::STATUS;
+  auto future = client_->async_send_request(request);
+  if (future.wait_for(std::chrono::duration<double>(timeout_sec_)) != std::future_status::ready) {
+    client_->remove_pending_request(future);
+    state["status"] = "timeout";
+    return state;
+  }
+  const auto response = future.get();
+  if (!response->success) {
+    state["status"] = "error";
+    state["message"] = response->message;
+    return state;
+  }
+  state["status"] = response->latest_available ? "ready" : "no_pair";
+  state["latest_pair_available"] = response->latest_available;
+  if (response->latest_available) {state["latest_pair_age_sec"] = response->latest_age_sec;}
+  return state;
 }
 
 void RgbdRuntime::shutdown() noexcept
