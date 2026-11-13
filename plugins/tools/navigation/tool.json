@@ -399,30 +399,13 @@
   },
   {
     "type": "function",
-    "name": "lookaround",
-    "description": "完成当前位置八个视角的采图与每次45度逆时针转向，回到初始朝向后直接返回环视图和 data.lookaround_id。共享资源保存最近一轮八对原始 RGB-D 图像，供 project_depth_surround 使用。函数执行至整轮完成，不依赖环视事件。",
+    "name": "navigate_to_objects_surround",
     "async": true,
     "strict": true,
-    "parameters": {
-      "type": "object",
-      "properties": {},
-      "required": [],
-      "additionalProperties": false
-    }
-  },
-  {
-    "type": "function",
-    "name": "project_depth_surround",
-    "description": "在 lookaround 返回的完整拼图上指定实例提示，工具自动还原各视角原图坐标，再复用深度投影到 target_frame。多个实例可来自不同视角，同一实例的框和点须位于同一实际图像区域。返回顺序与输入一致，支持逐实例失败。",
-    "async": true,
-    "strict": true,
+    "description": "直接导航至 lookaround 环视拼图中选定的物体。使用 lookaround_id 和完整拼图上的实例框/提示点，自动还原原图、投影到导航地图并生成停靠位姿；复用普通物体导航的 stand_off_m 与朝向策略。单个实例启动 NavigateToPose，多个实例按输入顺序启动 NavigateThroughPoses；任一实例投影失败时整次不启动。按返回 data.action 使用已有单点或多点反馈、取消工具。",
     "parameters": {
       "type": "object",
       "properties": {
-        "target_frame": {
-          "type": "string",
-          "description": "输出坐标系，例如 map 或 base_link。"
-        },
         "use_segmentation": {
           "type": "boolean",
           "description": "true 分割实例掩码；false 只使用正类提示点。"
@@ -502,15 +485,24 @@
                   "additionalProperties": false
                 },
                 "description": "本实例独立的提示点。分割时纯点最多 63，带框最多 62；关闭分割时只读取 label=1 的点。"
+              },
+              "stand_off_m": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "description": "物体水平停靠距离（米）。0/null 使用投影表面 x/y，省略时默认 0；正数沿接近方向退开指定距离。"
               }
             },
             "required": [
               "box",
-              "points"
+              "points",
+              "stand_off_m"
             ],
             "additionalProperties": false
           },
-          "description": "按顺序给出的实例，框和点均使用完整环视拼图的像素坐标。"
+          "description": "按访问顺序排列的物体实例；框和点使用完整环视拼图的像素坐标，不同实例可来自不同视角。"
         },
         "lookaround_id": {
           "type": "string",
@@ -519,10 +511,22 @@
       },
       "required": [
         "lookaround_id",
-        "target_frame",
         "use_segmentation",
         "instances"
       ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "lookaround",
+    "description": "完成当前位置八个视角的采图与每次45度逆时针转向，回到初始朝向后直接返回环视图和 data.lookaround_id。共享资源保存最近一轮八对原始 RGB-D 图像，供 depth_project_surround 使用。函数执行至整轮完成，不依赖环视事件。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
       "additionalProperties": false
     }
   }

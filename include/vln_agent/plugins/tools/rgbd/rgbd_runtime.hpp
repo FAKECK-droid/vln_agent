@@ -45,7 +45,7 @@ public:
   ToolResult capture_surround(const std::function<ToolResult(int)> & turn,
     double pause_sec, int tile_size, int gap_size, double yaw);
   /** @brief 将拼图提示还原至八张原图，再复用普通深度投影。 */
-  ToolResult project_depth_surround(const Json & arguments);
+  ToolResult depth_project_surround(const Json & arguments);
   /** @brief 停止自身回调，释放未决请求、标定与图像缓存。 */
   void shutdown() noexcept override;
 

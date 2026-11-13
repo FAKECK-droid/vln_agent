@@ -50,6 +50,11 @@ tool_manager:
           blocking: true
           settings:
             rgbd_resource: rgbd/rgbd
+        - name: navigate_to_objects_surround
+          plugin: vln_agent/NavigateToObjectsSurround
+          blocking: true
+          settings:
+            rgbd_resource: rgbd/rgbd
         - name: lookaround
           plugin: vln_agent/Lookaround
           blocking: true
@@ -57,11 +62,6 @@ tool_manager:
             pause_sec: 0.3
             tile_size: 512
             gap_size: 12
-            rgbd_resource: rgbd/rgbd
-        - name: project_depth_surround
-          plugin: vln_agent/ProjectDepthSurround
-          blocking: false
-          settings:
             rgbd_resource: rgbd/rgbd
     - id: rgbd
       definition: ../plugins/tools/rgbd/tool.json
@@ -85,6 +85,9 @@ tool_manager:
             image_scale: 0.8
         - name: depth_project
           plugin: vln_agent/DepthProject
+          blocking: false
+        - name: depth_project_surround
+          plugin: vln_agent/DepthProjectSurround
           blocking: false
 
 

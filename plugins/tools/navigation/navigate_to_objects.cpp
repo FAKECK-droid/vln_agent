@@ -13,6 +13,12 @@ namespace vln_agent
 {
 ToolResult NavigationRuntime::navigate_to_objects(RgbdRuntime & rgbd, const Json & arguments)
 {
+  return navigateToObjects(rgbd, arguments, false);
+}
+
+ToolResult NavigationRuntime::navigateToObjects(
+  RgbdRuntime & rgbd, const Json & arguments, bool surround)
+{
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
@@ -33,7 +39,8 @@ ToolResult NavigationRuntime::navigate_to_objects(RgbdRuntime & rgbd, const Json
 
   Json projection_input = arguments;
   projection_input["target_frame"] = map_frame_;
-  auto projected = rgbd.depth_project(projection_input);
+  auto projected = surround ? rgbd.depth_project_surround(projection_input) :
+    rgbd.depth_project(projection_input);
   if (!projected.payload.at("ok").get<bool>()) {return projected;}
   const auto & objects = projected.payload.at("data").at("instances");
   if (projected.payload.at("data").at("success_count").get<std::size_t>() != instances.size()) {

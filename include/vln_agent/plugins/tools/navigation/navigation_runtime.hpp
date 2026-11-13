@@ -73,6 +73,8 @@ public:
    * @return 投影明细、全局停靠位姿及导航任务；任一实例投影失败时整次不启动。
    */
   ToolResult navigate_to_objects(RgbdRuntime & rgbd, const Json & arguments);
+  /** @brief 使用环视拼图实例投影，复用普通物体导航的停靠位姿与 Action 流程。 */
+  ToolResult navigate_to_objects_surround(RgbdRuntime & rgbd, const Json & arguments);
   /** @brief 唤醒函数等待，尽力取消本客户端活动目标并停止自身回调。 */
   void shutdown() noexcept override;
 
@@ -104,6 +106,7 @@ private:
     bool wait_for_result = false);
   /** @brief 单点与多点像素工具共用验证、快照转换及接受后消费逻辑。 */
   ToolResult startPixelNavigation(const Json & arguments, bool through_pixels);
+  ToolResult navigateToObjects(RgbdRuntime & rgbd, const Json & arguments, bool surround);
   ToolResult getFeedback(const Json & arguments, bool through_poses);
   ToolResult cancelNavigation(const Json & arguments, bool through_poses);
   /** @brief 持锁生成任务状态和最新反馈结果。 */

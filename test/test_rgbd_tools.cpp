@@ -125,7 +125,8 @@ protected:
       {"functions", Json::array({
           {{"name", "capture_pair"}, {"plugin", "vln_agent/CapturePair"}, {"blocking", false},
             {"settings", {{"image_scale", scale}}}},
-          {{"name", "depth_project"}, {"plugin", "vln_agent/DepthProject"}, {"blocking", false}}})}};
+          {{"name", "depth_project"}, {"plugin", "vln_agent/DepthProject"}, {"blocking", false}},
+          {{"name", "depth_project_surround"}, {"plugin", "vln_agent/DepthProjectSurround"}, {"blocking", false}}})}};
   }
 
   void createSource(bool with_calibration = true)
@@ -489,6 +490,7 @@ protected:
           {"costmap_timeout_sec", 0.3}}},
       {"functions", Json::array({
           {{"name", "navigate_to_objects"}, {"plugin", "vln_agent/NavigateToObjects"}, {"blocking", false}},
+          {{"name", "navigate_to_objects_surround"}, {"plugin", "vln_agent/NavigateToObjectsSurround"}, {"blocking", false}},
           {{"name", "navigate_to_pose_start_navigation"}, {"plugin", "vln_agent/NavigateToPoseStartNavigation"}, {"blocking", false}},
           {{"name", "navigate_to_pose_cancel_navigation"}, {"plugin", "vln_agent/NavigateToPoseCancelNavigation"}, {"blocking", false}},
           {{"name", "navigate_through_poses_cancel_navigation"}, {"plugin", "vln_agent/NavigateThroughPosesCancelNavigation"}, {"blocking", false}}})}};
@@ -532,13 +534,21 @@ protected:
     auto nav = navigationGroup();
     nav["functions"].push_back({{"name", "lookaround"}, {"plugin", "vln_agent/Lookaround"},
         {"blocking", false}, {"settings", {{"pause_sec", pause}, {"tile_size", 64}, {"gap_size", 8}}}});
-    nav["functions"].push_back({{"name", "project_depth_surround"},
-        {"plugin", "vln_agent/ProjectDepthSurround"}, {"blocking", false}});
     return nav;
+  }
+  Json surroundNavigate(ToolManager & manager, const Json & id, const Json & instances, bool segment = false)
+  {
+    return payload(invoke(manager, "navigate_to_objects_surround", {{"lookaround_id", id},
+        {"use_segmentation", segment}, {"instances", instances}}));
+  }
+  Json surroundInstance(const Json & observed, int view)
+  {
+    const auto & rect = observed.at("data").at("views").at(view).at("image_rect");
+    return instance(rect.at("x").get<int>() + 5, rect.at("y").get<int>() + 4);
   }
   Json surroundProject(ToolManager & manager, const Json & id, const Json & instances)
   {
-    return payload(invoke(manager, "project_depth_surround", {{"lookaround_id", id},
+    return payload(invoke(manager, "depth_project_surround", {{"lookaround_id", id},
         {"target_frame", "rgbd_test_map"}, {"use_segmentation", false}, {"instances", instances}}));
   }
 
@@ -831,6 +841,122 @@ TEST_F(ObjectNavigationTest, ShutdownInterruptsConfiguredLookaroundPause)
   manager.shutdown();
   EXPECT_LT(std::chrono::steady_clock::now() - started, 1s);
   EXPECT_EQ(payload(handle).at("code"), "TOOL_MANAGER_CLOSED");
+}
+
+TEST_F(ObjectNavigationTest, SurroundObjectNavigationUsesCachedSingleTargetAndSharedCancellation)
+{
+  createNavigation(); auto_finish = true;
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(), group(1)})));
+  capture(manager);
+  const auto observed = payload(invoke(manager, "lookaround", Json::object()));
+  ASSERT_TRUE(observed.at("ok")) << observed;
+  auto_finish = false;
+  const auto id = observed.at("data").at("lookaround_id");
+  auto target = surroundInstance(observed, 3); target["stand_off_m"] = nullptr;
+  std::size_t reads;
+  {std::lock_guard<std::mutex> lock(mutex); reads = requests.size();}
+  const auto result = surroundNavigate(manager, id, Json::array({target}));
+  ASSERT_TRUE(result.at("ok")) << result;
+  const auto & data = result.at("data");
+  EXPECT_EQ(data.at("action"), "navigate_to_pose");
+  EXPECT_EQ(data.at("projection").at("lookaround_id"), id);
+  EXPECT_EQ(data.at("projection").at("instances").at(0).at("view_index"), 3);
+  const auto goal = single(8);
+  EXPECT_NEAR(goal->get_goal()->pose.pose.position.x, 9.2, 1e-9);
+  EXPECT_NEAR(goal->get_goal()->pose.pose.position.y, 21, 1e-9);
+  EXPECT_NEAR(yaw(goal->get_goal()->pose.pose), std::atan2(14,3.2), 1e-9);
+  EXPECT_EQ(surroundNavigate(manager, "missing", Json::array({target}), true).at("code"), "NAVIGATION_BUSY");
+  const auto canceled = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
+      {{"task_id", data.at("task_id")}}));
+  EXPECT_EQ(canceled.at("data").at("status"), "canceling");
+  ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
+  goal->canceled(std::make_shared<Single::Result>());
+  {std::lock_guard<std::mutex> lock(mutex); EXPECT_EQ(requests.size(), reads);}
+}
+
+TEST_F(ObjectNavigationTest, SurroundObjectNavigationKeepsCrossViewInputOrderAndStandOffPolicy)
+{
+  createNavigation(); auto_finish = true; move_camera_with_turn = true;
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(0.03), group()})));
+  capture(manager);
+  const auto observed = payload(invoke(manager, "lookaround", Json::object()));
+  ASSERT_TRUE(observed.at("ok")) << observed;
+  auto_finish = false; move_camera_with_turn = false;
+  auto first = surroundInstance(observed, 7), last = surroundInstance(observed, 0);
+  first["stand_off_m"] = 0.6; last["stand_off_m"] = 0.4;
+  const auto result = surroundNavigate(manager, observed.at("data").at("lookaround_id"),
+    Json::array({first,last}));
+  ASSERT_TRUE(result.at("ok")) << result;
+  const auto & data = result.at("data");
+  EXPECT_EQ(data.at("action"), "navigate_through_poses");
+  const auto & objects = data.at("projection").at("instances");
+  EXPECT_EQ(objects.at(0).at("view_index"), 7);
+  EXPECT_EQ(objects.at(1).at("view_index"), 0);
+  EXPECT_NEAR(objects.at(0).at("x").get<double>(),79.2,1e-9);
+  EXPECT_NEAR(objects.at(1).at("x").get<double>(),9.2,1e-9);
+  const auto goal = through();
+  EXPECT_EQ(goal->get_goal()->behavior_tree,"/test/objects.xml");
+  ASSERT_EQ(goal->get_goal()->poses.size(),2u);
+  const auto & a = goal->get_goal()->poses[0].pose;
+  const auto & b = goal->get_goal()->poses[1].pose;
+  EXPECT_NEAR(std::hypot(a.position.x-79.2,a.position.y-21),0.6,1e-9);
+  EXPECT_NEAR(std::hypot(b.position.x-9.2,b.position.y-21),0.4,1e-9);
+  const double first_approach = std::atan2(14,73.2);
+  EXPECT_NEAR(a.position.x,79.2-0.6*std::cos(first_approach),1e-9);
+  EXPECT_NEAR(a.position.y,21-0.6*std::sin(first_approach),1e-9);
+  EXPECT_NEAR(yaw(a),std::atan2(b.position.y-a.position.y,b.position.x-a.position.x),1e-9);
+  EXPECT_NEAR(yaw(b),std::atan2(21-b.position.y,9.2-b.position.x),1e-9);
+  const auto canceled = payload(invoke(manager,"navigate_through_poses_cancel_navigation",
+      {{"task_id",data.at("task_id")}}));
+  EXPECT_EQ(canceled.at("data").at("status"),"canceling");
+  ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
+  goal->canceled(std::make_shared<Through::Result>());
+}
+
+TEST_F(ObjectNavigationTest, SurroundObjectNavigationDoesNotSubmitPartialOrInvalidGoals)
+{
+  createNavigation(); auto_finish = true;
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(), group()})));
+  capture(manager);
+  const auto observed = payload(invoke(manager,"lookaround",Json::object()));
+  ASSERT_TRUE(observed.at("ok")) << observed;
+  const auto id = observed.at("data").at("lookaround_id");
+  const auto target = surroundInstance(observed,0);
+  const auto partial = surroundNavigate(manager,id,Json::array({target,instance(100,100)}));
+  EXPECT_EQ(partial.at("code"),"INSTANCE_PROJECTION_FAILED");
+  EXPECT_EQ(partial.at("data").at("success_count"),1);
+  EXPECT_FALSE(partial.at("data").at("instances").at(1).at("ok").get<bool>());
+  EXPECT_EQ(surroundNavigate(manager,"missing",Json::array({target})).at("code"),"LOOKAROUND_NOT_FOUND");
+  auto invalid = target; invalid["stand_off_m"]=-1;
+  EXPECT_EQ(surroundNavigate(manager,id,Json::array({invalid})).at("code"),"INVALID_ARGUMENTS");
+  const auto next = payload(invoke(manager,"lookaround",Json::object()));
+  ASSERT_TRUE(next.at("ok")) << next;
+  EXPECT_EQ(surroundNavigate(manager,id,Json::array({target})).at("code"),"LOOKAROUND_NOT_FOUND");
+  {std::lock_guard<std::mutex> lock(goals_mutex); EXPECT_EQ(singles.size(),16u); EXPECT_TRUE(throughs.empty());}
+}
+
+TEST_F(ObjectNavigationTest, RgbdSurroundProjectionCanOwnTheCacheInEitherGroupLoadOrder)
+{
+  createNavigation(); auto_finish=true;
+  for (const bool rgbd_first : {false,true}) {
+    auto rgbd = group();
+    rgbd["functions"] = Json::array({{{"name","depth_project_surround"},
+        {"plugin","vln_agent/DepthProjectSurround"},{"blocking",false}}});
+    ToolManager manager(host);
+    manager.load(config.config(rgbd_first ? Json::array({rgbd,lookaroundGroup()}) :
+      Json::array({lookaroundGroup(),rgbd})));
+    Json observed;
+    ASSERT_TRUE(eventually([&] {
+        observed=payload(invoke(manager,"lookaround",Json::object())); return observed.value("ok",false);
+      })) << observed;
+    const auto projected=surroundProject(manager,observed.at("data").at("lookaround_id"),
+      Json::array({surroundInstance(observed,0)}));
+    ASSERT_TRUE(projected.at("ok")) << projected;
+    EXPECT_NEAR(projected.at("data").at("instances").at(0).at("x").get<double>(),9.2,1e-9);
+  }
 }
 
 }  // namespace vln_agent::test

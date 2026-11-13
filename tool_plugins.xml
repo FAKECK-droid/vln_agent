@@ -49,6 +49,10 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>复用实例深度投影，顺序启动单点或多点物体导航。</description>
     </class>
+    <class name="vln_agent/NavigateToObjectsSurround" type="vln_agent::NavigateToObjectsSurround"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>使用环视拼图实例，复用物体导航停靠位姿及单点、多点 Action。</description>
+    </class>
     <class name="vln_agent/CapturePair" type="vln_agent::CapturePair"
            base_class_type="vln_agent::ToolPluginBase">
       <description>保存 RGB-D 图像对，仅返回彩色图和图像对 ID。</description>
@@ -60,7 +64,7 @@
     <class name="vln_agent/Lookaround" type="vln_agent::Lookaround" base_class_type="vln_agent::ToolPluginBase">
       <description>工具内完成转向、八对原图缓存与环视拼图。</description>
     </class>
-    <class name="vln_agent/ProjectDepthSurround" type="vln_agent::ProjectDepthSurround" base_class_type="vln_agent::ToolPluginBase">
+    <class name="vln_agent/DepthProjectSurround" type="vln_agent::DepthProjectSurround" base_class_type="vln_agent::ToolPluginBase">
       <description>将环视拼图提示映射回原图并复用深度投影。</description>
     </class>
   </library>

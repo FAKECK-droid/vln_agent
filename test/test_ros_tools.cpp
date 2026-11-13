@@ -277,8 +277,8 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
     "navigate_to_pose_start_navigation", "navigate_to_pose_get_feedback", "navigate_to_pose_cancel_navigation",
     "navigate_through_poses_start_navigation", "navigate_through_poses_get_feedback", "navigate_through_poses_cancel_navigation",
     "get_surroundings", "navigate_to_pixel_start_navigation", "navigate_through_pixels_start_navigation",
-    "navigate_to_objects", "lookaround", "project_depth_surround",
-    "capture_pair", "depth_project"};
+    "navigate_to_objects", "navigate_to_objects_surround", "lookaround",
+    "capture_pair", "depth_project", "depth_project_surround"};
   ASSERT_EQ(tools.size(), names.size());
   for (std::size_t i = 0; i < names.size(); ++i) {EXPECT_EQ(tools.at(i).at("name"), names.at(i));}
   for (const auto & tool : tools) {

@@ -1,4 +1,4 @@
-#include "vln_agent/plugins/tools/navigation/project_depth_surround.hpp"
+#include "vln_agent/plugins/tools/rgbd/depth_project_surround.hpp"
 #include "vln_agent/plugins/tools/rgbd/rgbd_runtime.hpp"
 
 #include <algorithm>
@@ -8,7 +8,7 @@
 
 namespace vln_agent
 {
-ToolResult RgbdRuntime::project_depth_surround(const Json & arguments)
+ToolResult RgbdRuntime::depth_project_surround(const Json & arguments)
 {
   const auto id = arguments.at("lookaround_id").get<std::string>();
   std::shared_ptr<Surround> surround;
@@ -87,14 +87,15 @@ ToolResult RgbdRuntime::project_depth_surround(const Json & arguments)
   return result;
 }
 
-void ProjectDepthSurround::initialize(const ToolContext & context, const Json & settings)
+void DepthProjectSurround::initialize(const ToolContext & context, const Json &)
 {
-  resources_ = context.resources;
-  rgbd_resource_ = settings.value("rgbd_resource", std::string("rgbd/rgbd"));
+  rgbd_ = context.resources->getOrCreate<RgbdRuntime>(context.group_id + "/rgbd", [&] {
+      return std::make_shared<RgbdRuntime>(context.node, context.group_settings);
+    });
 }
-ToolResult ProjectDepthSurround::execute(const Json & arguments)
+ToolResult DepthProjectSurround::execute(const Json & arguments)
 {
-  return resources_->get<RgbdRuntime>(rgbd_resource_)->project_depth_surround(arguments);
+  return rgbd_->depth_project_surround(arguments);
 }
 }  // namespace vln_agent
-PLUGINLIB_EXPORT_CLASS(vln_agent::ProjectDepthSurround, vln_agent::ToolPluginBase)
+PLUGINLIB_EXPORT_CLASS(vln_agent::DepthProjectSurround, vln_agent::ToolPluginBase)

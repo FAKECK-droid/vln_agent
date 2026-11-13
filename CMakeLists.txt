@@ -72,12 +72,13 @@ add_library(vln_agent_tool_plugins SHARED
   plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp
   plugins/tools/navigation/navigate_through_pixels_start_navigation.cpp
   plugins/tools/navigation/navigate_to_objects.cpp
+  plugins/tools/navigation/navigate_to_objects_surround.cpp
   plugins/tools/navigation/lookaround.cpp
-  plugins/tools/navigation/project_depth_surround.cpp
   plugins/tools/navigation/utils.cpp
   plugins/tools/rgbd/rgbd_runtime.cpp
   plugins/tools/rgbd/capture_pair.cpp
   plugins/tools/rgbd/depth_project.cpp
+  plugins/tools/rgbd/depth_project_surround.cpp
   plugins/tools/rgbd/segmentation.cpp
   plugins/tools/rgbd/utils.cpp)
 target_link_libraries(vln_agent_tool_plugins vln_agent_tools ${OpenCV_LIBS})

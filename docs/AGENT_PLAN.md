@@ -301,8 +301,8 @@ string error
 | `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/goal` |
 | `navigate_through_pixels_start_navigation` | `environment_id`、`pixels: [{pixel_x,pixel_y,yaw}, ...]` | `data.environment_id/frame_id/task_id/status/goals` |
 | `navigate_to_objects` | `pair_id/use_segmentation/instances[]`，实例可含 `stand_off_m` | `data.task_id/status/action/poses/projection` |
+| `navigate_to_objects_surround` | `lookaround_id/use_segmentation/instances[]`，实例可含 `stand_off_m` | 同普通物体导航 |
 | `lookaround` | `{}` | 完成后的环视 JPEG、`data.lookaround_id/views` |
-| `project_depth_surround` | `lookaround_id/target_frame/use_segmentation/instances` | 原图投影结果，按输入顺序返回实例 |
 
 普通导航在 Action 目标接受后返回，任务继续运行。`get_feedback` 返回的数值包括 `distance_remaining_m`、`navigation_time_sec`、`estimated_time_remaining_sec`、`number_of_recoveries`。任务状态为 `running/succeeded/failed/canceling/canceled/rejected`；取消确认后进入 `canceling`，最终 Action 结果决定终态。
 
@@ -349,7 +349,7 @@ string error
 
 `lookaround` 在工具内部完成环视，不再调用环视行为树或提交环视事件。每个视角停顿、保存原始 RGB-D 图像对后，复用 NavigateToPose 转向 45° 并等待终态；八轮后回到初始朝向，直接返回逆时针 3×3 拼图和环视 ID。整轮独占运动任务槽。旧的 `start_lookaround` 与 `cancel_lookaround` 已移除。
 
-最近一轮八对原图、标定和采样时 TF 缓存在同一个 `RgbdRuntime`，独立于普通取图 FIFO；新一轮完整成功后才替换。`project_depth_surround` 接受完整拼图坐标，依据实际图像矩形（含缩放、留黑偏移）还原原图提示，再按视角批量复用普通深度投影。框、正负点必须属于同一视角；不同实例可选不同视角，部分失败保留其他结果。无额外事件接收、缓存服务或跨节点同步接口。
+最近一轮八对原图、标定和采样时 TF 缓存在同一个 `RgbdRuntime`，独立于普通取图 FIFO；新一轮完整成功后才替换。`depth_project_surround` 接受完整拼图坐标，依据实际图像矩形（含缩放、留黑偏移）还原原图提示，再按视角批量复用普通深度投影。框、正负点必须属于同一视角；不同实例可选不同视角，部分失败保留其他结果。无额外事件接收、缓存服务或跨节点同步接口。
 
 `lookaround.settings` 配置 `pause_sec`（默认 0.3 秒）、`tile_size`（512）、`gap_size`（12）及 `rgbd_resource`（`rgbd/rgbd`）；投影工具复用同一 RGB-D 资源。关闭 ToolManager 会打断环视等待并尽力取消当前转向。
 
@@ -371,9 +371,13 @@ string error
 
 导航动作函数的实现位于各插件 `.cpp`；`navigation_runtime.cpp` 管理资源生命周期和通用状态。
 
+`navigate_to_objects_surround` 直接使用环视图上的实例提示；传入 `lookaround_id`、`use_segmentation` 和 `instances`，无需手动转回目标视角或重新采图。它与基于 pair 的物体导航共用停靠距离、朝向生成、任务互斥及单点/多点 Action 提交代码，只切换为环视投影入口。各视角投影保留输入实例顺序；任一实例失败时整次不启动，结果保留投影明细。多点导航沿用已配置的自定义行为树，反馈和取消按返回的 `data.action` 选择已有工具。
+
 ### 4.2 RgbdRuntime
 
-`capture_pair` 和 `depth_project` 共享 `plugins/tools/rgbd` 中的图像、标定、TF 与分割资源。
+`depth_project_surround` 位于 `rgbd` 组，使用同组 `RgbdRuntime` 的环视缓存，返回语义与普通 `depth_project` 一致；无需配置跨组资源引用。
+
+`capture_pair`、`depth_project` 和 `depth_project_surround` 共享 `plugins/tools/rgbd` 中的图像、标定、TF 与分割资源。
 
 `capture_pair` 的 `mode/detail` 对应 `LATEST_PAIR/QUEUE_PAIR/QUEUE_PAIR_AT_AGE`：latest 的 detail 为 0，index 为从 0 开始的历史索引，age 为距当前的毫秒数。工具保存原始彩色、对齐深度、CameraInfo 和深度采样时的相机变换，返回彩色图和 `data.pair_id`。`images[0].metadata.pair_id` 是同一工具缓存 ID，`source_pair_id` 记录取图服务的原始编号。
 
