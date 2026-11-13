@@ -72,8 +72,8 @@ add_library(vln_agent_tool_plugins SHARED
   plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp
   plugins/tools/navigation/navigate_through_pixels_start_navigation.cpp
   plugins/tools/navigation/navigate_to_objects.cpp
-  plugins/tools/navigation/start_lookaround.cpp
-  plugins/tools/navigation/cancel_lookaround.cpp
+  plugins/tools/navigation/lookaround.cpp
+  plugins/tools/navigation/project_depth_surround.cpp
   plugins/tools/navigation/utils.cpp
   plugins/tools/rgbd/rgbd_runtime.cpp
   plugins/tools/rgbd/capture_pair.cpp

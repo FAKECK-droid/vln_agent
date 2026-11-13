@@ -19,7 +19,7 @@
 - Ubuntu 22.04、ROS 2 Humble。
 - ROS 2 Nav2、pluginlib、TF2、OpenCV、Boost、OpenSSL、yaml-cpp。
 - 同工作空间中的 `rgbd_image_queue`。
-- 环顾功能使用 `vln_behavior_tree` 提供的行为树。
+- 环视采集与拼图深度投影由导航工具内部完成，复用 RGB-D 共享资源。
 
 将功能包放入 ROS 工作空间的 `src/scout_mini_vln` 下，通过工作空间的依赖管理安装所需 ROS 和系统库。
 

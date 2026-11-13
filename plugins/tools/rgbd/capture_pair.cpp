@@ -18,7 +18,7 @@
 
 namespace vln_agent
 {
-ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
+ToolResult RgbdRuntime::capturePair(const Json & arguments, std::shared_ptr<Pair> & pair)
 {
   static const std::map<std::string, std::uint8_t> operations{
     {"latest", GetImage::Request::LATEST_PAIR},
@@ -40,7 +40,7 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
   if (!response->success || !response->has_color || !response->has_depth) {
     return ToolResult::failure("IMAGE_PAIR_UNAVAILABLE", response->message);
   }
-  auto pair = std::make_shared<Pair>();
+  pair = std::make_shared<Pair>();
   pair->images = response;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -68,33 +68,11 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
   {
     return ToolResult::failure("UNSUPPORTED_CAMERA_MODEL", "不支持的畸变模型: " + info.distortion_model);
   }
-  const bool png = color.format.find("png") != std::string::npos;
-  std::vector<unsigned char> scaled_color;
-  const auto * color_bytes = &color.data;
-  try {
-    const auto original = cv::imdecode(color.data, cv::IMREAD_COLOR | cv::IMREAD_IGNORE_ORIENTATION);
-    if (original.empty() || original.cols != static_cast<int>(info.width) ||
-      original.rows != static_cast<int>(info.height))
-    {
-      return ToolResult::failure("UNALIGNED_IMAGE_PAIR", "彩色图分辨率必须与 CameraInfo 一致");
-    }
-    pair->color = original;
-    pair->image_size = original.size();
-    if (image_scale != 1.0) {
-      pair->image_size = {
-        std::max(1, static_cast<int>(std::lround(original.cols * image_scale))),
-        std::max(1, static_cast<int>(std::lround(original.rows * image_scale)))};
-      cv::Mat resized;
-      cv::resize(original, resized, pair->image_size, 0, 0,
-        image_scale < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
-      if (!cv::imencode(png ? ".png" : ".jpg", resized, scaled_color)) {
-        return ToolResult::failure("IMAGE_PAIR_UNAVAILABLE", "彩色图缩放编码失败");
-      }
-      color_bytes = &scaled_color;
-    }
-  } catch (const cv::Exception & error) {
-    return ToolResult::failure("IMAGE_PAIR_UNAVAILABLE", error.what());
+  pair->color = cv::imdecode(color.data, cv::IMREAD_COLOR | cv::IMREAD_IGNORE_ORIENTATION);
+  if (pair->color.empty() || pair->color.cols != int(info.width) || pair->color.rows != int(info.height)) {
+    return ToolResult::failure("UNALIGNED_IMAGE_PAIR", "彩色图分辨率必须与 CameraInfo 一致");
   }
+  pair->image_size = pair->color.size();
   if (depth.header.stamp.sec == 0 && depth.header.stamp.nanosec == 0) {
     return ToolResult::failure("TF_UNAVAILABLE", "深度图缺少采样时间，无法保存采样时的相机位姿");
   }
@@ -109,10 +87,37 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "RGB-D 资源已经关闭");}
     pair->id = "pair_" + std::to_string(++next_id_);
+  }
+  return ToolResult::success(Json::object());
+}
+
+ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
+{
+  std::shared_ptr<Pair> pair;
+  auto captured = capturePair(arguments, pair);
+  if (!captured.payload.at("ok").get<bool>()) {return captured;}
+  const auto & info = *pair->info;
+  const auto & response = pair->images;
+  const auto & color = pair->images->color;
+  const auto & depth = pair->images->depth;
+  const bool png = color.format.find("png") != std::string::npos;
+  std::vector<unsigned char> scaled_color;
+  const auto * color_bytes = &color.data;
+  if (image_scale != 1.0) {
+    pair->image_size = {std::max(1, int(std::lround(info.width * image_scale))),
+      std::max(1, int(std::lround(info.height * image_scale)))};
+    cv::Mat resized;
+    cv::resize(pair->color, resized, pair->image_size, 0, 0,
+      image_scale < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
+    cv::imencode(png ? ".png" : ".jpg", resized, scaled_color);
+    color_bytes = &scaled_color;
+  }
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "RGB-D 资源已经关闭");}
     pairs_.push_back(pair);
     while (pairs_.size() > max_pairs_) {pairs_.pop_front();}
   }
-
   Json metadata{{"frame_id", info.header.frame_id},
     {"width", pair->image_size.width}, {"height", pair->image_size.height},
     {"original_width", info.width}, {"original_height", info.height},

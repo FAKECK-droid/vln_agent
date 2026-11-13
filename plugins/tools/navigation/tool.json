@@ -399,8 +399,8 @@
   },
   {
     "type": "function",
-    "name": "start_lookaround",
-    "description": "在小车当前位置执行环顾。目标被接受后立即返回 data.task_id 和 data.status，不等待动作完成；完成后的环视图由行为树通过 lookaround_completed 事件提交，不需要查询反馈。可用 cancel_lookaround 取消。",
+    "name": "lookaround",
+    "description": "完成当前位置八个视角的采图与每次45度逆时针转向，回到初始朝向后直接返回环视图和 data.lookaround_id。共享资源保存最近一轮八对原始 RGB-D 图像，供 project_depth_surround 使用。函数执行至整轮完成，不依赖环视事件。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -412,20 +412,116 @@
   },
   {
     "type": "function",
-    "name": "cancel_lookaround",
-    "description": "请求取消环顾任务。使用 start_lookaround 返回的 data.task_id；返回取消请求的处理状态，不等待动作最终结束。",
+    "name": "project_depth_surround",
+    "description": "在 lookaround 返回的完整拼图上指定实例提示，工具自动还原各视角原图坐标，再复用深度投影到 target_frame。多个实例可来自不同视角，同一实例的框和点须位于同一实际图像区域。返回顺序与输入一致，支持逐实例失败。",
     "async": true,
     "strict": true,
     "parameters": {
       "type": "object",
       "properties": {
-        "task_id": {
+        "target_frame": {
           "type": "string",
-          "description": "start_lookaround 返回的 data.task_id。"
+          "description": "输出坐标系，例如 map 或 base_link。"
+        },
+        "use_segmentation": {
+          "type": "boolean",
+          "description": "true 分割实例掩码；false 只使用正类提示点。"
+        },
+        "instances": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "box": {
+                "type": [
+                  "object",
+                  "null"
+                ],
+                "properties": {
+                  "x_min": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "左边界。"
+                  },
+                  "y_min": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "上边界。"
+                  },
+                  "x_max": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "右边界，可等于图片宽度。"
+                  },
+                  "y_max": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "下边界，可等于图片高度。"
+                  }
+                },
+                "required": [
+                  "x_min",
+                  "y_min",
+                  "x_max",
+                  "y_max"
+                ],
+                "additionalProperties": false,
+                "description": "实例提示框，按返回图片的边界坐标填写；无需框时填 null。"
+              },
+              "points": {
+                "type": "array",
+                "maxItems": 63,
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "x": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "返回图片上的横向零基像素。"
+                    },
+                    "y": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "description": "返回图片上的纵向零基像素。"
+                    },
+                    "label": {
+                      "type": "integer",
+                      "enum": [
+                        0,
+                        1
+                      ],
+                      "description": "1 前景正点，0 背景负点。"
+                    }
+                  },
+                  "required": [
+                    "x",
+                    "y",
+                    "label"
+                  ],
+                  "additionalProperties": false
+                },
+                "description": "本实例独立的提示点。分割时纯点最多 63，带框最多 62；关闭分割时只读取 label=1 的点。"
+              }
+            },
+            "required": [
+              "box",
+              "points"
+            ],
+            "additionalProperties": false
+          },
+          "description": "按顺序给出的实例，框和点均使用完整环视拼图的像素坐标。"
+        },
+        "lookaround_id": {
+          "type": "string",
+          "description": "lookaround 返回的 data.lookaround_id。"
         }
       },
       "required": [
-        "task_id"
+        "lookaround_id",
+        "target_frame",
+        "use_segmentation",
+        "instances"
       ],
       "additionalProperties": false
     }

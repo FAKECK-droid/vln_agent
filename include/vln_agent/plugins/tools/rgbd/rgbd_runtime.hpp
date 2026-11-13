@@ -1,5 +1,8 @@
 #pragma once
 
+#include <array>
+#include <condition_variable>
+#include <functional>
 #include <cstdint>
 #include <deque>
 #include <memory>
@@ -38,6 +41,11 @@ public:
   ToolResult capture_pair(const Json & arguments, double image_scale);
   /** @brief 使用实例掩码或正点深度，返回目标坐标系中的三维均值。 */
   ToolResult depth_project(const Json & arguments);
+  /** @brief 采集一整轮，原图缓存与拼图映射一起发布，turn 在每张采图后执行。 */
+  ToolResult capture_surround(const std::function<ToolResult(int)> & turn,
+    double pause_sec, int tile_size, int gap_size, double yaw);
+  /** @brief 将拼图提示还原至八张原图，再复用普通深度投影。 */
+  ToolResult project_depth_surround(const Json & arguments);
   /** @brief 停止自身回调，释放未决请求、标定与图像缓存。 */
   void shutdown() noexcept override;
 
@@ -62,6 +70,15 @@ private:
     rgbd::DepthImage depth;                 ///< 首次查询后才占用解码后的像素内存。
   };
 
+  struct Surround
+  {
+    std::string id;
+    std::array<std::shared_ptr<Pair>, 8> pairs;
+    std::array<cv::Rect, 8> image_rects;  ///< 拼图中实际图像区域，不含留黑、中心格和间隔。
+  };
+  ToolResult capturePair(const Json & arguments, std::shared_ptr<Pair> & pair);
+  ToolResult projectDepth(const std::shared_ptr<Pair> & pair, const Json & arguments);
+
   rclcpp::Node & node_;                     ///< 生命周期由宿主节点管理。
   std::unique_ptr<ToolCallbacks> callbacks_;  ///< 同组插件共用的独占回调组与线程。
   rclcpp::Client<GetImage>::SharedPtr client_;  ///< 不通过 Session 或其他组件取图。
@@ -79,6 +96,9 @@ private:
   std::shared_ptr<Calibration> calibration_; ///< 最新标定缓存，旧标定随其 pair 释放。
   std::mutex segmentation_mutex_;           ///< 序列化单个 TensorRT context 及其图像特征。
   std::unique_ptr<rgbd::Segmenter> segmenter_; ///< 按组配置预热或惰性加载的分割模型。
+  std::condition_variable condition_;     ///< 关闭时打断环视停顿。
+  std::shared_ptr<Surround> surround_;     ///< 最近一轮八对原图，不受普通取图 FIFO 淘汰。
+  std::uint64_t next_surround_id_{0};
   std::deque<std::shared_ptr<Pair>> pairs_;  ///< 不保存工具输出 JSON/Base64。
 };
 }  // namespace vln_agent

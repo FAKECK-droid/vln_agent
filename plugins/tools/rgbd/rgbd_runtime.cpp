@@ -53,12 +53,14 @@ void RgbdRuntime::shutdown() noexcept
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return;}
     closed_ = true;
+    condition_.notify_all();
   }
   if (callbacks_) {callbacks_->shutdown();}
   if (client_) {client_->prune_pending_requests();}
   // 先停止标定回调，再释放缓存，防止关闭期间的最后一条回调重新写入标定。
   std::lock_guard<std::mutex> lock(mutex_);
   pairs_.clear();
+  surround_.reset();
   calibration_.reset();
   info_.reset();
 }

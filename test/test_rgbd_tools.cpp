@@ -460,7 +460,13 @@ protected:
                rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
       }, [](std::shared_ptr<SingleGoal>) {return rclcpp_action::CancelResponse::ACCEPT;},
       [this](std::shared_ptr<SingleGoal> goal) {
-        std::lock_guard<std::mutex> lock(goals_mutex); singles.push_back(std::move(goal));
+        std::size_t index;
+        {std::lock_guard<std::mutex> lock(goals_mutex); singles.push_back(goal); index = singles.size();}
+        if (auto_finish) {
+          if (move_camera_with_turn) {sendTransforms(10 + index * 10, 20);}
+          if (fail_turn == int(index)) {goal->abort(std::make_shared<Single::Result>());}
+          else {goal->succeed(std::make_shared<Single::Result>());}
+        }
       });
     through_server = rclcpp_action::create_server<Through>(source, through_name,
       [](const rclcpp_action::GoalUUID &, std::shared_ptr<const Through::Goal>) {
@@ -517,7 +523,25 @@ protected:
   std::mutex goals_mutex;
   std::vector<std::shared_ptr<SingleGoal>> singles;
   std::vector<std::shared_ptr<ThroughGoal>> throughs;
-  std::atomic_bool reject{false};
+  std::atomic_bool reject{false}, auto_finish{false};
+  bool move_camera_with_turn{false};
+  int fail_turn{0};
+
+  Json lookaroundGroup(double pause = 0)
+  {
+    auto nav = navigationGroup();
+    nav["functions"].push_back({{"name", "lookaround"}, {"plugin", "vln_agent/Lookaround"},
+        {"blocking", false}, {"settings", {{"pause_sec", pause}, {"tile_size", 64}, {"gap_size", 8}}}});
+    nav["functions"].push_back({{"name", "project_depth_surround"},
+        {"plugin", "vln_agent/ProjectDepthSurround"}, {"blocking", false}});
+    return nav;
+  }
+  Json surroundProject(ToolManager & manager, const Json & id, const Json & instances)
+  {
+    return payload(invoke(manager, "project_depth_surround", {{"lookaround_id", id},
+        {"target_frame", "rgbd_test_map"}, {"use_segmentation", false}, {"instances", instances}}));
+  }
+
 };
 
 TEST_F(ObjectNavigationTest, DefaultsToSurfaceAndUsesSingleActionWithSharedCancel)
@@ -650,4 +674,163 @@ TEST_F(ObjectNavigationTest, RealSegmentationFeedsOrderedNavigationWithoutFetchi
   {std::lock_guard<std::mutex> lock(mutex); EXPECT_EQ(requests.size(), reads);}
   goal->succeed(std::make_shared<Through::Result>());
 }
+TEST_F(ObjectNavigationTest, LookaroundReturnsMosaicAndRetainsEightOriginalPairsOutsideFifo)
+{
+  width = 160; height = 120;
+  createNavigation(); auto_finish = true;
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(0.01), group(1)})));
+  capture(manager);  // 等待 CameraInfo、TF 和 Action 发现完成。
+  const auto started = std::chrono::steady_clock::now();
+  const auto handle = invoke(manager, "lookaround", Json::object());
+  const auto result = payload(handle);
+  ASSERT_TRUE(result.at("ok")) << result;
+  EXPECT_GE(std::chrono::steady_clock::now() - started, 80ms);
+  const auto id = result.at("data").at("lookaround_id");
+  ASSERT_EQ(result.at("data").at("views").size(), 8u);
+  {
+    std::lock_guard<std::mutex> lock(goals_mutex);
+    ASSERT_EQ(singles.size(), 8u);
+    for (std::size_t i = 0; i < 8; ++i) {
+      const auto & pose = singles[i]->get_goal()->pose;
+      EXPECT_DOUBLE_EQ(pose.pose.position.x, 6);
+      EXPECT_DOUBLE_EQ(pose.pose.position.y, 7);
+      EXPECT_NEAR(yaw(pose.pose), (i + 1) * M_PI / 4, 1e-9);
+    }
+  }
+  const auto url = handle.result.get().at("output").at(1).at("image_url").get<std::string>();
+  const auto jpeg = utils::decodeBase64(url.substr(std::string("data:image/jpeg;base64,").size()));
+  const auto mosaic = cv::imdecode(jpeg, cv::IMREAD_COLOR);
+  EXPECT_EQ(mosaic.size(), cv::Size(208, 208));
+  Json targets = Json::array();
+  std::vector<cv::Point> originals;
+  const std::array<cv::Point,8> cells{{{1,0},{0,0},{0,1},{0,2},{1,2},{2,2},{2,1},{2,0}}};
+  for (std::size_t i = 0; i < 8; ++i) {
+    const auto & rect = result.at("data").at("views").at(i).at("image_rect");
+    EXPECT_EQ(rect.at("x"), cells[i].x * 72);
+    EXPECT_EQ(rect.at("y"), cells[i].y * 72 + 8);
+    const int x = rect.at("x").get<int>() + 31, y = rect.at("y").get<int>() + 19;
+    targets.push_back(instance(x, y));
+    originals.push_back(rgbd::toDepthPixel(31, 19, {64,48}, {160,120}));
+  }
+  for (int i = 0; i < 3; ++i) {capture(manager);}  // 普通 FIFO 只有一对，不能淘汰环视缓存。
+  const auto ordinary_id = payload(capture(manager)).at("data").at("pair_id");
+  const auto projected = surroundProject(manager, id, targets);
+  ASSERT_TRUE(projected.at("ok")) << projected;
+  EXPECT_EQ(projected.at("data").at("success_count"), 8);
+  for (std::size_t i = 0; i < 8; ++i) {
+    const auto plain = query(manager, ordinary_id, originals[i].x, originals[i].y);
+    const auto & row = projected.at("data").at("instances").at(i);
+    EXPECT_EQ(row.at("index"), i); EXPECT_EQ(row.at("view_index"), i);
+    for (const auto & field : {"x", "y", "z", "depth_m"}) {
+      EXPECT_NEAR(row.at(field).get<double>(), plain.at("data").at("instances").at(0).at(field).get<double>(), 1e-9);
+    }
+  }
+  const auto next = payload(invoke(manager, "lookaround", Json::object()));
+  ASSERT_TRUE(next.at("ok")) << next;
+  EXPECT_NE(next.at("data").at("lookaround_id"), id);
+  EXPECT_EQ(surroundProject(manager, id, targets).at("code"), "LOOKAROUND_NOT_FOUND");
+}
+
+TEST_F(ObjectNavigationTest, SurroundProjectionRejectsPaddingAndCrossViewPromptsPerInstance)
+{
+  createNavigation(); auto_finish = true;
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(), group()})));
+  capture(manager);
+  const auto observed = payload(invoke(manager, "lookaround", Json::object()));
+  ASSERT_TRUE(observed.at("ok")) << observed;
+  const auto id = observed.at("data").at("lookaround_id");
+  const auto & rect = observed.at("data").at("views").at(0).at("image_rect");
+  const int x = rect.at("x"), y = rect.at("y");
+  auto valid = instance(x + 5, y + 4);
+  auto cross = valid;
+  cross["points"].push_back({{"x", 0}, {"y", 0}, {"label", 0}});
+  auto bad_box = valid;
+  bad_box["box"] = {{"x_min", 0}, {"y_min", 0}, {"x_max", x + 8}, {"y_max", y + 6}};
+  const auto result = surroundProject(manager, id, Json::array({instance(100,100), cross, bad_box, valid}));
+  ASSERT_TRUE(result.at("ok")) << result;
+  EXPECT_EQ(result.at("data").at("success_count"), 1);
+  for (std::size_t i = 0; i < 3; ++i) {
+    EXPECT_EQ(result.at("data").at("instances").at(i).at("code"), "INVALID_PROMPT");
+  }
+  EXPECT_TRUE(result.at("data").at("instances").at(3).at("ok"));
+}
+
+TEST_F(ObjectNavigationTest, FailedLookaroundKeepsPreviousCacheAndReleasesMotionReservation)
+{
+  createNavigation(); auto_finish = true;
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(), group()})));
+  capture(manager);
+  const auto observed = payload(invoke(manager, "lookaround", Json::object()));
+  ASSERT_TRUE(observed.at("ok")) << observed;
+  fail_turn = 10;  // 下一轮第二次转向失败。
+  const auto failed = payload(invoke(manager, "lookaround", Json::object()));
+  EXPECT_EQ(failed.at("code"), "LOOKAROUND_INTERRUPTED");
+  const auto & rect = observed.at("data").at("views").at(0).at("image_rect");
+  EXPECT_TRUE(surroundProject(manager, observed.at("data").at("lookaround_id"),
+      Json::array({instance(rect.at("x").get<int>() + 5, rect.at("y").get<int>() + 4)})).at("ok"));
+  const auto normal = payload(invoke(manager, "navigate_to_pose_start_navigation",
+      {{"frame_id", "rgbd_test_map"}, {"x", 6}, {"y", 7}, {"yaw", 0}}));
+  EXPECT_TRUE(normal.at("ok")) << normal;
+}
+
+TEST_F(ObjectNavigationTest, LookaroundWaitsForTurnAndShutdownCancelsWithoutPublishingAnImage)
+{
+  createNavigation();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(), group()})));
+  capture(manager);
+  const auto handle = invoke(manager, "lookaround", Json::object());
+  const auto goal = single();
+  EXPECT_EQ(handle.result.wait_for(20ms), std::future_status::timeout);
+  const auto blocked = payload(invoke(manager, "navigate_to_pose_start_navigation",
+      {{"frame_id", "rgbd_test_map"}, {"x", 6}, {"y", 7}, {"yaw", 0}}));
+  EXPECT_EQ(blocked.at("code"), "NAVIGATION_BUSY");
+  EXPECT_EQ(payload(invoke(manager, "lookaround", Json::object())).at("code"), "NAVIGATION_BUSY");
+  const auto started = std::chrono::steady_clock::now();
+  manager.shutdown();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 1s);
+  EXPECT_EQ(payload(handle).at("code"), "TOOL_MANAGER_CLOSED");
+  EXPECT_EQ(handle.result.get().at("output").size(), 1u);
+  ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
+  goal->canceled(std::make_shared<Single::Result>());
+}
+
+TEST_F(ObjectNavigationTest, SurroundProjectionUsesEachViewsCaptureTransform)
+{
+  createNavigation(); auto_finish = true; move_camera_with_turn = true;
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(0.03), group()})));
+  capture(manager);
+  const auto observed = payload(invoke(manager, "lookaround", Json::object()));
+  ASSERT_TRUE(observed.at("ok")) << observed;
+  Json targets = Json::array();
+  for (const int view : {0, 7}) {
+    const auto & rect = observed.at("data").at("views").at(view).at("image_rect");
+    targets.push_back(instance(rect.at("x").get<int>() + 5, rect.at("y").get<int>() + 4));
+  }
+  const auto projected = surroundProject(manager, observed.at("data").at("lookaround_id"), targets);
+  ASSERT_TRUE(projected.at("ok")) << projected;
+  EXPECT_NEAR(projected.at("data").at("instances").at(0).at("x").get<double>(), 9.2, 1e-9);
+  EXPECT_NEAR(projected.at("data").at("instances").at(1).at("x").get<double>(), 79.2, 1e-9);
+}
+
+TEST_F(ObjectNavigationTest, ShutdownInterruptsConfiguredLookaroundPause)
+{
+  createNavigation(); auto_finish = true;
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(2), group()})));
+  capture(manager);
+  const auto handle = invoke(manager, "lookaround", Json::object());
+  ASSERT_TRUE(eventually([&] {
+      return navigate(manager, "missing", Json::array({instance(5,4)})).value("code", "") == "NAVIGATION_BUSY";
+    }));
+  const auto started = std::chrono::steady_clock::now();
+  manager.shutdown();
+  EXPECT_LT(std::chrono::steady_clock::now() - started, 1s);
+  EXPECT_EQ(payload(handle).at("code"), "TOOL_MANAGER_CLOSED");
+}
+
 }  // namespace vln_agent::test

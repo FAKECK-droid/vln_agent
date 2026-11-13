@@ -301,8 +301,8 @@ string error
 | `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/goal` |
 | `navigate_through_pixels_start_navigation` | `environment_id`、`pixels: [{pixel_x,pixel_y,yaw}, ...]` | `data.environment_id/frame_id/task_id/status/goals` |
 | `navigate_to_objects` | `pair_id/use_segmentation/instances[]`，实例可含 `stand_off_m` | `data.task_id/status/action/poses/projection` |
-| `start_lookaround` | `{}` | 环顾任务的 `data.task_id/status` |
-| `cancel_lookaround` | `task_id` | 取消请求处理状态 |
+| `lookaround` | `{}` | 完成后的环视 JPEG、`data.lookaround_id/views` |
+| `project_depth_surround` | `lookaround_id/target_frame/use_segmentation/instances` | 原图投影结果，按输入顺序返回实例 |
 
 普通导航在 Action 目标接受后返回，任务继续运行。`get_feedback` 返回的数值包括 `distance_remaining_m`、`navigation_time_sec`、`estimated_time_remaining_sec`、`number_of_recoveries`。任务状态为 `running/succeeded/failed/canceling/canceled/rejected`；取消确认后进入 `canceling`，最终 Action 结果决定终态。
 
@@ -347,7 +347,11 @@ string error
 
 成功结果的 data 含 task_id、status、action（navigate_to_pose 或 navigate_through_poses）、frame_id、poses 和 projection。poses 是实际发送的有序 x/y/yaw，projection 是完整 depth_project 的 data。按 action 使用相应前缀的反馈和取消工具。函数 settings.rgbd_resource 默认 rgbd/rgbd，执行时查询已有资源，工具组装载顺序可独立安排。纯几何生成完成后直接提交给 Nav2，规划与到达判定由已配置的规划器、控制器和目标检查器处理。navigation 与 RGB-D 工具统一编译到 vln_agent_tool_plugins，pluginlib 使用同一库装载所有工具注册；源码和共享资源继续按组保存。
 
-`start_lookaround` 读取当前 `map_frame → base_frame` 位姿，向同一 NavigateToPose Action 提交环顾 XML。默认路径为 `vln_behavior_tree` 安装目录的 `behavior_trees/lookaround.xml`，可通过 `lookaround_behavior_tree` 指定路径。启动和取消工具在请求确认后返回；环视图由行为树最终的 `lookaround_completed` 事件提交。环顾任务在 Action 结束后自动释放状态，过程信息由行为树事件上报。
+`lookaround` 在工具内部完成环视，不再调用环视行为树或提交环视事件。每个视角停顿、保存原始 RGB-D 图像对后，复用 NavigateToPose 转向 45° 并等待终态；八轮后回到初始朝向，直接返回逆时针 3×3 拼图和环视 ID。整轮独占运动任务槽。旧的 `start_lookaround` 与 `cancel_lookaround` 已移除。
+
+最近一轮八对原图、标定和采样时 TF 缓存在同一个 `RgbdRuntime`，独立于普通取图 FIFO；新一轮完整成功后才替换。`project_depth_surround` 接受完整拼图坐标，依据实际图像矩形（含缩放、留黑偏移）还原原图提示，再按视角批量复用普通深度投影。框、正负点必须属于同一视角；不同实例可选不同视角，部分失败保留其他结果。无额外事件接收、缓存服务或跨节点同步接口。
+
+`lookaround.settings` 配置 `pause_sec`（默认 0.3 秒）、`tile_size`（512）、`gap_size`（12）及 `rgbd_resource`（`rgbd/rgbd`）；投影工具复用同一 RGB-D 资源。关闭 ToolManager 会打断环视等待并尽力取消当前转向。
 
 组配置：
 
@@ -356,7 +360,6 @@ string error
 | `action_name` | `/navigate_to_pose` |
 | `navigate_through_poses_action_name` | `/navigate_through_poses` |
 | `navigate_through_poses_behavior_tree` | `/home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml` |
-| `lookaround_behavior_tree` | 空，按包安装目录定位 |
 | `map_frame`、`base_frame` | `map`、`base_link` |
 | `local_costmap_service` | `/local_costmap/get_costmap` |
 | `global_costmap_service` | `/global_costmap/get_costmap` |

@@ -43,10 +43,6 @@ rgbd::InstancePrompt parsePrompt(const Json & item, cv::Size size, bool segmente
 ToolResult RgbdRuntime::depth_project(const Json & arguments)
 {
   const auto id = arguments.at("pair_id").get<std::string>();
-  const auto target = arguments.at("target_frame").get<std::string>();
-  const bool segmented = arguments.at("use_segmentation").get<bool>();
-  const auto & instances = arguments.at("instances");
-  if (instances.empty()) {return ToolResult::failure("INVALID_ARGUMENTS", "instances 至少包含一个实例");}
   std::shared_ptr<Pair> pair;
   {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -57,6 +53,16 @@ ToolResult RgbdRuntime::depth_project(const Json & arguments)
     }
     pair = *found;
   }
+  return projectDepth(pair, arguments);
+}
+
+ToolResult RgbdRuntime::projectDepth(const std::shared_ptr<Pair> & pair, const Json & arguments)
+{
+  const auto & id = pair->id;
+  const auto target = arguments.at("target_frame").get<std::string>();
+  const bool segmented = arguments.at("use_segmentation").get<bool>();
+  const auto & instances = arguments.at("instances");
+  if (instances.empty()) {return ToolResult::failure("INVALID_ARGUMENTS", "instances 至少包含一个实例");}
   try {
     std::call_once(pair->decode_once, [&] {
       auto depth = rgbd::decodeDepth(pair->images->depth);

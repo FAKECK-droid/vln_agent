@@ -46,8 +46,8 @@ public:
   ToolResult get_through_poses_feedback(const Json & arguments);
   /** @brief 请求取消多点任务，最终 Action 结果决定是否已取消。 */
   ToolResult cancel_through_poses_navigation(const Json & arguments);
-  /** @brief 以当前位姿启动环顾行为树；接受后返回 task_id，终态由行为树事件上报。 */
-  ToolResult start_lookaround();
+  /** @brief 完成八次采图和转向后直接返回环视图与 lookaround_id。 */
+  ToolResult lookaround(RgbdRuntime & rgbd, const Json & settings);
   /** @brief 读取活动任务反馈；任务结束后由结果回调释放。 */
   ToolResult get_feedback(const Json & arguments);
   /** @brief 等待取消请求回复；只有最终 Action 结果才能将状态改为 canceled。 */
@@ -92,15 +92,16 @@ private:
   /**
    * @brief 共用的 Action 发送、目标确认与取消所需任务管理。
    * @param goal 已组装的位姿和行为树路径。
-   * @return 接受后的 task_id/status 或启动失败信息，不等待动作完成。
+   * @return 接受后的 task_id/status；环视转向可选择等待 Action 终态。
    */
-  ToolResult sendGoal(const Action::Goal & goal);
+  ToolResult sendGoal(const Action::Goal & goal, bool wait_for_result = false);
   ToolResult sendGoal(const ThroughPosesAction::Goal & goal);
   /** @brief 两类 Action 共用目标确认、反馈及终态释放逻辑。 */
   template<typename NavigationAction>
   ToolResult sendActionGoal(
     const typename NavigationAction::Goal & goal,
-    const typename rclcpp_action::Client<NavigationAction>::SharedPtr & client);
+    const typename rclcpp_action::Client<NavigationAction>::SharedPtr & client,
+    bool wait_for_result = false);
   /** @brief 单点与多点像素工具共用验证、快照转换及接受后消费逻辑。 */
   ToolResult startPixelNavigation(const Json & arguments, bool through_pixels);
   ToolResult getFeedback(const Json & arguments, bool through_poses);
@@ -120,7 +121,6 @@ private:
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;  ///< 有界 TF 缓存，供截图时的坐标转换。
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;  ///< 复用本组专用回调线程。
   std::string map_frame_;   ///< 环境快照和导航目标使用的坐标系。
-  std::string lookaround_behavior_tree_;  ///< 环顾 XML 路径；为空时从 vln_behavior_tree 安装目录定位。
   std::string through_poses_behavior_tree_;  ///< 多点导航专用 XML，不能留空回退到 Nav2 默认树。
   std::string base_frame_;  ///< 机器人本体坐标系。
   double costmap_timeout_sec_{2.0};  ///< 服务发现和响应等待各自的时限。
@@ -135,6 +135,7 @@ private:
   std::shared_ptr<Task> task_;              ///< 唯一活动任务，收到终态后释放。
   std::uint64_t next_id_{0};                ///< 本次资源内递增的任务编号。
   std::size_t pending_goals_{0};            ///< 尚未收到回复的目标请求数。
+  bool lookaround_running_{false};         ///< 在整轮采图和转向期间保留运动任务槽。
   bool closed_{false};                     ///< 关闭后唤醒等待并拒绝新操作。
   double shutdown_timeout_sec_;            ///< 关闭时等待未决目标回复的最长时间。
 };

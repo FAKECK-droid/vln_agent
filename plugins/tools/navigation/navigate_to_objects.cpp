@@ -17,7 +17,7 @@ ToolResult NavigationRuntime::navigate_to_objects(RgbdRuntime & rgbd, const Json
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
     // 活动任务可直接返回，省去分割；提交 Action 时沿用现有任务槽的最终互斥判断。
-    if (task_) {return ToolResult::failure("NAVIGATION_BUSY", "已有活动导航任务");}
+    if (task_ || lookaround_running_) {return ToolResult::failure("NAVIGATION_BUSY", "已有活动导航任务");}
   }
   const auto & instances = arguments.at("instances");
   std::vector<double> distances;

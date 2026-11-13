@@ -118,47 +118,9 @@ env_demo_a 的像素导航启动已接受，随后收到 navigation_failed。
 
 ### 14. 环顾中的子导航成功
 
-start_lookaround 已返回 task_id="nav_demo_look"、status=running。接下来陆续收到多条 navigation_completed，每条含原地目标及不同 yaw，尚无 lookaround_completed。
+`lookaround` 调用仍在执行，底层转向可能产生普通导航事件。预期：不把单次转向完成当成整轮环视完成，不并发启动其他运动；以本次工具直接返回的拼图与 lookaround_id 继续判断。
 
-预期：这些是转向子步骤，继续等完整环顾；不启动新导航，不报告环顾已结束。
-
-后续 lookaround_completed 含一张拼图。images[0] 的元数据可能平铺；data.views 给出 source_index/row/column 和不同采样 pose。
-
-预期：按实际视图关联方向和时间；不能将拼图中心 yaw 当所有图的拍摄 yaw。看到目标后需要测距时先获取新的正视 capture_pair，不把拼图像素用于 depth_project。
-
-### 15. 完成事件无 task_id、迟到与乱序
-
-当前是导航 B。收到 source=robot、event=navigation_completed，但 data.goal 对应前一个导航 A，事件没有 task_id。
-
-预期：不能把 B 标记完成；结合 goal、origin、时间和动作类型关联。必要时有限查询 B 的真实活动 task_id，不给事件伪造 task_id。
-
-变体：某完成事件在本轮启动结果之前到达，应暂存对应事实，等已发出的启动调用返回再关联；不能因为尚未拿到 ID 再发一遍启动。
-
-### 16. 终态事件早于任务槽释放
-
-收到与当前任务匹配的 navigation_failed，更新观测并启动替代目标时暂时返回 NAVIGATION_BUSY。
-
-预期：识别事件与 Action 清理的时序差，有限诊断或等待新输入；不把 busy 当替代目标的路径失败，也不循环发送取消。任务槽允许后再发一个目标。
-
-### 17. 用户停止与取消等待
-
-普通/像素导航 nav_demo_a 正在运行，用户说“停止，不要继续了”。
-
-预期先调用：
-
-```json
-{"tool":"navigate_to_pose_cancel_navigation","arguments":{"task_id":"nav_demo_a"}}
-```
-
-取消返回 canceling 时，只报告已请求取消，仍不能说已停稳或启动新动作。必要时可以有限诊断：
-
-```json
-{"tool":"navigate_to_pose_get_feedback","arguments":{"task_id":"nav_demo_a"}}
-```
-
-若返回 TASK_NOT_FOUND，仅表明活动缓存没有此任务，不证明已成功或停稳，需结合其他证据。取消确认后等待用户新任务，不自行恢复旧目标。
-
-变体：当前动作是环顾，应调用 cancel_lookaround 使用真实环顾 task_id。若取消被拒绝，报告未确认中止；不得伪造硬件急停功能。
+环视结果返回后，在整张拼图上选择目标提示，使用 `project_depth_surround` 投影。无需再转回该方向或重新获取图像对；不同视角的实例分别投影，同一个实例的框与点须在同一实际图像区域。
 
 ## 四、目标保持、完成与恢复
 

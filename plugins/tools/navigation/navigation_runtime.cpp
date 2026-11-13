@@ -37,7 +37,6 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
     rmw_qos_profile_services_default, callbacks_->group());
   map_frame_ = settings.value("map_frame", std::string("map"));
   base_frame_ = settings.value("base_frame", std::string("base_link"));
-  lookaround_behavior_tree_ = settings.value("lookaround_behavior_tree", std::string{});
   through_poses_behavior_tree_ = settings.value("navigate_through_poses_behavior_tree",
     std::string("/home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml"));
   if (through_poses_behavior_tree_.empty()) {
@@ -63,7 +62,8 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
 template<typename NavigationAction>
 ToolResult NavigationRuntime::sendActionGoal(
   const typename NavigationAction::Goal & goal,
-  const typename rclcpp_action::Client<NavigationAction>::SharedPtr & client)
+  const typename rclcpp_action::Client<NavigationAction>::SharedPtr & client,
+  bool wait_for_result)
 {
   using Handle = rclcpp_action::ClientGoalHandle<NavigationAction>;
   constexpr bool through_poses = std::is_same_v<NavigationAction, ThroughPosesAction>;
@@ -75,7 +75,7 @@ ToolResult NavigationRuntime::sendActionGoal(
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
-    if (task_) {
+    if (task_ || (lookaround_running_ && !wait_for_result)) {
       return ToolResult::failure("NAVIGATION_BUSY", "已有活动导航任务");
     }
     task = std::make_shared<Task>();
@@ -176,12 +176,19 @@ ToolResult NavigationRuntime::sendActionGoal(
     if (task_ == task) {task_.reset();}
     return result;
   }
+  if (wait_for_result) {
+    condition_.wait(lock, [&] {return closed_ || terminal(task->status);});
+    if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "环视转向期间资源关闭");}
+    if (task->status != "succeeded") {
+      return ToolResult::failure("LOOKAROUND_INTERRUPTED", "环视转向未完成: " + task->status);
+    }
+  }
   return snapshot(task);
 }
 
-ToolResult NavigationRuntime::sendGoal(const Action::Goal & goal)
+ToolResult NavigationRuntime::sendGoal(const Action::Goal & goal, bool wait_for_result)
 {
-  return sendActionGoal<Action>(goal, client_);
+  return sendActionGoal<Action>(goal, client_, wait_for_result);
 }
 
 ToolResult NavigationRuntime::sendGoal(const ThroughPosesAction::Goal & goal)
