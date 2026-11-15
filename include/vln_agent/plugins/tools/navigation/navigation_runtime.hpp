@@ -53,7 +53,7 @@ public:
   /** @brief 等待取消请求回复；只有最终 Action 结果才能将状态改为 canceled。 */
   ToolResult cancel_navigation(const Json & arguments);
   /**
-   * @brief 获取代价地图并生成机器人朝上的环境图。
+   * @brief 获取代价地图并生成地图坐标系对齐的环境图。
    * @param arguments costmap 为 local/global，range_m 为观察正方形边长。
    * @return data.environment_id、公共 pose、images 元数据与原生 PNG。
    */
@@ -61,8 +61,8 @@ public:
   /** @brief 读取当前 TF 位姿和本资源活动任务；不要求调用方持有 task_id。 */
   ToolResult get_robot_state();
   /**
-   * @brief 使用快照还原像素位置与相对图片 yaw，复用 start_navigation。
-   * @param arguments environment_id、pixel_x、pixel_y、yaw；yaw=0 朝图上方，正值逆时针。
+   * @brief 使用快照还原像素位置，直接采用地图 yaw，复用 start_navigation。
+   * @param arguments environment_id、pixel_x、pixel_y、yaw；yaw=0 朝图右方（地图 +X），正值逆时针。
    * @return 像素工具自身的结果，成功时含 task_id，供查询和取消。
    */
   ToolResult navigate_to_pixel_start_navigation(const Json & arguments);

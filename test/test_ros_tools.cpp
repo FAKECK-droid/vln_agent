@@ -194,7 +194,7 @@ protected:
     return payload(invoke(manager, "navigate_through_poses_get_feedback", {{"task_id", id}}));
   }
 
-  void createCostmapServers()
+  void createCostmapServers(double yaw_in_odom = 0)
   {
     using Service = nav2_msgs::srv::GetCostmap;
     const auto callback = [this](bool local, std::shared_ptr<Service::Response> reply) {
@@ -225,7 +225,8 @@ protected:
     map_odom.transform.rotation.w = std::cos(M_PI / 4);
     odom_base.header.frame_id = "odom"; odom_base.child_frame_id = "base_link";
     odom_base.transform.translation.x = 1; odom_base.transform.translation.y = 2;
-    odom_base.transform.rotation.w = 1;
+    odom_base.transform.rotation.z = std::sin(yaw_in_odom / 2);
+    odom_base.transform.rotation.w = std::cos(yaw_in_odom / 2);
     static_tf->sendTransform(std::vector<geometry_msgs::msg::TransformStamped>{map_odom, odom_base});
   }
 
@@ -574,7 +575,10 @@ TEST_F(RosToolsTest, GetsLocalAndGlobalSurroundingsWithNativePngAndSnapshotMetad
     EXPECT_NEAR(result.at("pose").at("x").get<double>(), 8, 1e-6);
     EXPECT_NEAR(result.at("pose").at("y").get<double>(), -2, 1e-6);
     EXPECT_NEAR(result.at("pose").at("yaw").get<double>(), M_PI / 2, 1e-6);
-    EXPECT_EQ(result.at("images").at(0).at("metadata").at("image_up"), "robot_forward");
+    const auto & metadata = result.at("images").at(0).at("metadata");
+    EXPECT_EQ(metadata.at("frame_id"), "map");
+    EXPECT_EQ(metadata.at("image_right"), "map_positive_x");
+    EXPECT_EQ(metadata.at("image_up"), "map_positive_y");
     EXPECT_TRUE(result.at("data").contains("environment_id"));
   }
   const auto handle = invoke(manager, "get_surroundings", {{"costmap", "global"}, {"range_m", 10}});
@@ -588,10 +592,10 @@ TEST_F(RosToolsTest, GetsLocalAndGlobalSurroundingsWithNativePngAndSnapshotMetad
   EXPECT_GT(local_reads.load(), 0); EXPECT_GT(global_reads.load(), 0);
 }
 
-TEST_F(RosToolsTest, PixelNavigationUsesSnapshotPositionAndImageRelativeYaw)
+TEST_F(RosToolsTest, PixelNavigationUsesMapAxesAndAbsoluteYaw)
 {
   createServer();
-  createCostmapServers();
+  createCostmapServers(-M_PI / 2);  // 车头朝地图 +X；图上方仍是地图 +Y。
   ToolManager manager(client_node);
   manager.load(config.config(Json::array({surroundingsGroup()})));
   surroundings(manager);  // 等待 TF 准备完毕；正式快照由机器人经服务获取。
@@ -621,8 +625,9 @@ TEST_F(RosToolsTest, PixelNavigationUsesSnapshotPositionAndImageRelativeYaw)
   EXPECT_EQ(pose.header.frame_id, "map");
   EXPECT_NEAR(pose.pose.position.x, 8, 1e-6);
   EXPECT_NEAR(pose.pose.position.y, -1, 1e-6);
-  EXPECT_NEAR(pose.pose.orientation.z, std::sin(3 * M_PI / 8), 1e-6);
-  EXPECT_NEAR(pose.pose.orientation.w, std::cos(3 * M_PI / 8), 1e-6);
+  EXPECT_NEAR(pose.pose.orientation.z, std::sin(M_PI / 8), 1e-6);
+  EXPECT_NEAR(pose.pose.orientation.w, std::cos(M_PI / 8), 1e-6);
+  EXPECT_NEAR(result.at("data").at("goal").at("yaw").get<double>(), M_PI / 4, 1e-6);
   EXPECT_EQ(payload(invoke(manager, "navigate_to_pixel_start_navigation", arguments)).
     at("code"), "ENVIRONMENT_NOT_FOUND");
   accepted->succeed(std::make_shared<Action::Result>());
@@ -662,7 +667,7 @@ TEST_F(RosToolsTest, ReportsUnavailableAndEmptyCostmaps)
 TEST_F(RosToolsTest, ThroughPixelsUsesOneSnapshotAndReusesMultiGoalFeedbackAndCancel)
 {
   createThroughServer();
-  createCostmapServers();
+  createCostmapServers(M_PI / 4);  // 车头斜向左上，像素与 yaw 仍按固定的地图轴。
   ToolManager manager(client_node);
   manager.load(config.config(Json::array({throughPixelsGroup()})));
   const auto environment = surroundings(manager);
@@ -679,7 +684,7 @@ TEST_F(RosToolsTest, ThroughPixelsUsesOneSnapshotAndReusesMultiGoalFeedbackAndCa
   EXPECT_EQ(request.behavior_tree,
     "/home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml");
   ASSERT_EQ(request.poses.size(), 2u);
-  const std::vector<double> x{8, 6}, y{-1, -1}, yaw{M_PI / 2, 0};
+  const std::vector<double> x{8, 6}, y{-1, -1}, yaw{0, -M_PI / 2};
   for (std::size_t i = 0; i < request.poses.size(); ++i) {
     const auto & pose = request.poses[i];
     EXPECT_EQ(pose.header.frame_id, "map");

@@ -19,24 +19,31 @@ nav2_msgs::msg::Costmap grid(int cells, double resolution)
   return map;
 }
 
-TEST(NavigationImages, ImageAxesAndPixelCentersMapBackAtDifferentRobotHeadings)
+TEST(NavigationImages, MapAxesStayFixedAndRobotMarkerTracksHeading)
 {
-  const auto map = grid(200, 0.1);
+  auto map = grid(200, 0.1);
+  map.data[110 * 200 + 110] = 254;  // 地图点 (11.05, 11.05)，位于机器人右上。
+  const cv::Vec3b heading_blue(215, 100, 20);
   for (const double yaw : {0.0, M_PI / 2, -0.73}) {
     Environment env;
     env.robot = {8, 9, yaw};
     env.range_m = 10;
-    renderSurroundings(map, {0, 0, 0}, env, 512, "global");
+    const auto image = renderSurroundings(map, {0, 0, 0}, env, 512, "global");
     const double x = env.map_rect.x + 255.5, y = env.map_rect.y + 255.5;
     const auto center = pixelToMap(env, x, y);
     EXPECT_NEAR(center.x, 8, 1e-10);
     EXPECT_NEAR(center.y, 9, 1e-10);
-    const auto forward = pixelToMap(env, x, y - 1 / env.meters_per_pixel);
-    EXPECT_NEAR(forward.x, 8 + std::cos(yaw), 1e-10);
-    EXPECT_NEAR(forward.y, 9 + std::sin(yaw), 1e-10);
-    const auto left = pixelToMap(env, x - 1 / env.meters_per_pixel, y);
-    EXPECT_NEAR(left.x, 8 - std::sin(yaw), 1e-10);
-    EXPECT_NEAR(left.y, 9 + std::cos(yaw), 1e-10);
+    const auto up = pixelToMap(env, x, y - 1 / env.meters_per_pixel);
+    EXPECT_NEAR(up.x, 8, 1e-10);
+    EXPECT_NEAR(up.y, 10, 1e-10);
+    const auto right = pixelToMap(env, x + 1 / env.meters_per_pixel, y);
+    EXPECT_NEAR(right.x, 9, 1e-10);
+    EXPECT_NEAR(right.y, 9, 1e-10);
+    EXPECT_EQ(image.at<cv::Vec3b>(cvRound(y - 2.05 / env.meters_per_pixel),
+        cvRound(x + 3.05 / env.meters_per_pixel)), cv::Vec3b(28, 32, 38));
+    const double dx = 24 * std::cos(yaw), dy = -24 * std::sin(yaw);
+    EXPECT_EQ(image.at<cv::Vec3b>(cvRound(y + dy), cvRound(x + dx)), heading_blue);
+    EXPECT_NE(image.at<cv::Vec3b>(cvRound(y - dy), cvRound(x - dx)), heading_blue);
     EXPECT_THROW(pixelToMap(env, 0, 0), std::invalid_argument);
   }
 }
@@ -50,10 +57,9 @@ TEST(NavigationImages, RotatedGridOriginPreservesKnownObstacleLocation)
   env.range_m = 8;
   const auto image = renderSurroundings(map, {5, 5, M_PI / 2}, env, 512, "local");
   // cell(30,20) center -> rotated origin -> map(2.95,8.05)
-  cv::Matx23d inverse;
-  cv::invertAffineTransform(env.pixel_to_map, inverse);
-  const auto pixel = inverse * cv::Vec3d(2.95, 8.05, 1);
-  EXPECT_EQ(image.at<cv::Vec3b>(cvRound(pixel[1]), cvRound(pixel[0])), cv::Vec3b(28, 32, 38));
+  const double cx = env.map_rect.x + 255.5, cy = env.map_rect.y + 255.5;
+  EXPECT_EQ(image.at<cv::Vec3b>(cvRound(cy - 2.05 / env.meters_per_pixel),
+      cvRound(cx - 1.05 / env.meters_per_pixel)), cv::Vec3b(28, 32, 38));
 }
 
 TEST(NavigationImages, OutsideMapRemainsUnknownAndDownsamplingRetainsThinWalls)
@@ -71,7 +77,7 @@ TEST(NavigationImages, OutsideMapRemainsUnknownAndDownsamplingRetainsThinWalls)
   EXPECT_GT(cv::countNonZero(blocked), 80);
 }
 
-TEST(NavigationImages, WritesRobotUpPreviewWithCostsLegendAndScale)
+TEST(NavigationImages, WritesMapAlignedPreviewWithCostsLegendAndScale)
 {
   auto map = grid(480, 0.05);
   cv::Mat free_mask(480, 480, CV_8UC1, cv::Scalar(0));
@@ -104,8 +110,9 @@ TEST(NavigationImages, WritesRobotUpPreviewWithCostsLegendAndScale)
   std::vector<unsigned char> png;
   ASSERT_TRUE(cv::imencode(".png", image, png, {cv::IMWRITE_PNG_COMPRESSION, 1}));
   timer.stop();
-  ASSERT_TRUE(cv::imwrite((directory / "surroundings_robot_up.png").string(), image));
-  std::cout << "PREVIEW " << directory / "surroundings_robot_up.png" <<
+  const auto preview = directory / "surroundings_map_aligned.png";
+  ASSERT_TRUE(cv::imwrite(preview.string(), image));
+  std::cout << "PREVIEW " << preview <<
     " render_and_png_ms=" << timer.getTimeMilli() << " png_bytes=" << png.size() << std::endl;
 }
 }  // namespace vln_agent::navigation::test

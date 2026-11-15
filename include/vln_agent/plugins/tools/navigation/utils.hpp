@@ -29,13 +29,13 @@ struct Environment
 };
 
 /**
- * @brief 裁剪机器人周围正方形，合并旋转、缩放与坐标翻转，并绘制说明。
+ * @brief 以机器人为中心裁剪地图坐标系对齐的正方形，并画出车头方向。
  * @param costmap 服务返回的原始 0～255 代价地图，只读借用其 data。
  * @param origin_in_map 地图栅格原点在导航坐标系中的平面位姿。
  * @param environment 输入机器人位姿、范围和 ID；输出像素几何信息。
  * @param map_pixels 地图部分的像素边长，不包括图片边距。
  * @param source 标题中的 local/global 来源。
- * @return 机器人朝上的 BGR 图片；缩小时保守保留障碍和未知区域。
+ * @return 地图 +X 向右、+Y 向上的 BGR 图片；缩小时保守保留障碍和未知区域。
  */
 cv::Mat renderSurroundings(
   const nav2_msgs::msg::Costmap & costmap, const Pose2D & origin_in_map,

@@ -51,9 +51,8 @@ ToolResult NavigationRuntime::startPixelNavigation(const Json & arguments, bool 
     {
       return ToolResult::failure("INVALID_ARGUMENTS", "每个像素点必须包含数值 pixel_x、pixel_y、yaw");
     }
-    const auto image_yaw = pixel.at("yaw").get<double>();
-    const auto yaw = environment.robot.yaw + image_yaw;
-    if (!std::isfinite(image_yaw) || !std::isfinite(yaw)) {
+    const auto yaw = pixel.at("yaw").get<double>();
+    if (!std::isfinite(yaw)) {
       return ToolResult::failure("INVALID_ARGUMENTS", "像素目标朝向必须为有限数值");
     }
     try {

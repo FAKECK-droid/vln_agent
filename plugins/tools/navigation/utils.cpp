@@ -66,13 +66,13 @@ cv::Mat renderSurroundings(
   env.image_size = {pixels + 2 * left, pixels + top + footer};
   env.meters_per_pixel = env.range_m / pixels;
   const double scale = env.meters_per_pixel;
-  const double s = std::sin(env.robot.yaw), c = std::cos(env.robot.yaw);
   const double cx = left + (pixels - 1) * 0.5, cy = top + (pixels - 1) * 0.5;
+  // 固定为地图 +X 向右、+Y 向上；机器人的位置只决定取图中心。
   env.pixel_to_map = {
-    s * scale, -c * scale, env.robot.x - s * scale * cx + c * scale * cy,
-    -c * scale, -s * scale, env.robot.y + c * scale * cx + s * scale * cy};
+    scale, 0, env.robot.x - scale * cx,
+    0, -scale, env.robot.y + scale * cy};
 
-  // 一次合成裁剪、旋转、缩放、y 翻转与 cell-center 偏移，避免多次全图重采样。
+  // 仍需将源栅格（例如 odom 下的局部地图）对齐到地图坐标系，只重采样一次。
   const double resolution = costmap.metadata.resolution;
   const double co = std::cos(origin.yaw), so = std::sin(origin.yaw);
   const cv::Matx23d map_to_cells{
@@ -137,7 +137,7 @@ cv::Mat renderSurroundings(
   const cv::Scalar ink(55, 60, 70), blue(215, 100, 20);
   cv::putText(image, source + " surroundings  " + env.id, {left, 27},
     cv::FONT_HERSHEY_SIMPLEX, 0.65, ink, 1, cv::LINE_AA);
-  cv::putText(image, "UP = ROBOT FORWARD | LEFT = ROBOT LEFT | " +
+  cv::putText(image, "MAP  +X RIGHT  |  +Y UP  |  " +
     number(env.range_m) + " m square", {left, 50},
     cv::FONT_HERSHEY_SIMPLEX, 0.41, ink, 1, cv::LINE_AA);
   cv::rectangle(image, {left - 1, top - 1, pixels + 2, pixels + 2}, ink, 1);
@@ -148,10 +148,15 @@ cv::Mat renderSurroundings(
     cv::putText(image, std::to_string(top + delta), {7, top + delta + 4},
       cv::FONT_HERSHEY_SIMPLEX, 0.38, ink, 1, cv::LINE_AA);
   }
-  cv::circle(image, {cvRound(cx), cvRound(cy)}, 8, cv::Scalar(255, 255, 255), -1, cv::LINE_AA);
-  cv::circle(image, {cvRound(cx), cvRound(cy)}, 6, blue, -1, cv::LINE_AA);
-  cv::arrowedLine(image, {cvRound(cx), cvRound(cy)}, {cvRound(cx), cvRound(cy) - 25},
-    blue, 3, cv::LINE_AA, 0, 0.3);
+  const cv::Point center{cvRound(cx), cvRound(cy)};
+  const int arrow_length = std::min(56, pixels / 8);
+  const cv::Point front{cvRound(cx + arrow_length * std::cos(env.robot.yaw)),
+    cvRound(cy - arrow_length * std::sin(env.robot.yaw))};
+  const cv::Scalar white(255, 255, 255);
+  cv::arrowedLine(image, center, front, white, 8, cv::LINE_AA, 0, 0.32);
+  cv::circle(image, center, 9, white, -1, cv::LINE_AA);
+  cv::arrowedLine(image, center, front, blue, 4, cv::LINE_AA, 0, 0.32);
+  cv::circle(image, center, 6, blue, -1, cv::LINE_AA);
   const double power = std::pow(10.0, std::floor(std::log10(env.range_m / 4)));
   const double scale_m = (env.range_m / 4 >= power * 5 ? 5 :
     env.range_m / 4 >= power * 2 ? 2 : 1) * power;
@@ -169,6 +174,9 @@ cv::Mat renderSurroundings(
     cv::rectangle(image, {x, y - 9, 9, 9}, ink, 1);
     cv::putText(image, names[i], {x + 13, y}, cv::FONT_HERSHEY_SIMPLEX, 0.34, ink, 1, cv::LINE_AA);
   }
+  cv::putText(image, "Blue arrow: robot heading " +
+    number(env.robot.yaw * 180 / CV_PI) + " deg", {left, top + pixels + 100},
+    cv::FONT_HERSHEY_SIMPLEX, 0.4, blue, 1, cv::LINE_AA);
   return image;
 }
 

@@ -319,11 +319,11 @@ string error
 
 函数 settings.rgbd_resource 缺省为空（不查询相机、camera 为 null）；默认配置启用 rgbd/rgbd。相机复用 RGB-D 服务的 STATUS，只读取最新源图像对的可用性与年龄，不拉取图像或修改工具缓存。`data.camera.status` 为 ready/no_pair/unavailable/timeout/error；latest_pair_available 和 latest_pair_age_sec 未知时为 null。ready 表示存在配对，时效由年龄判断，不替代已缓存图像的采样时间。TF 或相机不可用不会覆盖其余状态；相机等待沿用 RGB-D timeout_sec，返回的各项是独立采样的状态。
 
-`get_surroundings` 通过 GetCostmap 读取局部或全局地图，以机器人为中心生成正方形环境图。`range_m` 为边长，图片上方表示截图时机器人前方。地图区域默认 `image_size=512`，完整图片还包含标题、坐标和图例；有效地图范围与比例以返回的 `map_rect`、`meters_per_pixel` 为准。
+`get_surroundings` 通过 GetCostmap 读取局部或全局地图，以机器人为中心生成正方形环境图。`range_m` 为边长，固定地图坐标系 +X 向右、+Y 向上，中央蓝色箭头指向车头；局部和全局图均采用导航组的 `map_frame`。地图区域默认 `image_size=512`，完整图片还包含标题、坐标和图例；有效地图范围与比例以返回的 `map_rect`、`meters_per_pixel` 为准。
 
-像素导航使用完整图片左上角为原点，x 向右、y 向下。选择点位于 `map_rect` 内。`yaw=0` 朝图片上方，正值逆时针；转换后的朝向为截图时机器人 yaw 加输入 yaw。环境 ID 保存该次图片到地图的变换，默认最多 8 个，FIFO 淘汰；目标接受后消费对应 ID。
+像素导航使用完整图片左上角为原点，x 向右、y 向下。选择点位于 `map_rect` 内。`yaw` 直接使用地图弧度：0 向右（+X），π/2 向上（+Y），π 向左，-π/2 向下。机器人转向不改变像素和地图坐标的对应关系；机器人平移后新图会随中心平移。环境 ID 保存该次图片到地图的变换，默认最多 8 个，FIFO 淘汰；目标接受后消费对应 ID。
 
-`navigate_through_pixels_start_navigation` 复用同一快照转换和消费逻辑，将 `pixels` 全部转换后一次性调用多点导航，沿用 `navigate_through_poses_behavior_tree`。每个 yaw 仍是相对于截图朝向的弧度，0 朝图上方，正值逆时针。例如 `{"environment_id":"env_1","pixels":[{"pixel_x":256,"pixel_y":200,"yaw":0.0},{"pixel_x":300,"pixel_y":180,"yaw":1.57}]}`；实际有效像素范围以该图的 `map_rect` 为准。
+`navigate_through_pixels_start_navigation` 复用同一快照转换和消费逻辑，将 `pixels` 全部转换后一次性调用多点导航，沿用 `navigate_through_poses_behavior_tree`。每个 yaw 都使用相同的地图朝向约定。例如 `{"environment_id":"env_1","pixels":[{"pixel_x":256,"pixel_y":200,"yaw":0.0},{"pixel_x":300,"pixel_y":180,"yaw":1.57}]}`；实际有效像素范围以该图的 `map_rect` 为准。
 
 单次点数上限使用导航组 `settings.max_pixel_goals` 配置，缺省 8，必须为正整数；`get_surroundings` 同时返回 `data.max_pixel_goals`，供模型按当前上限组织批次。空数组、超限、无效像素或朝向都会整批返回 `INVALID_ARGUMENTS`，不会截断或发送部分目标；数量错误的 `data.max_pixel_goals` 提供当前上限。Action 不可用、繁忙或拒绝目标时保留环境 ID，可修正后重试；只有目标被接受后才消费该 ID。成功返回 `data.frame_id` 和按输入顺序排列的 `data.goals: [{x,y,yaw}, ...]`，反馈与取消复用 `navigate_through_poses_get_feedback`、`navigate_through_poses_cancel_navigation`。
 

@@ -82,8 +82,10 @@ ToolResult NavigationRuntime::get_surroundings(const Json & arguments)
     {"image_width", image.cols}, {"image_height", image.rows},
     {"map_rect", {{"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}}},
     {"meters_per_pixel", environment.meters_per_pixel},
-    {"pixel_origin", "top_left"}, {"image_up", "robot_forward"},
-    {"image_left", "robot_left"}, {"yaw_convention", "0=up, positive=counterclockwise"}}}};
+    {"frame_id", environment.frame_id}, {"pixel_origin", "top_left"},
+    {"image_right", "map_positive_x"}, {"image_up", "map_positive_y"},
+    {"image_left", "map_negative_x"},
+    {"yaw_convention", "0=right (+X), positive=counterclockwise, radians"}}}};
   if (!simulated && (costmap.header.stamp.sec != 0 || costmap.header.stamp.nanosec != 0)) {
     description["time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
       std::chrono::seconds(costmap.header.stamp.sec) +

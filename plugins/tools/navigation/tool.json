@@ -179,7 +179,7 @@
   {
     "type": "function",
     "name": "get_surroundings",
-    "description": "获取机器人周围代价地图图片。图片以机器人为中心、机器人前方朝上，标有像素坐标、比例尺和固定代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 或 navigate_through_pixels_start_navigation 使用。 环境 ID 位于 data.environment_id，多点像素导航数量上限位于 data.max_pixel_goals；小车位姿位于 pose，地图像素范围和比例位于 images[0].metadata。",
+    "description": "获取机器人周围代价地图图片。图片以机器人为中心，固定为地图 +X 朝右、+Y 朝上。中央蓝色箭头指向车头，图中标有像素坐标、比例尺和代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 或 navigate_through_pixels_start_navigation 使用。 环境 ID 位于 data.environment_id，多点像素导航数量上限位于 data.max_pixel_goals；小车位姿位于 pose，地图像素范围和比例位于 images[0].metadata。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -209,7 +209,7 @@
   {
     "type": "function",
     "name": "navigate_to_pixel_start_navigation",
-    "description": "使用 get_surroundings 返回的环境 ID，将完整图片中的目标像素及图片相对朝向转换到 map 后启动导航。目标位于 map_rect 内；目标接受后消费环境 ID，返回 data.environment_id、goal、task_id 和 status。结果由行为树事件上报，可使用导航取消工具中止任务。",
+    "description": "使用 get_surroundings 返回的环境 ID，将完整图片中的目标像素转换到地图坐标，使用给定的地图 yaw 启动导航。目标位于 map_rect 内；目标接受后消费环境 ID，返回 data.environment_id、goal、task_id 和 status。结果由行为树事件上报，可使用导航取消工具中止任务。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -229,7 +229,7 @@
         },
         "yaw": {
           "type": "number",
-          "description": "相对该张图片的目标朝向，单位弧度；0 朝上（截图时机器人前方），正值逆时针朝左，负值朝右。"
+          "description": "地图坐标系下的目标朝向，单位弧度；0 向右 (+X)，π/2 向上 (+Y)，π 向左，-π/2 向下。"
         }
       },
       "required": [
@@ -257,7 +257,7 @@
         "pixels": {
           "type": "array",
           "minItems": 1,
-          "description": "同一张完整环境图片中，按导航经过顺序排列的像素点及图片相对朝向。",
+          "description": "同一张完整环境图片中，按导航经过顺序排列的像素点及地图朝向。",
           "items": {
             "type": "object",
             "properties": {
@@ -271,7 +271,7 @@
               },
               "yaw": {
                 "type": "number",
-                "description": "相对该张图片的目标朝向，单位弧度；0 朝上（截图时机器人前方），正值逆时针朝左，负值朝右。"
+                "description": "地图坐标系下的目标朝向，单位弧度；0 向右 (+X)，π/2 向上 (+Y)，π 向左，-π/2 向下。"
               }
             },
             "required": [

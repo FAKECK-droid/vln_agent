@@ -72,15 +72,15 @@ capture_pair 返回 data.pair_id="pair_demo_a"，images[0].metadata 为 width=64
 
 ### 09. 完整地图图像与 yaw
 
-get_surroundings 返回 environment_id="env_demo_a"，pose.yaw=1.5707963267948966；元数据为 image_width=560、image_height=696、map_rect={x:48,y:72,width:512,height:512}。模型选择完整图中的可用点 (300,200)，要求相对截图右转 90°。
+get_surroundings 返回 environment_id="env_demo_a"，pose.yaw=1.5707963267948966；元数据为 image_width=608、image_height=696、map_rect={x:48,y:72,width:512,height:512}。模型选择完整图中的可用点 (300,200)，要求目标朝图右（地图 +X）。
 
 预期参数：
 
 ```json
-{"tool":"navigate_to_pixel_start_navigation","arguments":{"environment_id":"env_demo_a","pixel_x":300,"pixel_y":200,"yaw":-1.5707963267948966}}
+{"tool":"navigate_to_pixel_start_navigation","arguments":{"environment_id":"env_demo_a","pixel_x":300,"pixel_y":200,"yaw":0.0}}
 ```
 
-点必须位于 x=48..559、y=72..583；不得传扣掉偏移的 (252,128)。相对截图右转使用负角，转换后的世界 yaw 约为 0；不能把世界 yaw 直接填进截图相对 yaw。禁止选择标题、比例尺或图例。
+点必须位于 x=48..559、y=72..583；不得传扣掉偏移的 (252,128)。目标朝图右直接使用地图 yaw=0，当前车头朝上只影响蓝箭头，不参与目标坐标或朝向换算。禁止选择标题、比例尺或图例。
 
 ### 10. 环境 ID 接受后消费
 
@@ -144,10 +144,10 @@ env_demo_a 的像素导航启动已接受，随后收到 navigation_failed。
 
 已完成起步环视。固定楼层已知前方走廊→右转→门洞→目标前通道都可通行。当前 `get_surroundings` 返回 `env_demo_route`、`max_pixel_goals=4`；下列三个点都位于同一张图的 `map_rect` 内且在可通行区域。
 
-预期：按通过顺序一次提交多点，前两点只约束过路路线，不为每一点启动单点导航、停车核验、刷新代价地图或环视。朝向以该截图为参照，终点按用户要求设置。
+预期：按通过顺序一次提交多点，前两点只约束过路路线，不为每一点启动单点导航、停车核验、刷新代价地图或环视。朝向使用地图角度（向上 π/2、向右 0），终点按用户要求设置。
 
 ```json
-{"tool":"navigate_through_pixels_start_navigation","arguments":{"environment_id":"env_demo_route","pixels":[{"pixel_x":296,"pixel_y":285,"yaw":0.0},{"pixel_x":296,"pixel_y":222,"yaw":-1.5707963267948966},{"pixel_x":390,"pixel_y":222,"yaw":-1.5707963267948966}]}}
+{"tool":"navigate_through_pixels_start_navigation","arguments":{"environment_id":"env_demo_route","pixels":[{"pixel_x":296,"pixel_y":285,"yaw":1.5707963267948966},{"pixel_x":296,"pixel_y":222,"yaw":0.0},{"pixel_x":390,"pixel_y":222,"yaw":0.0}]}}
 ```
 
 变体：运行配置上限只有 2，优先留下足以约束当前路线的关键点；若三个点均不可省，提交有依据的连续前缀，旧段结束后再依据新图续段，不超限、不并发启动。旧环境 ID 已消费，下一段不能复用其像素。

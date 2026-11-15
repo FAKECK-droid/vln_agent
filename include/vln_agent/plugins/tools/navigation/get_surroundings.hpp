@@ -7,14 +7,14 @@ namespace vln_agent
 {
 class NavigationRuntime;
 
-/** @brief 读取代价地图并返回机器人朝上的环境图片。 */
+/** @brief 读取代价地图并返回地图坐标系对齐且标有车头方向的环境图片。 */
 class GetSurroundings : public ToolPluginBase
 {
 public:
   /** @brief 取得本组共用的导航资源；服务和绘图配置来自 group_settings。 */
   void initialize(const ToolContext & context, const Json & settings) override;
   /**
-   * @brief 读取代价地图并返回机器人朝上的环境图片。
+   * @brief 读取代价地图并返回地图坐标系对齐且标有车头方向的环境图片。
    * @param arguments 包含 costmap（local/global）和 range_m（正方形边长，米）。
    * @return data.environment_id、公共 pose、images 图片元数据与原生 PNG 内容项。
    */
