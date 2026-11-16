@@ -543,9 +543,8 @@ protected:
       {"functions", Json::array({
           {{"name", "navigate_to_objects"}, {"plugin", "vln_agent/NavigateToObjects"}, {"blocking", false}},
           {{"name", "navigate_to_objects_surround"}, {"plugin", "vln_agent/NavigateToObjectsSurround"}, {"blocking", false}},
-          {{"name", "navigate_to_pose_start_navigation"}, {"plugin", "vln_agent/NavigateToPoseStartNavigation"}, {"blocking", false}},
-          {{"name", "navigate_to_pose_cancel_navigation"}, {"plugin", "vln_agent/NavigateToPoseCancelNavigation"}, {"blocking", false}},
-          {{"name", "navigate_through_poses_cancel_navigation"}, {"plugin", "vln_agent/NavigateThroughPosesCancelNavigation"}, {"blocking", false}}})}};
+          {{"name", "start_navigation"}, {"plugin", "vln_agent/StartNavigation"}, {"blocking", false}},
+          {{"name", "cancel_navigation"}, {"plugin", "vln_agent/CancelNavigation"}, {"blocking", false}}})}};
   }
   Json navigate(ToolManager & manager, const Json & id, const Json & instances, bool segment = false)
   {
@@ -624,7 +623,7 @@ TEST_F(ObjectNavigationTest, DefaultsToSurfaceAndUsesSingleActionWithSharedCance
   EXPECT_NEAR(pose.pose.position.y, 21, 1e-9);
   EXPECT_DOUBLE_EQ(pose.pose.position.z, 0);
   EXPECT_NEAR(yaw(pose.pose), std::atan2(14, 3.2), 1e-9);
-  const auto canceled = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
+  const auto canceled = payload(invoke(manager, "cancel_navigation",
       {{"task_id", data.at("task_id")}}));
   ASSERT_TRUE(canceled.at("ok"));
   ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
@@ -655,7 +654,7 @@ TEST_F(ObjectNavigationTest, OffsetsOrderedGoalsPointsIntermediateYawForwardAndF
   EXPECT_NEAR(request.poses[1].pose.position.y, by, 1e-9);
   EXPECT_NEAR(yaw(request.poses[1].pose), approach_b, 1e-9);
   EXPECT_EQ(request.poses[0].header.stamp, request.poses[1].header.stamp);
-  const auto canceled = payload(invoke(manager, "navigate_through_poses_cancel_navigation",
+  const auto canceled = payload(invoke(manager, "cancel_navigation",
       {{"task_id", result.at("data").at("task_id")}}));
   ASSERT_TRUE(canceled.at("ok")); ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
   goal->canceled(std::make_shared<Through::Result>());
@@ -829,8 +828,8 @@ TEST_F(ObjectNavigationTest, FailedLookaroundKeepsPreviousCacheAndReleasesMotion
   const auto & rect = observed.at("data").at("views").at(0).at("image_rect");
   EXPECT_TRUE(surroundProject(manager, observed.at("data").at("lookaround_id"),
       Json::array({instance(rect.at("x").get<int>() + 5, rect.at("y").get<int>() + 4)})).at("ok"));
-  const auto normal = payload(invoke(manager, "navigate_to_pose_start_navigation",
-      {{"frame_id", "rgbd_test_map"}, {"x", 6}, {"y", 7}, {"yaw", 0}}));
+  const auto normal = payload(invoke(manager, "start_navigation",
+      {{"frame_id", "rgbd_test_map"}, {"poses", Json::array({{{"x", 6}, {"y", 7}, {"yaw", 0}}})}}));
   EXPECT_TRUE(normal.at("ok")) << normal;
 }
 
@@ -867,14 +866,14 @@ TEST_F(ObjectNavigationTest, SendsSingleGoalWhileLookaroundIsWaitingForATurn)
   const auto observation = invoke(manager, "lookaround", Json::object());
   const auto turn = single();
   EXPECT_EQ(observation.result.wait_for(20ms), std::future_status::timeout);
-  const auto replacement = payload(invoke(manager, "navigate_to_pose_start_navigation",
-      {{"frame_id", "rgbd_test_map"}, {"x", 6}, {"y", 7}, {"yaw", 0}}));
+  const auto replacement = payload(invoke(manager, "start_navigation",
+      {{"frame_id", "rgbd_test_map"}, {"poses", Json::array({{{"x", 6}, {"y", 7}, {"yaw", 0}}})}}));
   ASSERT_TRUE(replacement.at("ok")) << replacement;
   EXPECT_FALSE(turn->is_canceling());
   EXPECT_DOUBLE_EQ(single(1)->get_goal()->pose.pose.position.x, 6);
   turn->abort(std::make_shared<Single::Result>());
   EXPECT_EQ(payload(observation).at("code"), "LOOKAROUND_INTERRUPTED");
-  const auto canceled = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
+  const auto canceled = payload(invoke(manager, "cancel_navigation",
       {{"task_id", replacement.at("data").at("task_id")}}));
   ASSERT_TRUE(canceled.at("ok")) << canceled;
   ASSERT_TRUE(eventually([&] {return single(1)->is_canceling();}));
@@ -943,7 +942,7 @@ TEST_F(ObjectNavigationTest, SurroundObjectNavigationUsesCachedSingleTargetAndSh
   EXPECT_NEAR(goal->get_goal()->pose.pose.position.y, 21, 1e-9);
   EXPECT_NEAR(yaw(goal->get_goal()->pose.pose), std::atan2(14,3.2), 1e-9);
   EXPECT_EQ(surroundNavigate(manager, "missing", Json::array({target}), true).at("code"), "LOOKAROUND_NOT_FOUND");
-  const auto canceled = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
+  const auto canceled = payload(invoke(manager, "cancel_navigation",
       {{"task_id", data.at("task_id")}}));
   EXPECT_EQ(canceled.at("data").at("status"), "canceling");
   ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
@@ -984,7 +983,7 @@ TEST_F(ObjectNavigationTest, SurroundObjectNavigationKeepsCrossViewInputOrderAnd
   EXPECT_NEAR(a.position.y,21-0.6*std::sin(first_approach),1e-9);
   EXPECT_NEAR(yaw(a),std::atan2(b.position.y-a.position.y,b.position.x-a.position.x),1e-9);
   EXPECT_NEAR(yaw(b),std::atan2(21-b.position.y,9.2-b.position.x),1e-9);
-  const auto canceled = payload(invoke(manager,"navigate_through_poses_cancel_navigation",
+  const auto canceled = payload(invoke(manager,"cancel_navigation",
       {{"task_id",data.at("task_id")}}));
   EXPECT_EQ(canceled.at("data").at("status"),"canceling");
   ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));

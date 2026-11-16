@@ -63,10 +63,8 @@ ToolResult NavigationRuntime::startPixelNavigation(const Json & arguments, bool 
       return ToolResult::failure("INVALID_ARGUMENTS", error.what());
     }
   }
-  Json goal{{"frame_id", environment.frame_id}};
-  if (through_pixels) {goal["poses"] = std::move(poses);}
-  else {goal.update(poses.at(0));}
-  const auto started = through_pixels ? start_through_poses_navigation(goal) : start_navigation(goal);
+  Json goal{{"frame_id", environment.frame_id}, {"poses", std::move(poses)}};
+  const auto started = start_navigation(goal);
   // 每批只提交一次 Action，全部像素转换成功之后才发送，接受之后才消费快照。
   if (!started.payload.at("ok").get<bool>()) {
     auto result = ToolResult::failure(
@@ -81,11 +79,15 @@ ToolResult NavigationRuntime::startPixelNavigation(const Json & arguments, bool 
     if (found != environments_.end()) {environments_.erase(found);}
   }
   Json data{{"environment_id", id}, {"task_id", started.payload.at("data").at("task_id")},
-    {"status", started.payload.at("data").at("status")}};
+    {"status", started.payload.at("data").at("status")},
+    {"action", started.payload.at("data").at("action")}};
   if (through_pixels) {
     data["frame_id"] = environment.frame_id;
     data["goals"] = std::move(goal["poses"]);
-  } else {data["goal"] = std::move(goal);}
+  } else {
+    data["goal"] = std::move(goal["poses"].at(0));
+    data["goal"]["frame_id"] = environment.frame_id;
+  }
   return ToolResult::success(std::move(data));
 }
 

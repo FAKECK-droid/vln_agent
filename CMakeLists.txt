@@ -62,12 +62,9 @@ target_link_libraries(vln_agent_tools PRIVATE "${tool_call_typesupport}")
 # 工具插件统一导出到一个库，源码和共享资源仍按 navigation/rgbd 分组。
 add_library(vln_agent_tool_plugins SHARED
   plugins/tools/navigation/navigation_runtime.cpp
-  plugins/tools/navigation/navigate_to_pose_start_navigation.cpp
-  plugins/tools/navigation/navigate_to_pose_get_feedback.cpp
-  plugins/tools/navigation/navigate_to_pose_cancel_navigation.cpp
-  plugins/tools/navigation/navigate_through_poses_start_navigation.cpp
-  plugins/tools/navigation/navigate_through_poses_get_feedback.cpp
-  plugins/tools/navigation/navigate_through_poses_cancel_navigation.cpp
+  plugins/tools/navigation/start_navigation.cpp
+  plugins/tools/navigation/get_navigation_feedback.cpp
+  plugins/tools/navigation/cancel_navigation.cpp
   plugins/tools/navigation/get_surroundings.cpp
   plugins/tools/navigation/get_robot_state.cpp
   plugins/tools/navigation/navigate_to_pixel_start_navigation.cpp

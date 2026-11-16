@@ -82,18 +82,10 @@ protected:
 
   Json group(bool defaults = false)
   {
-    Json functions = Json::array();
-    for (const auto & prefix : {"navigate_to_pose_", "navigate_through_poses_"}) {
-      const std::string cls = std::string(prefix) == "navigate_to_pose_" ?
-        "NavigateToPose" : "NavigateThroughPoses";
-      for (const auto & item : std::vector<std::pair<std::string, std::string>>{
-          {"start_navigation", "StartNavigation"}, {"get_feedback", "GetFeedback"},
-          {"cancel_navigation", "CancelNavigation"}})
-      {
-        functions.push_back({{"name", std::string(prefix) + item.first},
-            {"plugin", "vln_agent/" + cls + item.second}, {"blocking", item.first != "get_feedback"}});
-      }
-    }
+    Json functions = Json::array({
+      {{"name", "start_navigation"}, {"plugin", "vln_agent/StartNavigation"}, {"blocking", true}},
+      {{"name", "get_navigation_feedback"}, {"plugin", "vln_agent/GetNavigationFeedback"}, {"blocking", false}},
+      {{"name", "cancel_navigation"}, {"plugin", "vln_agent/CancelNavigation"}, {"blocking", true}}});
     Json settings{{"action_name", single_name}};
     if (!defaults) {settings["navigate_through_poses_action_name"] = action_name;}
     return {{"id", "navigation"}, {"definition", share + "/plugins/tools/navigation/tool.json"},
@@ -116,7 +108,7 @@ protected:
 
   Json start(ToolManager & manager, const Json & args = arguments())
   {
-    return invoke(manager, "navigate_through_poses_start_navigation", args);
+    return invoke(manager, "start_navigation", args);
   }
 
   Json startReady(ToolManager & manager, const Json & args = arguments())
@@ -131,7 +123,7 @@ protected:
 
   Json feedback(ToolManager & manager, const Json & id)
   {
-    return invoke(manager, "navigate_through_poses_get_feedback", {{"task_id", id}});
+    return invoke(manager, "get_navigation_feedback", {{"task_id", id}});
   }
 
   std::shared_ptr<Goal> goal(std::size_t index)
@@ -232,14 +224,14 @@ TEST_F(NavigateThroughPosesTest, ForwardsFeedbackAndConfirmsCancellationBeforeRe
   EXPECT_NEAR(current.at("pose").at("yaw").get<double>(), 0.5, 1e-9);
 
   reject_cancel = true;
-  EXPECT_EQ(invoke(manager, "navigate_through_poses_cancel_navigation", {{"task_id", id}}).at("code"),
+  EXPECT_EQ(invoke(manager, "cancel_navigation", {{"task_id", id}}).at("code"),
     "NAVIGATION_CANCEL_REJECTED");
   EXPECT_EQ(feedback(manager, id).at("data").at("status"), "running");
   reject_cancel = false;
-  const auto canceled = invoke(manager, "navigate_through_poses_cancel_navigation", {{"task_id", id}});
+  const auto canceled = invoke(manager, "cancel_navigation", {{"task_id", id}});
   EXPECT_TRUE(canceled.at("ok").get<bool>());
   EXPECT_EQ(canceled.at("data").at("status"), "canceling");
-  EXPECT_EQ(invoke(manager, "navigate_through_poses_cancel_navigation", {{"task_id", id}}).
+  EXPECT_EQ(invoke(manager, "cancel_navigation", {{"task_id", id}}).
     at("data").at("status"), "canceling");
   ASSERT_TRUE(eventually([&] {return handle->is_canceling();}));
   handle->canceled(std::make_shared<Action::Result>());
@@ -269,7 +261,7 @@ TEST_F(NavigateThroughPosesTest, RejectsInvalidInputsAndRecoversAfterRejectedGoa
   EXPECT_EQ(rejected.at("code"), "NAVIGATION_REJECTED");
   EXPECT_EQ(rejected.at("data").at("status"), "rejected");
   EXPECT_EQ(feedback(manager, rejected.at("data").at("task_id")).at("code"), "TASK_NOT_FOUND");
-  EXPECT_EQ(invoke(manager, "navigate_through_poses_cancel_navigation", {{"task_id", "missing"}}).
+  EXPECT_EQ(invoke(manager, "cancel_navigation", {{"task_id", "missing"}}).
     at("code"), "TASK_NOT_FOUND");
   const auto next = start(manager);
   ASSERT_TRUE(next.at("ok").get<bool>());
@@ -277,31 +269,33 @@ TEST_F(NavigateThroughPosesTest, RejectsInvalidInputsAndRecoversAfterRejectedGoa
   expectReleased(manager, next.at("data").at("task_id"));
 }
 
-TEST_F(NavigateThroughPosesTest, KeepsActionSpecificFeedbackAndCancel)
+TEST_F(NavigateThroughPosesTest, SelectsActionByPoseCountAndSharesFeedbackAndCancel)
 {
   createServer();
   createSingleServer();
   ToolManager manager(client);
   manager.load(config.config(Json::array({group()})));
-  const auto start_single = [&] {return invoke(manager, "navigate_to_pose_start_navigation",
-      {{"frame_id", "map"}, {"x", 1.0}, {"y", 2.0}, {"yaw", 0.0}});};
-  Json single;
-  ASSERT_TRUE(eventually([&] {single = start_single(); return single.value("ok", false);}));
+  auto single_args = arguments();
+  single_args["poses"].erase(single_args["poses"].begin() + 1, single_args["poses"].end());
+  const auto single = startReady(manager, single_args);
+  ASSERT_TRUE(single.at("ok")) << single;
   const auto single_id = single.at("data").at("task_id");
-  EXPECT_EQ(feedback(manager, single_id).at("code"), "TASK_NOT_FOUND");
-  EXPECT_EQ(invoke(manager, "navigate_through_poses_cancel_navigation", {{"task_id", single_id}}).
-    at("code"), "TASK_NOT_FOUND");
-  ASSERT_TRUE(eventually([&] {std::lock_guard<std::mutex> lock(mutex); return single_goal != nullptr;}));
-  {std::lock_guard<std::mutex> lock(mutex); single_goal->succeed(std::make_shared<SingleAction::Result>());}
-  Json multiple;
-  ASSERT_TRUE(eventually([&] {multiple = start(manager); return multiple.value("ok", false);}));
+  EXPECT_EQ(single.at("data").at("action"), "navigate_to_pose");
+  EXPECT_EQ(feedback(manager, single_id).at("data").at("action"), "navigate_to_pose");
+  ASSERT_TRUE(invoke(manager, "cancel_navigation", {{"task_id", single_id}}).at("ok"));
+  ASSERT_TRUE(eventually([&] {std::lock_guard<std::mutex> lock(mutex); return single_goal && single_goal->is_canceling();}));
+  {std::lock_guard<std::mutex> lock(mutex); single_goal->canceled(std::make_shared<SingleAction::Result>());}
+  expectReleased(manager, single_id);
+
+  const auto multiple = start(manager);
+  ASSERT_TRUE(multiple.at("ok")) << multiple;
   const auto multiple_id = multiple.at("data").at("task_id");
-  EXPECT_EQ(invoke(manager, "navigate_to_pose_get_feedback", {{"task_id", multiple_id}}).
-    at("code"), "TASK_NOT_FOUND");
-  EXPECT_EQ(invoke(manager, "navigate_to_pose_cancel_navigation", {{"task_id", multiple_id}}).
-    at("code"), "TASK_NOT_FOUND");
-  EXPECT_EQ(feedback(manager, multiple_id).at("data").at("status"), "running");
-  goal(0)->succeed(std::make_shared<Action::Result>());
+  EXPECT_EQ(multiple.at("data").at("action"), "navigate_through_poses");
+  EXPECT_EQ(feedback(manager, multiple_id).at("data").at("action"), "navigate_through_poses");
+  ASSERT_TRUE(invoke(manager, "cancel_navigation", {{"task_id", multiple_id}}).at("ok"));
+  const auto handle = goal(0);
+  ASSERT_TRUE(eventually([&] {return handle->is_canceling();}));
+  handle->canceled(std::make_shared<Action::Result>());
   expectReleased(manager, multiple_id);
 }
 

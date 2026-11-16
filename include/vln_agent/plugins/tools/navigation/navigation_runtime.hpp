@@ -39,14 +39,8 @@ public:
   NavigationRuntime(rclcpp::Node & node, const Json & settings);
   ~NavigationRuntime() override;
 
-  /** @brief 等待目标接受或拒绝；接受后返回 task_id，不等待物理导航完成。 */
+  /** @brief poses 含一个位姿时启动单点导航，多个时启动有序多点导航。 */
   ToolResult start_navigation(const Json & arguments);
-  /** @brief 按输入顺序提交多点目标，始终指定自定义多点行为树。 */
-  ToolResult start_through_poses_navigation(const Json & arguments);
-  /** @brief 查询活动多点任务，包含剩余位姿数量。 */
-  ToolResult get_through_poses_feedback(const Json & arguments);
-  /** @brief 请求取消多点任务，最终 Action 结果决定是否已取消。 */
-  ToolResult cancel_through_poses_navigation(const Json & arguments);
   /** @brief 完成八次采图和转向后直接返回环视图与 lookaround_id。 */
   ToolResult lookaround(RgbdRuntime & rgbd, const Json & settings);
   /** @brief 读取活动任务反馈；任务结束后由结果回调释放。 */
@@ -87,7 +81,7 @@ private:
     std::string id;                         ///< 当前导航任务的内部标志。
     GoalHandle::SharedPtr goal;             ///< 单点目标句柄，与多点句柄二选一。
     ThroughPosesGoalHandle::SharedPtr through_poses_goal;  ///< 多点目标句柄。
-    bool through_poses{false};              ///< 区分 Action，避免反馈和取消工具混用。
+    bool through_poses{false};              ///< 反馈与取消按记录的 Action 类型分派。
     std::string status{"running"};          ///< 物理任务状态，不是函数调用状态。
     bool responded{false};                 ///< 是否已经收到目标接受或拒绝回复。
     Json feedback = Json::object();         ///< 最近一次反馈的业务字段。
@@ -110,8 +104,6 @@ private:
   /** @brief 单点与多点像素工具共用验证、快照转换及接受后消费逻辑。 */
   ToolResult startPixelNavigation(const Json & arguments, bool through_pixels);
   ToolResult navigateToObjects(RgbdRuntime & rgbd, const Json & arguments, bool surround);
-  ToolResult getFeedback(const Json & arguments, bool through_poses);
-  ToolResult cancelNavigation(const Json & arguments, bool through_poses);
   /** @brief 持锁生成任务状态和最新反馈结果。 */
   ToolResult snapshot(const std::shared_ptr<Task> & task);
   /** @brief 判断任务是否进入终态。 */

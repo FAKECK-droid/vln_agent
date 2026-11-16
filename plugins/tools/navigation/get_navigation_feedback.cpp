@@ -1,4 +1,4 @@
-#include "vln_agent/plugins/tools/navigation/navigate_to_pose_get_feedback.hpp"
+#include "vln_agent/plugins/tools/navigation/get_navigation_feedback.hpp"
 
 #include <pluginlib/class_list_macros.hpp>
 
@@ -9,21 +9,15 @@ namespace vln_agent
 
 ToolResult NavigationRuntime::get_feedback(const Json & arguments)
 {
-  return getFeedback(arguments, false);
-}
-
-ToolResult NavigationRuntime::getFeedback(const Json & arguments, bool through_poses)
-{
   const auto id = arguments.at("task_id").get<std::string>();
   std::lock_guard<std::mutex> lock(mutex_);
-  if (!task_ || task_->id != id || task_->through_poses != through_poses) {
+  if (!task_ || task_->id != id) {
     return ToolResult::failure("TASK_NOT_FOUND", "未知或已结束的导航任务: " + id);
   }
   return snapshot(task_);
 }
 
-
-void NavigateToPoseGetFeedback::initialize(const ToolContext & context, const Json &)
+void GetNavigationFeedback::initialize(const ToolContext & context, const Json &)
 {
   navigation_ = context.resources->getOrCreate<NavigationRuntime>(
     context.group_id + "/navigation", [&] {
@@ -31,15 +25,11 @@ void NavigateToPoseGetFeedback::initialize(const ToolContext & context, const Js
     });
 }
 
-ToolResult NavigateToPoseGetFeedback::execute(const Json & arguments)
+ToolResult GetNavigationFeedback::execute(const Json & arguments)
 {
   return navigation_->get_feedback(arguments);
 }
 
-void NavigateToPoseGetFeedback::shutdown() noexcept
-{
-}
-
 }  // namespace vln_agent
 
-PLUGINLIB_EXPORT_CLASS(vln_agent::NavigateToPoseGetFeedback, vln_agent::ToolPluginBase)
+PLUGINLIB_EXPORT_CLASS(vln_agent::GetNavigationFeedback, vln_agent::ToolPluginBase)

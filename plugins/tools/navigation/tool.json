@@ -1,83 +1,8 @@
 [
   {
     "type": "function",
-    "name": "navigate_to_pose_start_navigation",
-    "description": "启动单点导航，同类型新目标直接交给 Nav2 抢占，无需先取消。目标被接受后即返回 data.task_id 和 data.status。导航结果由行为树事件上报；任务结束后可直接启动下一个目标。",
-    "async": true,
-    "strict": true,
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "frame_id": {
-          "type": "string",
-          "description": "目标所在坐标系，例如 map。"
-        },
-        "x": {
-          "type": "number",
-          "description": "目标 x 坐标，单位米。"
-        },
-        "y": {
-          "type": "number",
-          "description": "目标 y 坐标，单位米。"
-        },
-        "yaw": {
-          "type": "number",
-          "description": "目标朝向，单位弧度。"
-        }
-      },
-      "required": [
-        "frame_id",
-        "x",
-        "y",
-        "yaw"
-      ],
-      "additionalProperties": false
-    }
-  },
-  {
-    "type": "function",
-    "name": "navigate_to_pose_get_feedback",
-    "description": "查询当前活动导航任务的状态与反馈。反馈数值位于 data，可用的小车位姿位于 pose；任务终态由行为树事件上报。",
-    "async": true,
-    "strict": true,
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "task_id": {
-          "type": "string",
-          "description": "启动导航结果 data.task_id 中的本地任务 ID。"
-        }
-      },
-      "required": [
-        "task_id"
-      ],
-      "additionalProperties": false
-    }
-  },
-  {
-    "type": "function",
-    "name": "navigate_to_pose_cancel_navigation",
-    "description": "请求取消指定导航任务，返回取消请求的处理结果。",
-    "async": true,
-    "strict": true,
-    "parameters": {
-      "type": "object",
-      "properties": {
-        "task_id": {
-          "type": "string",
-          "description": "启动导航结果 data.task_id 中的本地任务 ID。"
-        }
-      },
-      "required": [
-        "task_id"
-      ],
-      "additionalProperties": false
-    }
-  },
-  {
-    "type": "function",
-    "name": "navigate_through_poses_start_navigation",
-    "description": "使用自定义 vln_navthroughgoals.xml 行为树，按 poses 顺序启动连续多点导航，目标被接受后返回 data.task_id/status，不等待导航完成。同类型新目标直接交给 Nav2 抢占，无需先取消；终态由行为树事件上报。",
+    "name": "start_navigation",
+    "description": "按 poses 数量自动启动导航：一个位姿使用 NavigateToPose，多个位姿按顺序使用 NavigateThroughPoses 和自定义多点行为树。同类型新目标直接交给 Nav2 抢占，无需先取消。目标接受后返回 data.task_id/status/action；终态由行为树事件上报。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -125,8 +50,8 @@
   },
   {
     "type": "function",
-    "name": "navigate_through_poses_get_feedback",
-    "description": "查询当前活动多点导航的状态与反馈，包括 data.number_of_poses_remaining，当前小车位姿位于 pose；任务终态由行为树事件上报。",
+    "name": "get_navigation_feedback",
+    "description": "按 task_id 获取当前导航状态与最新反馈，自动识别单点或多点 Action。data.action 标明类型，多点反馈可含 number_of_poses_remaining；可用位姿位于 pose。已结束或被替换的任务返回 TASK_NOT_FOUND。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -134,7 +59,7 @@
       "properties": {
         "task_id": {
           "type": "string",
-          "description": "多点导航启动结果 data.task_id 中的本地任务 ID。"
+          "description": "启动导航结果 data.task_id 中的本地任务 ID。"
         }
       },
       "required": [
@@ -145,8 +70,8 @@
   },
   {
     "type": "function",
-    "name": "navigate_through_poses_cancel_navigation",
-    "description": "请求取消指定多点导航任务，返回取消请求处理状态；canceling 表示请求被接受，最终 Action 结果决定是否已取消。",
+    "name": "cancel_navigation",
+    "description": "按 task_id 请求取消导航，自动选择单点或多点 Action。canceling 表示取消请求被接受，最终 Action 结果决定终态。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -154,7 +79,7 @@
       "properties": {
         "task_id": {
           "type": "string",
-          "description": "多点导航启动结果 data.task_id 中的本地任务 ID。"
+          "description": "启动导航结果 data.task_id 中的本地任务 ID。"
         }
       },
       "required": [
@@ -244,7 +169,7 @@
   {
     "type": "function",
     "name": "navigate_through_pixels_start_navigation",
-    "description": "将同一 get_surroundings 环境图中的 pixels 按输入顺序转换为地图位姿，复用 NavigateThroughPoses 和自定义 vln_navthroughgoals.xml 启动多点导航。每个目标须位于 map_rect 内；点数上限见 get_surroundings 返回的 data.max_pixel_goals（由导航组 max_pixel_goals 配置），超限或任一点无效时整批拒绝，不截断。目标接受后消费 environment_id，返回 data.environment_id/frame_id/goals/task_id/status；使用 navigate_through_poses_get_feedback 和 navigate_through_poses_cancel_navigation 查询或取消。",
+    "description": "将同一 get_surroundings 环境图中的 pixels 按输入顺序转换为地图位姿，通过统一导航入口自动选择 Action：一个像素目标使用 NavigateToPose，多个使用 NavigateThroughPoses 和自定义多点行为树。每个目标须位于 map_rect 内；点数上限见 get_surroundings 返回的 data.max_pixel_goals（由导航组 max_pixel_goals 配置），超限或任一点无效时整批拒绝，不截断。目标接受后消费 environment_id，返回 data.environment_id/frame_id/goals/task_id/status/action；使用 get_navigation_feedback 和 cancel_navigation 查询或取消。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -295,7 +220,7 @@
     "name": "navigate_to_objects",
     "async": true,
     "strict": true,
-    "description": "模型在 capture_pair 返回图上给出各物体实例的框/正负点，本工具复用 depth_project 一次投影全部实例到导航全局系（map_frame，默认 map），生成停靠位姿并启动导航。一个实例使用 NavigateToPose，多个实例按输入顺序使用 NavigateThroughPoses。各实例 stand_off_m 默认 0，正数沿上一导航点（首点为当前小车）到物体的方向退开；中间点 yaw 指向下一导航点，最后一点面向最后物体，零偏移时使用接近方向，位置也重合时保留此前方向。任一实例投影失败则整次不启动导航，返回全部投影明细。成功时返回 data.task_id/status/action/poses/projection，只等待 Action 接受；终态由行为树事件报告。按 data.action 使用对应 navigate_to_pose 或 navigate_through_poses 的反馈/取消工具。",
+    "description": "模型在 capture_pair 返回图上给出各物体实例的框/正负点，本工具复用 depth_project 一次投影全部实例到导航全局系（map_frame，默认 map），生成停靠位姿并启动导航。一个实例使用 NavigateToPose，多个实例按输入顺序使用 NavigateThroughPoses。各实例 stand_off_m 默认 0，正数沿上一导航点（首点为当前小车）到物体的方向退开；中间点 yaw 指向下一导航点，最后一点面向最后物体，零偏移时使用接近方向，位置也重合时保留此前方向。任一实例投影失败则整次不启动导航，返回全部投影明细。成功时返回 data.task_id/status/action/poses/projection，只等待 Action 接受；终态由行为树事件报告。反馈与取消统一使用 get_navigation_feedback、cancel_navigation。",
     "parameters": {
       "type": "object",
       "properties": {
@@ -415,7 +340,7 @@
     "name": "navigate_to_objects_surround",
     "async": true,
     "strict": true,
-    "description": "直接导航至 lookaround 环视拼图中选定的物体。使用 lookaround_id 和完整拼图上的实例框/提示点，自动还原原图、投影到导航地图并生成停靠位姿；复用普通物体导航的 stand_off_m 与朝向策略。单个实例启动 NavigateToPose，多个实例按输入顺序启动 NavigateThroughPoses；任一实例投影失败时整次不启动。按返回 data.action 使用已有单点或多点反馈、取消工具。",
+    "description": "直接导航至 lookaround 环视拼图中选定的物体。使用 lookaround_id 和完整拼图上的实例框/提示点，自动还原原图、投影到导航地图并生成停靠位姿；复用普通物体导航的 stand_off_m 与朝向策略。单个实例启动 NavigateToPose，多个实例按输入顺序启动 NavigateThroughPoses；任一实例投影失败时整次不启动。反馈与取消统一使用 get_navigation_feedback、cancel_navigation。",
     "parameters": {
       "type": "object",
       "properties": {

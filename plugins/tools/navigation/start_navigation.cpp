@@ -1,4 +1,4 @@
-#include "vln_agent/plugins/tools/navigation/navigate_through_poses_start_navigation.hpp"
+#include "vln_agent/plugins/tools/navigation/start_navigation.hpp"
 #include "vln_agent/plugins/tools/navigation/navigation_runtime.hpp"
 
 #include <cmath>
@@ -7,7 +7,7 @@
 namespace vln_agent
 {
 
-ToolResult NavigationRuntime::start_through_poses_navigation(const Json & arguments)
+ToolResult NavigationRuntime::start_navigation(const Json & arguments)
 {
   if (!arguments.contains("frame_id") || !arguments.at("frame_id").is_string() ||
     !arguments.contains("poses") || !arguments.at("poses").is_array() ||
@@ -43,10 +43,15 @@ ToolResult NavigationRuntime::start_through_poses_navigation(const Json & argume
     pose.pose.orientation.w = std::cos(yaw / 2);
     goal.poses.push_back(std::move(pose));
   }
+  if (goal.poses.size() == 1) {
+    Action::Goal single;
+    single.pose = std::move(goal.poses.front());
+    return sendGoal(single);
+  }
   return sendGoal(goal);
 }
 
-void NavigateThroughPosesStartNavigation::initialize(const ToolContext & context, const Json &)
+void StartNavigation::initialize(const ToolContext & context, const Json &)
 {
   navigation_ = context.resources->getOrCreate<NavigationRuntime>(
     context.group_id + "/navigation", [&] {
@@ -54,11 +59,11 @@ void NavigateThroughPosesStartNavigation::initialize(const ToolContext & context
     });
 }
 
-ToolResult NavigateThroughPosesStartNavigation::execute(const Json & arguments)
+ToolResult StartNavigation::execute(const Json & arguments)
 {
-  return navigation_->start_through_poses_navigation(arguments);
+  return navigation_->start_navigation(arguments);
 }
 
 }  // namespace vln_agent
 
-PLUGINLIB_EXPORT_CLASS(vln_agent::NavigateThroughPosesStartNavigation, vln_agent::ToolPluginBase)
+PLUGINLIB_EXPORT_CLASS(vln_agent::StartNavigation, vln_agent::ToolPluginBase)

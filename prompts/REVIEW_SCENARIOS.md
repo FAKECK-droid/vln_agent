@@ -65,7 +65,7 @@ capture_pair 返回 data.pair_id="pair_demo_a"，images[0].metadata 为 width=64
 预期：表面点用于定位，候选停车位可取 (2,0)，朝向目标 yaw=0；z=1.2 不作为底盘高度或停车点。示意参数：
 
 ```json
-{"tool":"navigate_to_pose_start_navigation","arguments":{"frame_id":"map","x":2.0,"y":0.0,"yaw":0.0}}
+{"tool":"start_navigation","arguments":{"frame_id":"map","poses":[{"x":2.0,"y":0.0,"yaw":0.0}]}}
 ```
 
 若 (2,0) 被占据，应换有依据的位置；若用户指定不同距离，应结合要求和现场调整。候选公式不是碰撞检查结果，depth_m 也不能直接替代水平距离。
@@ -162,7 +162,7 @@ env_demo_a 的像素导航启动已接受，随后收到 navigation_failed。
 {"tool":"navigate_to_objects","arguments":{"pair_id":"pair_demo_hall","use_segmentation":false,"instances":[{"box":null,"points":[{"x":150,"y":210,"label":1}],"stand_off_m":1.0},{"box":null,"points":[{"x":470,"y":160,"label":1}],"stand_off_m":1.0}]}}
 ```
 
-收到 `action=navigate_through_poses` 时使用多点反馈/取消接口。若其中一个实例投影失败，本批无导航启动；可修正选点、改用更清晰的帧，或改走有依据的地图路线。若蓝柜和饮水机之间有必须绕过的隔断，改用地图航点表达具体经过位置和绕行侧。
+收到 `action=navigate_through_poses` 时统一使用 get_navigation_feedback 和 cancel_navigation，参数为 task_id。若其中一个实例投影失败，本批无导航启动；可修正选点、改用更清晰的帧，或改走有依据的地图路线。若蓝柜和饮水机之间有必须绕过的隔断，改用地图航点表达具体经过位置和绕行侧。
 
 ### 23. 行进中语义判断与连续衔接
 
@@ -182,7 +182,7 @@ env_demo_a 的像素导航启动已接受，随后收到 navigation_failed。
 
 ### 26. 需要改道或停留时才打断连续段
 
-情况一：行进图像可靠地显示选错门，或用户明确更换路线。预期：按真实 Action 类型取消旧段，确认活动任务释放后从实际位置启动剩余路线；不因同一任务曾结束就宣布用户目标完成。
+情况一：行进图像可靠地显示选错门，或用户明确更换路线。预期：使用 cancel_navigation 和真实 task_id 取消旧段，确认活动任务释放后从实际位置启动剩余路线；不因同一任务曾结束就宣布用户目标完成。
 
 情况二：用户要求“在蓝柜前停住拍一张，再去饮水机”。预期：在蓝柜前结束第一段并完成拍摄，再继续第二段；不能用一个普通途经航点声称机器人已停留拍照，也不为这个检查点额外环视。
 

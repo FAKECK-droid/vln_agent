@@ -22,23 +22,14 @@ tool_manager:
           min_distance_m: 0.1
           max_points: 2000
       functions:
-        - name: navigate_to_pose_start_navigation
-          plugin: vln_agent/NavigateToPoseStartNavigation
+        - name: start_navigation
+          plugin: vln_agent/StartNavigation
           blocking: true
-        - name: navigate_to_pose_get_feedback
-          plugin: vln_agent/NavigateToPoseGetFeedback
+        - name: get_navigation_feedback
+          plugin: vln_agent/GetNavigationFeedback
           blocking: false
-        - name: navigate_to_pose_cancel_navigation
-          plugin: vln_agent/NavigateToPoseCancelNavigation
-          blocking: true
-        - name: navigate_through_poses_start_navigation
-          plugin: vln_agent/NavigateThroughPosesStartNavigation
-          blocking: true
-        - name: navigate_through_poses_get_feedback
-          plugin: vln_agent/NavigateThroughPosesGetFeedback
-          blocking: false
-        - name: navigate_through_poses_cancel_navigation
-          plugin: vln_agent/NavigateThroughPosesCancelNavigation
+        - name: cancel_navigation
+          plugin: vln_agent/CancelNavigation
           blocking: true
         - name: get_robot_state
           plugin: vln_agent/GetRobotState

@@ -159,8 +159,8 @@ Agent 从完整 `response.output[]` 中提交 `function_call`；交互层提取 
     {
       "type": "function_call",
       "call_id": "call_start_1",
-      "name": "navigate_to_pose_start_navigation",
-      "arguments": "{\"frame_id\":\"map\",\"x\":3.0,\"y\":1.0,\"yaw\":0.0}"
+      "name": "start_navigation",
+      "arguments": "{\"frame_id\":\"map\",\"poses\":[{\"x\":3.0,\"y\":1.0,\"yaw\":0.0}]}"
     }
   ]
 }
@@ -197,8 +197,8 @@ tool_manager:
       settings:
         action_name: /navigate_to_pose
       functions:
-        - name: navigate_to_pose_start_navigation
-          plugin: vln_agent/NavigateToPoseStartNavigation
+        - name: start_navigation
+          plugin: vln_agent/StartNavigation
           blocking: true
 ```
 
@@ -224,7 +224,7 @@ tool_manager:
 ```json
 {
   "call_id": "call_start_1",
-  "name": "navigate_to_pose_start_navigation",
+  "name": "start_navigation",
   "sequence": 0,
   "blocking": true,
   "state": "finished",
@@ -287,31 +287,30 @@ string error
 
 ### 4.1 NavigationRuntime
 
-`plugins/tools/navigation` 下的十三个插件共享 NavigateToPose / NavigateThroughPoses Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
+`plugins/tools/navigation` 下的十个插件共享 NavigateToPose / NavigateThroughPoses Action 客户端、TF、代价地图服务客户端、当前任务和环境变换。
 
 | 工具 | 参数 | 结果 |
 | --- | --- | --- |
-| `navigate_to_pose_start_navigation` | `frame_id/x/y/yaw` | `data.task_id/status` |
-| `navigate_to_pose_get_feedback` | `task_id` | `data` 中的最新状态与反馈，可带公共 `pose` |
-| `navigate_to_pose_cancel_navigation` | `task_id` | 取消请求处理状态 |
-| `navigate_through_poses_start_navigation` | `frame_id`、非空 `poses: [{x,y,yaw}, ...]` | `data.task_id/status` |
-| `navigate_through_poses_get_feedback` | `task_id` | 最新状态、反馈、剩余位姿数量，可带公共 `pose` |
-| `navigate_through_poses_cancel_navigation` | `task_id` | 多点导航取消请求处理状态 |
+| `start_navigation` | `frame_id`、非空 `poses: [{x,y,yaw}, ...]` | `data.task_id/status/action`，一个位姿走单点、多个位姿走多点 |
+| `get_navigation_feedback` | `task_id` | 当前导航状态及反馈，自动识别 Action，可带公共 `pose` |
+| `cancel_navigation` | `task_id` | 自动选择对应 Action，返回取消请求处理状态 |
 | `get_robot_state` | `{}` | `pose`、`data.motion/task/tf/camera` |
 | `get_surroundings` | `costmap: local/global`、`range_m` | `data.environment_id`、`pose`、地图 PNG 与 `images[0].metadata` |
-| `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/goal` |
-| `navigate_through_pixels_start_navigation` | `environment_id`、`pixels: [{pixel_x,pixel_y,yaw}, ...]` | `data.environment_id/frame_id/task_id/status/goals` |
+| `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/action/goal` |
+| `navigate_through_pixels_start_navigation` | `environment_id`、`pixels: [{pixel_x,pixel_y,yaw}, ...]` | `data.environment_id/frame_id/task_id/status/action/goals` |
 | `navigate_to_objects` | `pair_id/use_segmentation/instances[]`，实例可含 `stand_off_m` | `data.task_id/status/action/poses/projection` |
 | `navigate_to_objects_surround` | `lookaround_id/use_segmentation/instances[]`，实例可含 `stand_off_m` | 同普通物体导航 |
 | `lookaround` | `{}` | 完成后的环视 JPEG、`data.lookaround_id/views` |
 
-普通导航在 Action 目标接受后返回，任务继续运行。`get_feedback` 返回的数值包括 `distance_remaining_m`、`navigation_time_sec`、`estimated_time_remaining_sec`、`number_of_recoveries`。任务状态为 `running/succeeded/failed/canceling/canceled/rejected`；取消确认后进入 `canceling`，最终 Action 结果决定终态。
+坐标导航统一使用 `start_navigation({frame_id, poses})`。poses 必须为非空数组，一个位姿选择 NavigateToPose，多个位姿选择 NavigateThroughPoses。像素和物体工具也复用该入口。
 
-导航结果由行为树事件上报。启动工具直接向 Nav2 发送目标，由同类型 Action 服务处理抢占，无需先取消。共享资源记录最近提交的任务，收到其终态后释放；`get_feedback` 查询该任务，已结束或被替换的 ID 返回 `TASK_NOT_FOUND`。跨单点/多点 Action 切换由调用方先取消旧类型目标。
+普通导航在 Action 目标接受后返回，任务继续运行。`get_navigation_feedback` 返回的数值包括 `distance_remaining_m`、`navigation_time_sec`、`estimated_time_remaining_sec`、`number_of_recoveries`。任务状态为 `running/succeeded/failed/canceling/canceled/rejected`；取消确认后进入 `canceling`，最终 Action 结果决定终态。
+
+导航结果由行为树事件上报。启动工具直接向 Nav2 发送目标，由同类型 Action 服务处理抢占，无需先取消。共享资源记录最近提交的任务，收到其终态后释放；`get_navigation_feedback` 查询该任务，已结束或被替换的 ID 返回 `TASK_NOT_FOUND`。跨单点/多点 Action 切换由调用方先取消旧类型目标。
 
 多点工具向 `/navigate_through_poses` 提交一个 NavigateThroughPoses 目标，不逐点调用单点导航。所有位姿使用同一 `frame_id` 和采样时间，按 `poses` 数组顺序传递；x/y 单位米，yaw 单位弧度，所有数值必须有限。每次请求显式设置 `behavior_tree`，缺省为 `/home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml`。该路径由 Nav2 服务端读取，开发机无需存在相同绝对路径；组设置可覆盖路径，但不允许空值回退至默认树。
 
-例如启动参数 `{"frame_id":"map","poses":[{"x":1.0,"y":2.0,"yaw":0.0},{"x":3.0,"y":4.0,"yaw":1.57}]}`。接受后用返回的 `data.task_id` 调用对应多点反馈、取消工具；多点工具与单点工具不交叉查询或取消任务。反馈除上述通用字段外还包含 `number_of_poses_remaining`。取消确认仅表示 `canceling`，最终 Action 结果才释放任务槽；成功、失败或取消后的 ID 返回 `TASK_NOT_FOUND`，行为树负责上报导航事件。
+例如启动参数 `{"frame_id":"map","poses":[{"x":1.0,"y":2.0,"yaw":0.0},{"x":3.0,"y":4.0,"yaw":1.57}]}`。接受后统一用返回的 `data.task_id` 调用 `get_navigation_feedback` 和 `cancel_navigation`，调用方无需传入 Action 类型。反馈除上述通用字段外还包含 `number_of_poses_remaining`。取消确认仅表示 `canceling`，最终 Action 结果才释放任务槽；成功、失败或取消后的 ID 返回 `TASK_NOT_FOUND`，行为树负责上报导航事件。
 
 `get_robot_state` 无需任务 ID。`data.motion` 为 `idle/navigate_to_pose/navigate_through_poses/lookaround`，表示本组管理的任务类型；不测量底盘速度。`data.task` 包含活动任务的 `task_id/status/action` 和已有最新反馈，无活动目标时为 null，已结束任务不保留。环视停顿和转向之间仍返回 lookaround。默认配置将 lookaround 设为非阻塞调度，其他工作线程可读取状态或代价地图，也可发送脱困目标。环视转向被 Nav2 中断后，原环视返回 LOOKAROUND_INTERRUPTED。
 
@@ -327,9 +326,9 @@ TF 查询失败、时间回退、相邻采样位置跳变超过 2 米，或采�
 
 像素导航使用完整图片左上角为原点，x 向右、y 向下。选择点位于 `map_rect` 内。`yaw` 直接使用地图弧度：0 向右（+X），π/2 向上（+Y），π 向左，-π/2 向下。机器人转向不改变像素和地图坐标的对应关系；机器人平移后新图会随中心平移。环境 ID 保存该次图片到地图的变换，默认最多 8 个，FIFO 淘汰；目标接受后消费对应 ID。
 
-`navigate_through_pixels_start_navigation` 复用同一快照转换和消费逻辑，将 `pixels` 全部转换后一次性调用多点导航，沿用 `navigate_through_poses_behavior_tree`。每个 yaw 都使用相同的地图朝向约定。例如 `{"environment_id":"env_1","pixels":[{"pixel_x":256,"pixel_y":200,"yaw":0.0},{"pixel_x":300,"pixel_y":180,"yaw":1.57}]}`；实际有效像素范围以该图的 `map_rect` 为准。
+`navigate_through_pixels_start_navigation` 复用同一快照转换和消费逻辑，将 `pixels` 全部转换后一次性调用统一导航入口，一个位姿使用单点 Action，多个位姿使用多点 Action，沿用 `navigate_through_poses_behavior_tree`。每个 yaw 都使用相同的地图朝向约定。例如 `{"environment_id":"env_1","pixels":[{"pixel_x":256,"pixel_y":200,"yaw":0.0},{"pixel_x":300,"pixel_y":180,"yaw":1.57}]}`；实际有效像素范围以该图的 `map_rect` 为准。
 
-单次点数上限使用导航组 `settings.max_pixel_goals` 配置，缺省 8，必须为正整数；`get_surroundings` 同时返回 `data.max_pixel_goals`，供模型按当前上限组织批次。空数组、超限、无效像素或朝向都会整批返回 `INVALID_ARGUMENTS`，不会截断或发送部分目标；数量错误的 `data.max_pixel_goals` 提供当前上限。Action 不可用或拒绝目标时保留环境 ID，可修正后重试；只有目标被接受后才消费该 ID。成功返回 `data.frame_id` 和按输入顺序排列的 `data.goals: [{x,y,yaw}, ...]`，反馈与取消复用 `navigate_through_poses_get_feedback`、`navigate_through_poses_cancel_navigation`。
+单次点数上限使用导航组 `settings.max_pixel_goals` 配置，缺省 8，必须为正整数；`get_surroundings` 同时返回 `data.max_pixel_goals`，供模型按当前上限组织批次。空数组、超限、无效像素或朝向都会整批返回 `INVALID_ARGUMENTS`，不会截断或发送部分目标；数量错误的 `data.max_pixel_goals` 提供当前上限。Action 不可用或拒绝目标时保留环境 ID，可修正后重试；只有目标被接受后才消费该 ID。成功返回 `data.frame_id` 和按输入顺序排列的 `data.goals: [{x,y,yaw}, ...]`，反馈与取消统一使用 `get_navigation_feedback`、`cancel_navigation`。
 
 `navigate_to_objects` 接收 capture_pair 图片上模型检测得到的实例提示。参数与 depth_project 共用 pair_id、use_segmentation 和实例 box/points，投影坐标系固定为导航 map_frame，模型省去 target_frame。每个实例可指定 stand_off_m（米），缺省 0；模型 Schema 也允许 null 表示 0。例如：
 
@@ -354,9 +353,9 @@ TF 查询失败、时间回退、相邻采样位置跳变超过 2 米，或采�
 
 一次 depth_project 完成全部实例的分割与三维均值，继续共享 pair 解码、标定射线及 SAM 图像特征。全部成功后按顺序生成停靠点：首点以当前小车位置为参照，后续点以前一停靠点为参照，沿参照点到物体投影的水平连线后退 stand_off_m。0 直接使用投影 x/y；地面导航使用 x/y，投影中的 z 保留在结果内。中间停靠点 yaw 指向下一停靠点；最后一点面向最后物体，零偏移时采用接近方向，两点重合时延续此前方向。
 
-一个实例复用 start_navigation，多个实例复用 start_through_poses_navigation，后者沿用配置的多点行为树。存在活动导航时仍执行投影并向 Nav2 发送新目标，同类型抢占由 Nav2 处理。任一实例投影失败时整次不启动，结果保留全部投影明细；Nav2 接受、拒绝及执行终态继续沿用现有 Action/行为树流程。
+所有实例统一传给 start_navigation，由 poses 数量选择 Action；多点沿用配置的多点行为树。存在活动导航时仍执行投影并向 Nav2 发送新目标，同类型抢占由 Nav2 处理。任一实例投影失败时整次不启动，结果保留全部投影明细；Nav2 接受、拒绝及执行终态继续沿用现有 Action/行为树流程。
 
-成功结果的 data 含 task_id、status、action（navigate_to_pose 或 navigate_through_poses）、frame_id、poses 和 projection。poses 是实际发送的有序 x/y/yaw，projection 是完整 depth_project 的 data。按 action 使用相应前缀的反馈和取消工具。函数 settings.rgbd_resource 默认 rgbd/rgbd，执行时查询已有资源，工具组装载顺序可独立安排。纯几何生成完成后直接提交给 Nav2，规划与到达判定由已配置的规划器、控制器和目标检查器处理。navigation 与 RGB-D 工具统一编译到 vln_agent_tool_plugins，pluginlib 使用同一库装载所有工具注册；源码和共享资源继续按组保存。
+成功结果的 data 含 task_id、status、action（navigate_to_pose 或 navigate_through_poses）、frame_id、poses 和 projection。poses 是实际发送的有序 x/y/yaw，projection 是完整 depth_project 的 data。反馈与取消统一使用 get_navigation_feedback 和 cancel_navigation。函数 settings.rgbd_resource 默认 rgbd/rgbd，执行时查询已有资源，工具组装载顺序可独立安排。纯几何生成完成后直接提交给 Nav2，规划与到达判定由已配置的规划器、控制器和目标检查器处理。navigation 与 RGB-D 工具统一编译到 vln_agent_tool_plugins，pluginlib 使用同一库装载所有工具注册；源码和共享资源继续按组保存。
 
 `lookaround` 在工具内部完成环视，不再调用环视行为树或提交环视事件。每个视角停顿、保存原始 RGB-D 图像对后，复用 NavigateToPose 转向 45° 并等待终态；八轮后回到初始朝向，直接返回逆时针 3×3 拼图和环视 ID。正常采集按顺序执行，脱困单点目标可交给 Nav2 抢占当前转向。旧的 `start_lookaround` 与 `cancel_lookaround` 已移除。
 
@@ -385,7 +384,7 @@ TF 查询失败、时间回退、相邻采样位置跳变超过 2 米，或采�
 
 导航动作函数的实现位于各插件 `.cpp`；`navigation_runtime.cpp` 管理资源生命周期和通用状态。
 
-`navigate_to_objects_surround` 直接使用环视图上的实例提示；传入 `lookaround_id`、`use_segmentation` 和 `instances`，无需手动转回目标视角或重新采图。它与基于 pair 的物体导航共用停靠距离、朝向生成及单点/多点 Action 提交代码，只切换为环视投影入口。各视角投影保留输入实例顺序；任一实例失败时整次不启动，结果保留投影明细。多点导航沿用已配置的自定义行为树，反馈和取消按返回的 `data.action` 选择已有工具。
+`navigate_to_objects_surround` 直接使用环视图上的实例提示；传入 `lookaround_id`、`use_segmentation` 和 `instances`，无需手动转回目标视角或重新采图。它与基于 pair 的物体导航共用停靠距离、朝向生成及单点/多点 Action 提交代码，只切换为环视投影入口。各视角投影保留输入实例顺序；任一实例失败时整次不启动，结果保留投影明细。多点导航沿用已配置的自定义行为树，反馈和取消统一使用 get_navigation_feedback 和 cancel_navigation。
 
 ### 4.2 RgbdRuntime
 

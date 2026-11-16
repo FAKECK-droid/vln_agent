@@ -87,10 +87,7 @@ ToolResult NavigationRuntime::navigateToObjects(
     poses.push_back({{"x", goal.x}, {"y", goal.y}, {"yaw", goal.yaw}});
   }
   const bool multiple = poses.size() > 1;
-  auto started = multiple ?
-    start_through_poses_navigation({{"frame_id", map_frame_}, {"poses", poses}}) :
-    start_navigation({{"frame_id", map_frame_}, {"x", poses.front().at("x")},
-        {"y", poses.front().at("y")}, {"yaw", poses.front().at("yaw")}});
+  auto started = start_navigation({{"frame_id", map_frame_}, {"poses", poses}});
   auto & data = started.payload["data"];
   data["action"] = multiple ? "navigate_through_poses" : "navigate_to_pose";
   data["frame_id"] = map_frame_;

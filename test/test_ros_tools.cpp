@@ -111,16 +111,10 @@ protected:
 
   Json navigationGroup()
   {
-    Json functions = Json::array();
-    for (const auto & suffix : {"start_navigation", "get_feedback", "cancel_navigation"}) {
-      std::string class_name = std::string(suffix) == "start_navigation" ?
-        "NavigateToPoseStartNavigation" : std::string(suffix) == "get_feedback" ?
-        "NavigateToPoseGetFeedback" : "NavigateToPoseCancelNavigation";
-      functions.push_back({
-          {"name", std::string("navigate_to_pose_") + suffix},
-          {"plugin", "vln_agent/" + class_name},
-          {"blocking", std::string(suffix) != "get_feedback"}});
-    }
+    Json functions = Json::array({
+      {{"name", "start_navigation"}, {"plugin", "vln_agent/StartNavigation"}, {"blocking", true}},
+      {{"name", "get_navigation_feedback"}, {"plugin", "vln_agent/GetNavigationFeedback"}, {"blocking", false}},
+      {{"name", "cancel_navigation"}, {"plugin", "vln_agent/CancelNavigation"}, {"blocking", true}}});
     return {{"id", "navigation"},
       {"definition", share + "/plugins/tools/navigation/tool.json"},
       {"settings", {{"action_name", action_name}}},
@@ -159,13 +153,6 @@ protected:
     auto group = surroundingsGroup();
     group["settings"]["navigate_through_poses_action_name"] = action_name + "_through";
     group["settings"]["max_pixel_goals"] = limit;
-    for (const auto & item : std::vector<std::pair<std::string, std::string>>{
-        {"get_feedback", "GetFeedback"}, {"cancel_navigation", "CancelNavigation"}})
-    {
-      group["functions"].push_back({{"name", "navigate_through_poses_" + item.first},
-          {"plugin", "vln_agent/NavigateThroughPoses" + item.second},
-          {"blocking", item.first != "get_feedback"}});
-    }
     group["functions"].push_back({{"name", "navigate_through_pixels_start_navigation"},
         {"plugin", "vln_agent/NavigateThroughPixelsStartNavigation"}, {"blocking", true}});
     return group;
@@ -191,7 +178,7 @@ protected:
 
   Json throughFeedback(ToolManager & manager, const Json & id)
   {
-    return payload(invoke(manager, "navigate_through_poses_get_feedback", {{"task_id", id}}));
+    return payload(invoke(manager, "get_navigation_feedback", {{"task_id", id}}));
   }
 
   void createCostmapServers(double yaw_in_odom = 0)
@@ -251,13 +238,13 @@ protected:
 
   Json start(ToolManager & manager, double x = 1.0)
   {
-    return payload(invoke(manager, "navigate_to_pose_start_navigation",
-        {{"frame_id", "map"}, {"x", x}, {"y", 2.0}, {"yaw", 0.5}}));
+    return payload(invoke(manager, "start_navigation",
+        {{"frame_id", "map"}, {"poses", Json::array({{{"x", x}, {"y", 2.0}, {"yaw", 0.5}}})}}));
   }
 
   Json feedback(ToolManager & manager, const Json & id)
   {
-    return payload(invoke(manager, "navigate_to_pose_get_feedback", {{"task_id", id}}));
+    return payload(invoke(manager, "get_navigation_feedback", {{"task_id", id}}));
   }
 
   Json trailGroup(std::size_t max_points = 4)
@@ -357,8 +344,7 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
   manager.load(share + "/config/agent.yaml");
   const auto tools = manager.getTools();
   const std::vector<std::string> names{
-    "navigate_to_pose_start_navigation", "navigate_to_pose_get_feedback", "navigate_to_pose_cancel_navigation",
-    "navigate_through_poses_start_navigation", "navigate_through_poses_get_feedback", "navigate_through_poses_cancel_navigation",
+    "start_navigation", "get_navigation_feedback", "cancel_navigation",
     "get_robot_state", "get_surroundings", "navigate_to_pixel_start_navigation", "navigate_through_pixels_start_navigation",
     "navigate_to_objects", "navigate_to_objects_surround", "lookaround",
     "capture_pair", "depth_project", "depth_project_surround"};
@@ -482,8 +468,6 @@ TEST_F(RosToolsTest, RobotStateTracksSingleAndMultiGoalFeedbackAndCancellation)
   createServer(); createThroughServer();
   auto group = stateGroup();
   group["settings"]["navigate_through_poses_action_name"] = action_name + "_through";
-  group["functions"].push_back({{"name", "navigate_through_poses_start_navigation"},
-      {"plugin", "vln_agent/NavigateThroughPosesStartNavigation"}, {"blocking", true}});
   ToolManager manager(client_node);
   manager.load(config.config(Json::array({group})));
   Json started;
@@ -506,14 +490,14 @@ TEST_F(RosToolsTest, RobotStateTracksSingleAndMultiGoalFeedbackAndCancellation)
   EXPECT_EQ(current.at("data").at("task").at("action"), "navigate_to_pose");
   EXPECT_DOUBLE_EQ(current.at("data").at("task").at("distance_remaining_m"), 5);
   EXPECT_FALSE(current.contains("pose"));
-  ASSERT_TRUE(payload(invoke(manager, "navigate_to_pose_cancel_navigation", {{"task_id", id}})).at("ok"));
+  ASSERT_TRUE(payload(invoke(manager, "cancel_navigation", {{"task_id", id}})).at("ok"));
   EXPECT_EQ(state(manager).at("data").at("task").at("status"), "canceling");
   ASSERT_TRUE(eventually([&] {return single->is_canceling();}));
   single->canceled(std::make_shared<Action::Result>());
   ASSERT_TRUE(eventually([&] {return state(manager).at("data").at("motion") == "idle";}));
 
-  const auto multi = payload(invoke(manager, "navigate_through_poses_start_navigation",
-      {{"frame_id", "map"}, {"poses", Json::array({{{"x", 1}, {"y", 2}, {"yaw", 0}}})}}));
+  const auto multi = payload(invoke(manager, "start_navigation",
+      {{"frame_id", "map"}, {"poses", Json::array({{{"x", 1}, {"y", 2}, {"yaw", 0}}, {{"x", 3}, {"y", 4}, {"yaw", 0}}})}}));
   ASSERT_TRUE(multi.at("ok")) << multi;
   const auto through = throughGoal(0);
   auto remaining = std::make_shared<ThroughAction::Feedback>();
@@ -561,7 +545,7 @@ TEST_F(RosToolsTest, KeepsActiveFeedbackAndRestartsAfterCancelAndSuccessWithoutP
   EXPECT_DOUBLE_EQ(current.at("pose").at("y").get<double>(), 2.3);
   EXPECT_NEAR(current.at("pose").at("yaw").get<double>(), 0.5, 1e-6);
 
-  const auto cancel = payload(invoke(manager, "navigate_to_pose_cancel_navigation", {{"task_id", id}}));
+  const auto cancel = payload(invoke(manager, "cancel_navigation", {{"task_id", id}}));
   EXPECT_TRUE(cancel.at("ok").get<bool>());
   EXPECT_EQ(cancel.at("data").at("status"), "canceling");
   EXPECT_EQ(feedback(manager, id).at("data").at("status"), "canceling");
@@ -626,7 +610,7 @@ TEST_F(RosToolsTest, RestartsAfterAbortedNavigationWithoutReadingTerminalFeedbac
       next = start(manager);
       return next.value("ok", false);
     }));
-  const auto cancel = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
+  const auto cancel = payload(invoke(manager, "cancel_navigation",
       {{"task_id", accepted.at("data").at("task_id")}}));
   EXPECT_EQ(cancel.at("code"), "TASK_NOT_FOUND");
   goal(1)->succeed(std::make_shared<Action::Result>());
@@ -862,7 +846,7 @@ TEST_F(RosToolsTest, ThroughPixelsUsesOneSnapshotAndReusesMultiGoalFeedbackAndCa
   accepted->publish_feedback(feedback_sample);
   ASSERT_TRUE(eventually([&] {return throughFeedback(manager, id).at("data").contains("number_of_poses_remaining");}));
   EXPECT_EQ(throughFeedback(manager, id).at("data").at("number_of_poses_remaining"), 1);
-  const auto canceled = payload(invoke(manager, "navigate_through_poses_cancel_navigation", {{"task_id", id}}));
+  const auto canceled = payload(invoke(manager, "cancel_navigation", {{"task_id", id}}));
   EXPECT_EQ(canceled.at("data").at("status"), "canceling");
   ASSERT_TRUE(eventually([&] {return accepted->is_canceling();}));
   accepted->canceled(std::make_shared<ThroughAction::Result>());
@@ -923,6 +907,26 @@ TEST_F(RosToolsTest, ThroughPixelsKeepsSnapshotWhenUnavailableOrRejected)
   throughGoal(0)->succeed(std::make_shared<ThroughAction::Result>());
   EXPECT_TRUE(eventually([&] {return throughFeedback(manager, accepted.at("data").at("task_id")).
         value("code", "") == "TASK_NOT_FOUND";}));
+}
+
+TEST_F(RosToolsTest, OnePixelInBatchUsesSingleActionAndUnifiedCancellation)
+{
+  createServer();
+  createCostmapServers();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({throughPixelsGroup()})));
+  auto arguments = throughPixelsArguments(surroundings(manager));
+  arguments["pixels"].erase(1);
+  const auto started = throughPixels(manager, arguments);
+  ASSERT_TRUE(started.at("ok")) << started;
+  EXPECT_EQ(started.at("data").at("action"), "navigate_to_pose");
+  const auto id = started.at("data").at("task_id");
+  EXPECT_EQ(feedback(manager, id).at("data").at("action"), "navigate_to_pose");
+  const auto handle = goal(0);
+  ASSERT_TRUE(payload(invoke(manager, "cancel_navigation", {{"task_id", id}})).at("ok"));
+  ASSERT_TRUE(eventually([&] {return handle->is_canceling();}));
+  handle->canceled(std::make_shared<Action::Result>());
+  EXPECT_TRUE(eventually([&] {return feedback(manager, id).value("code", "") == "TASK_NOT_FOUND";}));
 }
 
 TEST_F(RosToolsTest, ThroughPixelsDefaultsToEightGoals)

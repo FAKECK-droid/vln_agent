@@ -1,4 +1,4 @@
-#include "vln_agent/plugins/tools/navigation/navigate_to_pose_cancel_navigation.hpp"
+#include "vln_agent/plugins/tools/navigation/cancel_navigation.hpp"
 
 #include <action_msgs/srv/cancel_goal.hpp>
 #include <pluginlib/class_list_macros.hpp>
@@ -10,11 +10,6 @@ namespace vln_agent
 
 ToolResult NavigationRuntime::cancel_navigation(const Json & arguments)
 {
-  return cancelNavigation(arguments, false);
-}
-
-ToolResult NavigationRuntime::cancelNavigation(const Json & arguments, bool through_poses)
-{
   const auto id = arguments.at("task_id").get<std::string>();
   std::shared_ptr<Task> task;
   GoalHandle::SharedPtr goal;
@@ -22,7 +17,7 @@ ToolResult NavigationRuntime::cancelNavigation(const Json & arguments, bool thro
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
-    if (!task_ || task_->id != id || task_->through_poses != through_poses) {
+    if (!task_ || task_->id != id) {
       return ToolResult::failure("TASK_NOT_FOUND", "未知或已消费的导航任务: " + id);
     }
     task = task_;
@@ -53,7 +48,7 @@ ToolResult NavigationRuntime::cancelNavigation(const Json & arguments, bool thro
           self->condition_.notify_all();
         }
       };
-    if (through_poses) {through_poses_client_->async_cancel_goal(through_poses_goal, callback);}
+    if (task->through_poses) {through_poses_client_->async_cancel_goal(through_poses_goal, callback);}
     else {client_->async_cancel_goal(goal, callback);}
   } catch (const rclcpp_action::exceptions::UnknownGoalHandleError &) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -73,8 +68,7 @@ ToolResult NavigationRuntime::cancelNavigation(const Json & arguments, bool thro
   return snapshot(task);
 }
 
-
-void NavigateToPoseCancelNavigation::initialize(const ToolContext & context, const Json &)
+void CancelNavigation::initialize(const ToolContext & context, const Json &)
 {
   navigation_ = context.resources->getOrCreate<NavigationRuntime>(
     context.group_id + "/navigation", [&] {
@@ -82,15 +76,11 @@ void NavigateToPoseCancelNavigation::initialize(const ToolContext & context, con
     });
 }
 
-ToolResult NavigateToPoseCancelNavigation::execute(const Json & arguments)
+ToolResult CancelNavigation::execute(const Json & arguments)
 {
   return navigation_->cancel_navigation(arguments);
 }
 
-void NavigateToPoseCancelNavigation::shutdown() noexcept
-{
-}
-
 }  // namespace vln_agent
 
-PLUGINLIB_EXPORT_CLASS(vln_agent::NavigateToPoseCancelNavigation, vln_agent::ToolPluginBase)
+PLUGINLIB_EXPORT_CLASS(vln_agent::CancelNavigation, vln_agent::ToolPluginBase)

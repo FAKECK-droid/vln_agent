@@ -261,6 +261,7 @@ ToolResult NavigationRuntime::snapshot(const std::shared_ptr<Task> & task)
   Json payload = task->feedback;
   payload["task_id"] = task->id;
   payload["status"] = task->status;
+  payload["action"] = task->through_poses ? "navigate_through_poses" : "navigate_to_pose";
   auto result = ToolResult::success(std::move(payload));
   if (!task->pose.is_null()) {result.payload["pose"] = task->pose;}
   return result;
