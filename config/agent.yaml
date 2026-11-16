@@ -16,7 +16,7 @@ tool_manager:
         costmap_timeout_sec: 2.0
         image_size: 512
         max_environments: 8
-        max_pixel_goals: 8  # 单次多点像素导航的最大点数，必须为正整数
+        max_pixel_goals: 16  # 单次多点像素导航的最大点数，必须为正整数
         trail:
           sample_interval_sec: 0.5
           min_distance_m: 0.1
