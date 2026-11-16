@@ -127,9 +127,6 @@ ToolResult NavigationRuntime::sendActionGoal(
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
-    if (task_ || (lookaround_running_ && !wait_for_result)) {
-      return ToolResult::failure("NAVIGATION_BUSY", "已有活动导航任务");
-    }
     task = std::make_shared<Task>();
     task->through_poses = through_poses;
     task->id = std::string(through_poses ? "nav_through_poses_" : "nav_") +

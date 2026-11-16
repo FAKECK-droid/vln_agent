@@ -542,7 +542,6 @@ TEST_F(RosToolsTest, KeepsActiveFeedbackAndRestartsAfterCancelAndSuccessWithoutP
   const auto first_goal = goal(0);
   EXPECT_EQ(first_goal->get_goal()->pose.header.frame_id, "map");
   EXPECT_NEAR(first_goal->get_goal()->pose.pose.orientation.z, std::sin(0.25), 1e-6);
-  EXPECT_EQ(start(manager).at("code"), "NAVIGATION_BUSY");
 
   auto observation = std::make_shared<Action::Feedback>();
   observation->distance_remaining = 12.5;
@@ -587,6 +586,26 @@ TEST_F(RosToolsTest, KeepsActiveFeedbackAndRestartsAfterCancelAndSuccessWithoutP
   ASSERT_TRUE(eventually([&] {
       return feedback(manager, after_success.at("data").at("task_id")).value("code", "") == "TASK_NOT_FOUND";
     }));
+}
+
+TEST_F(RosToolsTest, SendsReplacementSingleGoalWithoutCancelingAndIgnoresOldResult)
+{
+  createServer();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({navigationGroup()})));
+  const auto first = start(manager);
+  ASSERT_TRUE(first.at("ok")) << first;
+  const auto previous = goal(0);
+  const auto replacement = start(manager, 3.0);
+  ASSERT_TRUE(replacement.at("ok")) << replacement;
+  const auto id = replacement.at("data").at("task_id");
+  EXPECT_NE(id, first.at("data").at("task_id"));
+  EXPECT_FALSE(previous->is_canceling());
+  EXPECT_DOUBLE_EQ(goal(1)->get_goal()->pose.pose.position.x, 3.0);
+  previous->abort(std::make_shared<Action::Result>());
+  EXPECT_EQ(feedback(manager, id).at("data").at("status"), "running");
+  goal(1)->succeed(std::make_shared<Action::Result>());
+  EXPECT_TRUE(eventually([&] {return feedback(manager, id).value("code", "") == "TASK_NOT_FOUND";}));
 }
 
 TEST_F(RosToolsTest, RestartsAfterAbortedNavigationWithoutReadingTerminalFeedback)
@@ -882,7 +901,7 @@ TEST_F(RosToolsTest, ThroughPixelsRejectsInvalidBatchAtomicallyAndEnforcesConfig
         value("code", "") == "TASK_NOT_FOUND";}));
 }
 
-TEST_F(RosToolsTest, ThroughPixelsKeepsSnapshotWhenUnavailableBusyOrRejected)
+TEST_F(RosToolsTest, ThroughPixelsKeepsSnapshotWhenUnavailableOrRejected)
 {
   createServer();
   createCostmapServers();
@@ -893,7 +912,6 @@ TEST_F(RosToolsTest, ThroughPixelsKeepsSnapshotWhenUnavailableBusyOrRejected)
   createThroughServer();
   const auto single = start(manager);
   ASSERT_TRUE(single.at("ok").get<bool>());
-  EXPECT_EQ(throughPixels(manager, arguments).at("code"), "NAVIGATION_BUSY");
   goal(0)->succeed(std::make_shared<Action::Result>());
   ASSERT_TRUE(eventually([&] {return feedback(manager, single.at("data").at("task_id")).
         value("code", "") == "TASK_NOT_FOUND";}));

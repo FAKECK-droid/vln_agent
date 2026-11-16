@@ -2,7 +2,7 @@
   {
     "type": "function",
     "name": "navigate_to_pose_start_navigation",
-    "description": "启动导航，目标被接受后即返回 data.task_id 和 data.status。导航结果由行为树事件上报；任务结束后可直接启动下一个目标。",
+    "description": "启动单点导航，同类型新目标直接交给 Nav2 抢占，无需先取消。目标被接受后即返回 data.task_id 和 data.status。导航结果由行为树事件上报；任务结束后可直接启动下一个目标。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -77,7 +77,7 @@
   {
     "type": "function",
     "name": "navigate_through_poses_start_navigation",
-    "description": "使用自定义 vln_navthroughgoals.xml 行为树，按 poses 顺序启动连续多点导航，目标被接受后返回 data.task_id/status，不等待导航完成。与单点导航和环顾共用一个活动任务槽；终态由行为树事件上报。",
+    "description": "使用自定义 vln_navthroughgoals.xml 行为树，按 poses 顺序启动连续多点导航，目标被接受后返回 data.task_id/status，不等待导航完成。同类型新目标直接交给 Nav2 抢占，无需先取消；终态由行为树事件上报。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -533,7 +533,7 @@
   {
     "type": "function",
     "name": "lookaround",
-    "description": "完成当前位置八个视角的采图与每次45度逆时针转向，回到初始朝向后直接返回环视图和 data.lookaround_id。共享资源保存最近一轮八对原始 RGB-D 图像，供 depth_project_surround 使用。函数执行至整轮完成，不依赖环视事件。",
+    "description": "完成当前位置八个视角的采图与每次45度逆时针转向，回到初始朝向后直接返回环视图和 data.lookaround_id。共享资源保存最近一轮八对原始 RGB-D 图像，供 depth_project_surround 使用。函数执行至整轮完成；默认非阻塞调度，受阻时可读取代价地图并发送单点脱困目标抢占转向。转向中断则返回 LOOKAROUND_INTERRUPTED。",
     "async": true,
     "strict": true,
     "parameters": {

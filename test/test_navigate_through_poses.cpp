@@ -241,7 +241,6 @@ TEST_F(NavigateThroughPosesTest, ForwardsFeedbackAndConfirmsCancellationBeforeRe
   EXPECT_EQ(canceled.at("data").at("status"), "canceling");
   EXPECT_EQ(invoke(manager, "navigate_through_poses_cancel_navigation", {{"task_id", id}}).
     at("data").at("status"), "canceling");
-  EXPECT_EQ(start(manager).at("code"), "NAVIGATION_BUSY");
   ASSERT_TRUE(eventually([&] {return handle->is_canceling();}));
   handle->canceled(std::make_shared<Action::Result>());
   expectReleased(manager, id);
@@ -278,7 +277,7 @@ TEST_F(NavigateThroughPosesTest, RejectsInvalidInputsAndRecoversAfterRejectedGoa
   expectReleased(manager, next.at("data").at("task_id"));
 }
 
-TEST_F(NavigateThroughPosesTest, SharesBusySlotAndKeepsActionSpecificFeedbackAndCancel)
+TEST_F(NavigateThroughPosesTest, KeepsActionSpecificFeedbackAndCancel)
 {
   createServer();
   createSingleServer();
@@ -289,7 +288,6 @@ TEST_F(NavigateThroughPosesTest, SharesBusySlotAndKeepsActionSpecificFeedbackAnd
   Json single;
   ASSERT_TRUE(eventually([&] {single = start_single(); return single.value("ok", false);}));
   const auto single_id = single.at("data").at("task_id");
-  EXPECT_EQ(start(manager).at("code"), "NAVIGATION_BUSY");
   EXPECT_EQ(feedback(manager, single_id).at("code"), "TASK_NOT_FOUND");
   EXPECT_EQ(invoke(manager, "navigate_through_poses_cancel_navigation", {{"task_id", single_id}}).
     at("code"), "TASK_NOT_FOUND");
@@ -298,7 +296,6 @@ TEST_F(NavigateThroughPosesTest, SharesBusySlotAndKeepsActionSpecificFeedbackAnd
   Json multiple;
   ASSERT_TRUE(eventually([&] {multiple = start(manager); return multiple.value("ok", false);}));
   const auto multiple_id = multiple.at("data").at("task_id");
-  EXPECT_EQ(start_single().at("code"), "NAVIGATION_BUSY");
   EXPECT_EQ(invoke(manager, "navigate_to_pose_get_feedback", {{"task_id", multiple_id}}).
     at("code"), "TASK_NOT_FOUND");
   EXPECT_EQ(invoke(manager, "navigate_to_pose_cancel_navigation", {{"task_id", multiple_id}}).
@@ -306,6 +303,28 @@ TEST_F(NavigateThroughPosesTest, SharesBusySlotAndKeepsActionSpecificFeedbackAnd
   EXPECT_EQ(feedback(manager, multiple_id).at("data").at("status"), "running");
   goal(0)->succeed(std::make_shared<Action::Result>());
   expectReleased(manager, multiple_id);
+}
+
+TEST_F(NavigateThroughPosesTest, SendsReplacementMultiGoalWithoutCancelingAndIgnoresOldResult)
+{
+  createServer();
+  ToolManager manager(client);
+  manager.load(config.config(Json::array({group()})));
+  const auto first = startReady(manager);
+  ASSERT_TRUE(first.at("ok")) << first;
+  const auto previous = goal(0);
+  auto updated = arguments();
+  updated["poses"][0]["x"] = 8.0;
+  const auto replacement = start(manager, updated);
+  ASSERT_TRUE(replacement.at("ok")) << replacement;
+  const auto id = replacement.at("data").at("task_id");
+  EXPECT_NE(id, first.at("data").at("task_id"));
+  EXPECT_FALSE(previous->is_canceling());
+  EXPECT_DOUBLE_EQ(goal(1)->get_goal()->poses.front().pose.position.x, 8.0);
+  previous->abort(std::make_shared<Action::Result>());
+  EXPECT_EQ(feedback(manager, id).at("data").at("status"), "running");
+  goal(1)->succeed(std::make_shared<Action::Result>());
+  expectReleased(manager, id);
 }
 
 TEST_F(NavigateThroughPosesTest, ReportsUnavailableServerAndCancelsActiveGoalOnShutdown)

@@ -22,7 +22,6 @@ ToolResult NavigationRuntime::lookaround(RgbdRuntime & rgbd, const Json & settin
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
-    if (task_ || lookaround_running_) {return ToolResult::failure("NAVIGATION_BUSY", "已有活动导航任务");}
     lookaround_running_ = true;
   }
   const auto release = [this] {

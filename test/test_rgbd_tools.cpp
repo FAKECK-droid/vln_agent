@@ -624,8 +624,6 @@ TEST_F(ObjectNavigationTest, DefaultsToSurfaceAndUsesSingleActionWithSharedCance
   EXPECT_NEAR(pose.pose.position.y, 21, 1e-9);
   EXPECT_DOUBLE_EQ(pose.pose.position.z, 0);
   EXPECT_NEAR(yaw(pose.pose), std::atan2(14, 3.2), 1e-9);
-  // 活动普通导航阻止复合调用；即使要求分割也应直接返回。
-  EXPECT_EQ(navigate(manager, id, Json::array({instance(5, 4)}), true).at("code"), "NAVIGATION_BUSY");
   const auto canceled = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
       {{"task_id", data.at("task_id")}}));
   ASSERT_TRUE(canceled.at("ok"));
@@ -657,8 +655,6 @@ TEST_F(ObjectNavigationTest, OffsetsOrderedGoalsPointsIntermediateYawForwardAndF
   EXPECT_NEAR(request.poses[1].pose.position.y, by, 1e-9);
   EXPECT_NEAR(yaw(request.poses[1].pose), approach_b, 1e-9);
   EXPECT_EQ(request.poses[0].header.stamp, request.poses[1].header.stamp);
-  EXPECT_EQ(payload(invoke(manager, "navigate_to_pose_start_navigation",
-      {{"frame_id", "rgbd_test_map"}, {"x", 1}, {"y", 2}, {"yaw", 0}})).at("code"), "NAVIGATION_BUSY");
   const auto canceled = payload(invoke(manager, "navigate_through_poses_cancel_navigation",
       {{"task_id", result.at("data").at("task_id")}}));
   ASSERT_TRUE(canceled.at("ok")); ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
@@ -853,10 +849,6 @@ TEST_F(ObjectNavigationTest, LookaroundWaitsForTurnAndShutdownCancelsWithoutPubl
   const auto state = payload(invoke(manager, "get_robot_state", Json::object()));
   EXPECT_EQ(state.at("data").at("motion"), "lookaround");
   EXPECT_EQ(state.at("data").at("task").at("action"), "navigate_to_pose");
-  const auto blocked = payload(invoke(manager, "navigate_to_pose_start_navigation",
-      {{"frame_id", "rgbd_test_map"}, {"x", 6}, {"y", 7}, {"yaw", 0}}));
-  EXPECT_EQ(blocked.at("code"), "NAVIGATION_BUSY");
-  EXPECT_EQ(payload(invoke(manager, "lookaround", Json::object())).at("code"), "NAVIGATION_BUSY");
   const auto started = std::chrono::steady_clock::now();
   manager.shutdown();
   EXPECT_LT(std::chrono::steady_clock::now() - started, 1s);
@@ -864,6 +856,29 @@ TEST_F(ObjectNavigationTest, LookaroundWaitsForTurnAndShutdownCancelsWithoutPubl
   EXPECT_EQ(handle.result.get().at("output").size(), 1u);
   ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
   goal->canceled(std::make_shared<Single::Result>());
+}
+
+TEST_F(ObjectNavigationTest, SendsSingleGoalWhileLookaroundIsWaitingForATurn)
+{
+  createNavigation();
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({lookaroundGroup(), group()})));
+  capture(manager);
+  const auto observation = invoke(manager, "lookaround", Json::object());
+  const auto turn = single();
+  EXPECT_EQ(observation.result.wait_for(20ms), std::future_status::timeout);
+  const auto replacement = payload(invoke(manager, "navigate_to_pose_start_navigation",
+      {{"frame_id", "rgbd_test_map"}, {"x", 6}, {"y", 7}, {"yaw", 0}}));
+  ASSERT_TRUE(replacement.at("ok")) << replacement;
+  EXPECT_FALSE(turn->is_canceling());
+  EXPECT_DOUBLE_EQ(single(1)->get_goal()->pose.pose.position.x, 6);
+  turn->abort(std::make_shared<Single::Result>());
+  EXPECT_EQ(payload(observation).at("code"), "LOOKAROUND_INTERRUPTED");
+  const auto canceled = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
+      {{"task_id", replacement.at("data").at("task_id")}}));
+  ASSERT_TRUE(canceled.at("ok")) << canceled;
+  ASSERT_TRUE(eventually([&] {return single(1)->is_canceling();}));
+  single(1)->canceled(std::make_shared<Single::Result>());
 }
 
 TEST_F(ObjectNavigationTest, SurroundProjectionUsesEachViewsCaptureTransform)
@@ -889,11 +904,14 @@ TEST_F(ObjectNavigationTest, ShutdownInterruptsConfiguredLookaroundPause)
 {
   createNavigation(); auto_finish = true;
   ToolManager manager(host);
-  manager.load(config.config(Json::array({lookaroundGroup(2), group()})));
+  auto navigation = lookaroundGroup(2);
+  navigation["functions"].push_back({{"name", "get_robot_state"},
+      {"plugin", "vln_agent/GetRobotState"}, {"blocking", false}});
+  manager.load(config.config(Json::array({navigation, group()})));
   capture(manager);
   const auto handle = invoke(manager, "lookaround", Json::object());
   ASSERT_TRUE(eventually([&] {
-      return navigate(manager, "missing", Json::array({instance(5,4)})).value("code", "") == "NAVIGATION_BUSY";
+      return payload(invoke(manager, "get_robot_state", Json::object())).at("data").at("motion") == "lookaround";
     }));
   const auto started = std::chrono::steady_clock::now();
   manager.shutdown();
@@ -924,7 +942,7 @@ TEST_F(ObjectNavigationTest, SurroundObjectNavigationUsesCachedSingleTargetAndSh
   EXPECT_NEAR(goal->get_goal()->pose.pose.position.x, 9.2, 1e-9);
   EXPECT_NEAR(goal->get_goal()->pose.pose.position.y, 21, 1e-9);
   EXPECT_NEAR(yaw(goal->get_goal()->pose.pose), std::atan2(14,3.2), 1e-9);
-  EXPECT_EQ(surroundNavigate(manager, "missing", Json::array({target}), true).at("code"), "NAVIGATION_BUSY");
+  EXPECT_EQ(surroundNavigate(manager, "missing", Json::array({target}), true).at("code"), "LOOKAROUND_NOT_FOUND");
   const auto canceled = payload(invoke(manager, "navigate_to_pose_cancel_navigation",
       {{"task_id", data.at("task_id")}}));
   EXPECT_EQ(canceled.at("data").at("status"), "canceling");
