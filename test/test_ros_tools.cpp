@@ -260,6 +260,70 @@ protected:
     return payload(invoke(manager, "navigate_to_pose_get_feedback", {{"task_id", id}}));
   }
 
+  Json trailGroup(std::size_t max_points = 4)
+  {
+    auto group = surroundingsGroup();
+    group["settings"]["base_frame"] = "trail_base";
+    group["settings"]["trail"] = {{"sample_interval_sec", 0.02},
+      {"min_distance_m", 0.2}, {"max_points", max_points}};
+    group["functions"].push_back({{"name", "get_robot_state"},
+        {"plugin", "vln_agent/GetRobotState"}, {"blocking", false}});
+    return group;
+  }
+
+  void createTrailSource()
+  {
+    createCostmapServers();
+    trail_broadcaster = std::make_shared<tf2_ros::TransformBroadcaster>(server_node);
+    trail_source_timer = server_node->create_wall_timer(10ms, [this] {
+        if (!trail_publishing) {return;}
+        geometry_msgs::msg::TransformStamped transform;
+        transform.header.frame_id = "map"; transform.child_frame_id = "trail_base";
+        transform.header.stamp = server_node->now();
+        transform.transform.translation.x = trail_x;
+        transform.transform.translation.y = trail_y;
+        transform.transform.rotation.z = std::sin(trail_yaw.load() / 2);
+        transform.transform.rotation.w = std::cos(trail_yaw.load() / 2);
+        trail_broadcaster->sendTransform(transform);
+      });
+  }
+
+  bool visitTrail(ToolManager & manager, double x, double y, double yaw = 0)
+  {
+    trail_x = x; trail_y = y; trail_yaw = yaw;
+    const bool received = eventually([&] {
+        const auto current = state(manager);
+        return current.contains("pose") &&
+          std::abs(current.at("pose").at("x").get<double>() - x) < 1e-6 &&
+          std::abs(current.at("pose").at("y").get<double>() - y) < 1e-6 &&
+          std::abs(current.at("pose").at("yaw").get<double>() - yaw) < 1e-6;
+      });
+    // 保持同一位置经过多个采样周期；不请求地图，也不创建导航目标。
+    std::this_thread::sleep_for(120ms);
+    return received;
+  }
+
+  std::pair<Json, cv::Mat> trailImage(ToolManager & manager, const std::string & source = "global")
+  {
+    const auto handle = invoke(manager, "get_surroundings", {{"costmap", source}, {"range_m", 10}});
+    const auto result = payload(handle);
+    const auto url = handle.result.get().at("output").at(1).at("image_url").get<std::string>();
+    return {result, cv::imdecode(utils::decodeBase64(url.substr(url.find(',') + 1)), cv::IMREAD_COLOR)};
+  }
+
+  static cv::Vec3b trailColorAt(const std::pair<Json, cv::Mat> & screenshot, double x, double y)
+  {
+    const auto & pose = screenshot.first.at("pose");
+    const auto & metadata = screenshot.first.at("images").at(0).at("metadata");
+    const auto & rect = metadata.at("map_rect");
+    const double scale = metadata.at("meters_per_pixel");
+    const double px = rect.at("x").get<double>() + (rect.at("width").get<double>() - 1) / 2 +
+      (x - pose.at("x").get<double>()) / scale;
+    const double py = rect.at("y").get<double>() + (rect.at("height").get<double>() - 1) / 2 -
+      (y - pose.at("y").get<double>()) / scale;
+    return screenshot.second.at<cv::Vec3b>(cvRound(py), cvRound(px));
+  }
+
   ConfigFile config;
   rclcpp::Node::SharedPtr client_node;
   rclcpp::Node::SharedPtr server_node;
@@ -280,6 +344,10 @@ protected:
   std::shared_ptr<tf2_ros::StaticTransformBroadcaster> static_tf;
   std::atomic_int local_reads{0}, global_reads{0};
   std::atomic_bool empty_costmap{false};
+  std::shared_ptr<tf2_ros::TransformBroadcaster> trail_broadcaster;
+  rclcpp::TimerBase::SharedPtr trail_source_timer;
+  std::atomic<double> trail_x{5}, trail_y{-2}, trail_yaw{0};
+  std::atomic_bool trail_publishing{true};
   int next_call{0};
 };
 
@@ -590,6 +658,73 @@ TEST_F(RosToolsTest, GetsLocalAndGlobalSurroundingsWithNativePngAndSnapshotMetad
   EXPECT_EQ(image.cols, result.at("images").at(0).at("metadata").at("image_width"));
   EXPECT_EQ(image.rows, result.at("images").at(0).at("metadata").at("image_height"));
   EXPECT_GT(local_reads.load(), 0); EXPECT_GT(global_reads.load(), 0);
+}
+
+/** @brief 无导航、无截图期间也记录真实 TF；跨截图共享，并按距离去重和 FIFO 淘汰。 */
+TEST_F(RosToolsTest, RecordsBoundedTrailWithoutNavigationAndReusesAcrossSnapshots)
+{
+  createTrailSource();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({trailGroup()})));
+  ASSERT_TRUE(visitTrail(manager, 5, -2));
+  ASSERT_TRUE(visitTrail(manager, 5.05, -2, 1.0));  // 小位移与原地旋转不追加。
+  EXPECT_EQ(local_reads.load() + global_reads.load(), 0);
+  auto first = trailImage(manager);
+  EXPECT_EQ(first.first.at("images").at(0).at("metadata").at("trail_point_count"), 1);
+  ASSERT_TRUE(visitTrail(manager, 5.4, -2));
+  ASSERT_TRUE(visitTrail(manager, 5.4, -1.6));
+  ASSERT_TRUE(visitTrail(manager, 5.8, -1.6));
+  ASSERT_TRUE(visitTrail(manager, 5.8, -1.2));
+  const cv::Vec3b green(50, 160, 30);
+  for (const auto & source : {"global", "local"}) {
+    const auto image = trailImage(manager, source);
+    EXPECT_EQ(image.first.at("images").at(0).at("metadata").at("trail_point_count"), 4);
+    EXPECT_EQ(trailColorAt(image, 5.4, -1.8), green);
+    EXPECT_EQ(trailColorAt(image, 5.6, -1.6), green);
+    EXPECT_NE(trailColorAt(image, 5.2, -2), green);  // 最早的位置已淘汰。
+  }
+  EXPECT_TRUE(goals.empty());
+  manager.shutdown();
+  ToolManager reloaded(client_node);
+  reloaded.load(config.config(Json::array({trailGroup()})));
+  ASSERT_TRUE(visitTrail(reloaded, 5.8, -1.2));
+  EXPECT_EQ(trailImage(reloaded).first.at("images").at(0).at("metadata").at("trail_point_count"), 1);
+}
+
+/** @brief 位置跳变和陈旧 TF 后恢复采样不会跨缺口连线，后续正常移动仍继续记录。 */
+TEST_F(RosToolsTest, TrailStartsNewSegmentsAfterLocalizationJumpAndStaleTf)
+{
+  createTrailSource();
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({trailGroup(20)})));
+  ASSERT_TRUE(visitTrail(manager, 5, -2));
+  ASSERT_TRUE(visitTrail(manager, 5.5, -2));
+  ASSERT_TRUE(visitTrail(manager, 8.5, -2));
+  ASSERT_TRUE(visitTrail(manager, 9.1, -2));
+  const cv::Vec3b green(50, 160, 30);
+  const auto jumped = trailImage(manager);
+  EXPECT_EQ(trailColorAt(jumped, 8.8, -2), green);
+  EXPECT_NE(trailColorAt(jumped, 7, -2), green);
+  trail_publishing = false;
+  std::this_thread::sleep_for(2200ms);  // 超过固定的 2 秒 TF 时效下限。
+  trail_x = 9.7;
+  trail_publishing = true;
+  ASSERT_TRUE(visitTrail(manager, 9.7, -2));
+  const auto resumed = trailImage(manager);
+  EXPECT_NE(trailColorAt(resumed, 9.4, -2), green);
+}
+
+TEST_F(RosToolsTest, TrailRequiresPositiveSamplingSettingsAndBoundedIntegerCapacity)
+{
+  for (const auto & invalid : std::vector<Json>{
+      {{"sample_interval_sec", 0}}, {{"min_distance_m", -0.1}},
+      {{"max_points", 1}}, {{"max_points", 2.5}}})
+  {
+    auto group = surroundingsGroup();
+    group["settings"]["trail"] = invalid;
+    ToolManager manager(client_node);
+    EXPECT_THROW(manager.load(config.config(Json::array({group}))), std::invalid_argument);
+  }
 }
 
 TEST_F(RosToolsTest, PixelNavigationUsesMapAxesAndAbsoluteYaw)

@@ -179,7 +179,7 @@
   {
     "type": "function",
     "name": "get_surroundings",
-    "description": "获取机器人周围代价地图图片。图片以机器人为中心，固定为地图 +X 朝右、+Y 朝上。中央蓝色箭头指向车头，图中标有像素坐标、比例尺和代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 或 navigate_through_pixels_start_navigation 使用。 环境 ID 位于 data.environment_id，多点像素导航数量上限位于 data.max_pixel_goals；小车位姿位于 pose，地图像素范围和比例位于 images[0].metadata。",
+    "description": "获取机器人周围代价地图图片。图片以机器人为中心，固定为地图 +X 朝右、+Y 朝上。中央蓝色箭头指向车头，绿色折线表示已行驶轨迹（不代表当前可通行），图中标有像素坐标、比例尺和代价配色。模型自行选择地图区域内的目标像素；工具不选择航点。返回 environment_id，供 navigate_to_pixel_start_navigation 或 navigate_through_pixels_start_navigation 使用。 环境 ID 位于 data.environment_id，多点像素导航数量上限位于 data.max_pixel_goals；小车位姿位于 pose，地图像素范围和比例位于 images[0].metadata。",
     "async": true,
     "strict": true,
     "parameters": {

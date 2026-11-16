@@ -17,6 +17,10 @@ tool_manager:
         image_size: 512
         max_environments: 8
         max_pixel_goals: 8  # 单次多点像素导航的最大点数，必须为正整数
+        trail:
+          sample_interval_sec: 0.5
+          min_distance_m: 0.1
+          max_points: 2000
       functions:
         - name: navigate_to_pose_start_navigation
           plugin: vln_agent/NavigateToPoseStartNavigation

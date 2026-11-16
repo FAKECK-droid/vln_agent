@@ -1,5 +1,6 @@
 #pragma once
 
+#include <deque>
 #include <string>
 #include <nav2_msgs/msg/costmap.hpp>
 #include <opencv2/core.hpp>
@@ -13,6 +14,13 @@ struct Pose2D
   double x{0};    ///< 平面 x 坐标。
   double y{0};    ///< 平面 y 坐标。
   double yaw{0};  ///< 绕 z 轴的朝向。
+};
+
+/** @brief 地图坐标系中的历史位置；新段起点不与前一点连接。 */
+struct TrailPoint
+{
+  cv::Point2d position;
+  bool segment_start{false};
 };
 
 /** @brief 一张环境图的轻量几何快照；不持有地图数据或编码后的图片。 */
@@ -35,11 +43,13 @@ struct Environment
  * @param environment 输入机器人位姿、范围和 ID；输出像素几何信息。
  * @param map_pixels 地图部分的像素边长，不包括图片边距。
  * @param source 标题中的 local/global 来源。
+ * @param trail 地图坐标系下的实际行驶轨迹，先裁剪到地图框，再绘制车头。
  * @return 地图 +X 向右、+Y 向上的 BGR 图片；缩小时保守保留障碍和未知区域。
  */
 cv::Mat renderSurroundings(
   const nav2_msgs::msg::Costmap & costmap, const Pose2D & origin_in_map,
-  Environment & environment, int map_pixels, const std::string & source);
+  Environment & environment, int map_pixels, const std::string & source,
+  const std::deque<TrailPoint> & trail = {});
 
 /**
  * @brief 将对应快照完整 PNG 中的像素还原为导航坐标。

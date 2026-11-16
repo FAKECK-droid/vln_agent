@@ -77,6 +77,33 @@ TEST(NavigationImages, OutsideMapRemainsUnknownAndDownsamplingRetainsThinWalls)
   EXPECT_GT(cv::countNonZero(blocked), 80);
 }
 
+/** @brief 框外路径不被抄近路，新段不跨接，车头标记覆盖轨迹。 */
+TEST(NavigationImages, TrailClipsEachSegmentAndPreservesGeometry)
+{
+  const auto map = grid(200, 0.1);
+  Environment env;
+  env.robot = {0, 0, 0}; env.range_m = 10;
+  const auto plain = renderSurroundings(map, {-10, -10, 0}, env, 512, "global");
+  const auto transform = env.pixel_to_map;
+  const std::deque<TrailPoint> trail{
+    {{-4, 1}, true}, {{-6, 1}}, {{-6, -2}}, {{-4, -2}},
+    {{1, 1}, true}, {{3, 1}}, {{0, 0}, true}, {{1, 0}}};
+  const auto image = renderSurroundings(map, {-10, -10, 0}, env, 512, "global", trail);
+  EXPECT_EQ(cv::norm(cv::Mat(transform), cv::Mat(env.pixel_to_map)), 0);
+  const cv::Vec3b green(50, 160, 30);
+  const auto color = [&](double x, double y) {
+      return image.at<cv::Vec3b>(cvRound(env.map_rect.y + 255.5 - y / env.meters_per_pixel),
+        cvRound(env.map_rect.x + 255.5 + x / env.meters_per_pixel));
+    };
+  EXPECT_EQ(color(-4.5, 1), green);
+  EXPECT_EQ(color(-4.5, -2), green);
+  EXPECT_EQ(color(2, 1), green);
+  EXPECT_EQ(color(-4, -0.5), cv::Vec3b(250, 250, 250));  // 不连接两次进入框内的位置。
+  EXPECT_EQ(color(-1.5, -0.5), cv::Vec3b(250, 250, 250));  // 不跨接显式新段。
+  EXPECT_EQ(color(0.4, 0), cv::Vec3b(215, 100, 20));  // 蓝色车头在轨迹上层。
+  EXPECT_EQ(cv::norm(plain.rowRange(0, env.map_rect.y), image.rowRange(0, env.map_rect.y)), 0);
+}
+
 TEST(NavigationImages, WritesMapAlignedPreviewWithCostsLegendAndScale)
 {
   auto map = grid(480, 0.05);
@@ -106,11 +133,13 @@ TEST(NavigationImages, WritesMapAlignedPreviewWithCostsLegendAndScale)
   std::filesystem::create_directories(directory);
   cv::TickMeter timer;
   timer.start();
-  const auto image = renderSurroundings(map, {-12, -12, 0}, env, 512, "global");
+  const std::deque<TrailPoint> trail{
+    {{-7, 0}, true}, {{-4, 0}}, {{0, 0}}, {{0, -4}}, {{0, -7}}};
+  const auto image = renderSurroundings(map, {-12, -12, 0}, env, 512, "global", trail);
   std::vector<unsigned char> png;
   ASSERT_TRUE(cv::imencode(".png", image, png, {cv::IMWRITE_PNG_COMPRESSION, 1}));
   timer.stop();
-  const auto preview = directory / "surroundings_map_aligned.png";
+  const auto preview = directory / "surroundings_with_trail.png";
   ASSERT_TRUE(cv::imwrite(preview.string(), image));
   std::cout << "PREVIEW " << preview <<
     " render_and_png_ms=" << timer.getTimeMilli() << " png_bytes=" << png.size() << std::endl;

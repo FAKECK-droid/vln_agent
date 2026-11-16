@@ -321,6 +321,10 @@ string error
 
 `get_surroundings` 通过 GetCostmap 读取局部或全局地图，以机器人为中心生成正方形环境图。`range_m` 为边长，固定地图坐标系 +X 向右、+Y 向上，中央蓝色箭头指向车头；局部和全局图均采用导航组的 `map_frame`。地图区域默认 `image_size=512`，完整图片还包含标题、坐标和图例；有效地图范围与比例以返回的 `map_rect`、`meters_per_pixel` 为准。
 
+历史轨迹由 NavigationRuntime 在现有回调线程中独立定时采样 map_frame → base_frame，导航、遥控或其他来源的实际移动均可记录，不依赖模型取图或 Action 反馈。绿色细折线先叠加到地图框内，再绘制蓝色车头。只保存距离上一个记录点至少 min_distance_m 的位置，原地旋转不追加；最多保留 max_points 个点，满后淘汰最旧点。缓存跨任务及环境 ID 保留，重载工具或重启后清空。images[0].metadata.trail_point_count 为本次采用的缓存点数（包括框外点）。轨迹仅辅助识别曾经经过的位置，当前通行性仍由代价地图判断。
+
+TF 查询失败、时间回退、相邻采样位置跳变超过 2 米，或采样间隔/动态 TF 年龄超过 max(2 秒, 3×sample_interval_sec) 时开始新段，避免跨定位跳变或观测中断连线。框外轨迹按相邻线段裁剪，重新进入画面时不会跨过框外路径抄近路。轨迹保存在采样时的地图坐标中，不随定位修正重算历史；切换地图时应重载导航工具以清空旧轨迹。
+
 像素导航使用完整图片左上角为原点，x 向右、y 向下。选择点位于 `map_rect` 内。`yaw` 直接使用地图弧度：0 向右（+X），π/2 向上（+Y），π 向左，-π/2 向下。机器人转向不改变像素和地图坐标的对应关系；机器人平移后新图会随中心平移。环境 ID 保存该次图片到地图的变换，默认最多 8 个，FIFO 淘汰；目标接受后消费对应 ID。
 
 `navigate_through_pixels_start_navigation` 复用同一快照转换和消费逻辑，将 `pixels` 全部转换后一次性调用多点导航，沿用 `navigate_through_poses_behavior_tree`。每个 yaw 都使用相同的地图朝向约定。例如 `{"environment_id":"env_1","pixels":[{"pixel_x":256,"pixel_y":200,"yaw":0.0},{"pixel_x":300,"pixel_y":180,"yaw":1.57}]}`；实际有效像素范围以该图的 `map_rect` 为准。
@@ -375,6 +379,9 @@ string error
 | `max_environments` | `8` |
 | `max_pixel_goals` | `8`，多点像素导航单次目标数上限，正整数 |
 | `shutdown_timeout_sec` | `2.0` |
+| `trail.sample_interval_sec` | `0.5`，定时采样周期（秒），正数 |
+| `trail.min_distance_m` | `0.1`，追加轨迹点的最小位移（米），正数 |
+| `trail.max_points` | `2000`，轨迹点数量上限，至少为 2 的整数 |
 
 导航动作函数的实现位于各插件 `.cpp`；`navigation_runtime.cpp` 管理资源生命周期和通用状态。
 

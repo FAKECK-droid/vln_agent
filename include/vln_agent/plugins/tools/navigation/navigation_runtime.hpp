@@ -1,5 +1,6 @@
 #pragma once
 
+#include <chrono>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -115,6 +116,8 @@ private:
   ToolResult snapshot(const std::shared_ptr<Task> & task);
   /** @brief 判断任务是否进入终态。 */
   static bool terminal(const std::string & status);
+  /** @brief 定时读取最新 TF，按距离采样；缺失、陈旧或跳变时开始新线段。 */
+  void sampleTrail();
 
   rclcpp::Node & node_;                     ///< 外部节点，生命周期由宿主管理。
   std::unique_ptr<ToolCallbacks> callbacks_;  ///< 独占回调组及其执行线程。
@@ -125,6 +128,15 @@ private:
 
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;  ///< 有界 TF 缓存，供截图时的坐标转换。
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;  ///< 复用本组专用回调线程。
+  rclcpp::TimerBase::SharedPtr trail_timer_;  ///< 复用专用回调线程，不依赖导航反馈或截图。
+  double trail_sample_interval_sec_{0.5};
+  double trail_min_distance_m_{0.1};
+  std::size_t trail_max_points_{2000};
+  std::deque<navigation::TrailPoint> trail_;  ///< 受 mutex_ 保护，跨导航任务保留。
+  cv::Point2d trail_last_position_;          ///< 上次有效采样位置，用于检测定位跳变。
+  std::chrono::steady_clock::time_point trail_last_sample_;
+  std::int64_t trail_last_stamp_ns_{0};
+  bool trail_segment_start_{true};
   std::string map_frame_;   ///< 环境快照和导航目标使用的坐标系。
   std::string through_poses_behavior_tree_;  ///< 多点导航专用 XML，不能留空回退到 Nav2 默认树。
   std::string base_frame_;  ///< 机器人本体坐标系。

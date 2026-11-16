@@ -1,7 +1,9 @@
 #include "vln_agent/plugins/tools/navigation/navigation_runtime.hpp"
 #include "vln_agent/utils/time.hpp"
 
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <stdexcept>
 #include <type_traits>
 
@@ -50,6 +52,17 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
     throw std::invalid_argument("max_pixel_goals 必须为正整数");
   }
   max_pixel_goals_ = max_pixel_goals.get<std::size_t>();
+  const auto trail = settings.value("trail", Json::object());
+  trail_sample_interval_sec_ = trail.value("sample_interval_sec", 0.5);
+  trail_min_distance_m_ = trail.value("min_distance_m", 0.1);
+  const auto max_points = trail.value("max_points", Json(2000));
+  if (!std::isfinite(trail_sample_interval_sec_) || trail_sample_interval_sec_ <= 0 ||
+    !std::isfinite(trail_min_distance_m_) || trail_min_distance_m_ <= 0 ||
+    !max_points.is_number_integer() || max_points < 2)
+  {
+    throw std::invalid_argument("trail 采样间隔和距离须为正数，max_points 须为至少 2 的整数");
+  }
+  trail_max_points_ = max_points.get<std::size_t>();
   tf_buffer_ = std::make_unique<tf2_ros::Buffer>(node_.get_clock());
   rclcpp::SubscriptionOptions options;
   options.callback_group = callbacks_->group();
@@ -57,6 +70,45 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
   tf_listener_ = std::make_unique<tf2_ros::TransformListener>(
     *tf_buffer_, &node_, false, tf2_ros::DynamicListenerQoS(),
     tf2_ros::StaticListenerQoS(), options, options);
+  trail_timer_ = node_.create_wall_timer(std::chrono::duration<double>(trail_sample_interval_sec_),
+    [this] {sampleTrail();}, callbacks_->group());
+}
+
+void NavigationRuntime::sampleTrail()
+{
+  geometry_msgs::msg::TransformStamped robot;
+  try {
+    // 与 TF 订阅共用单线程回调组，必须立即返回，不能等待其他 TF 回调。
+    robot = tf_buffer_->lookupTransform(map_frame_, base_frame_, tf2::TimePointZero);
+  } catch (const tf2::TransformException &) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    trail_segment_start_ = true;
+    return;
+  }
+  const auto stamp = rclcpp::Time(robot.header.stamp, node_.get_clock()->get_clock_type());
+  const auto sampled = std::chrono::steady_clock::now();
+  const double max_gap_sec = std::max(2.0, 3 * trail_sample_interval_sec_);
+  const cv::Point2d position{robot.transform.translation.x, robot.transform.translation.y};
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (closed_) {return;}
+  if (stamp.nanoseconds() != 0 && (node_.now() - stamp).seconds() > max_gap_sec) {
+    trail_segment_start_ = true;
+    return;
+  }
+  if (!trail_.empty() && (cv::norm(position - trail_last_position_) > 2.0 ||
+    std::chrono::duration<double>(sampled - trail_last_sample_).count() > max_gap_sec ||
+    stamp.nanoseconds() < trail_last_stamp_ns_))
+  {
+    trail_segment_start_ = true;
+  }
+  trail_last_position_ = position;
+  trail_last_sample_ = sampled;
+  trail_last_stamp_ns_ = stamp.nanoseconds();
+  if (!trail_.empty() && !trail_segment_start_ &&
+    cv::norm(position - trail_.back().position) < trail_min_distance_m_) {return;}
+  trail_.push_back({position, trail_segment_start_});
+  trail_segment_start_ = false;
+  while (trail_.size() > trail_max_points_) {trail_.pop_front();}
 }
 
 template<typename NavigationAction>
@@ -230,6 +282,7 @@ void NavigationRuntime::shutdown() noexcept
       RCLCPP_WARN(node_.get_logger(), "关闭导航资源时仍有未确认目标，无法确认其物理状态");
     }
   }
+  trail_timer_->cancel();
   callbacks_->shutdown();
   global_costmap_client_->prune_pending_requests();
   local_costmap_client_->prune_pending_requests();
@@ -244,6 +297,7 @@ void NavigationRuntime::shutdown() noexcept
     }
     task_.reset();
     environments_.clear();
+    trail_.clear();
   }
   if (goal) {
     try {client_->async_cancel_goal(goal);}

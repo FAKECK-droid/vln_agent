@@ -49,12 +49,14 @@ ToolResult NavigationRuntime::get_surroundings(const Json & arguments)
   environment.robot = {robot.transform.translation.x, robot.transform.translation.y,
     tf2::getYaw(robot.transform.rotation)};
   environment.range_m = arguments.at("range_m").get<double>();
+  std::deque<navigation::TrailPoint> trail;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     environment.id = "env_" + std::to_string(++next_environment_id_);
+    trail = trail_;
   }
   const auto image = navigation::renderSurroundings(
-    costmap, origin_in_map, environment, image_size_, source);
+    costmap, origin_in_map, environment, image_size_, source, trail);
   std::vector<unsigned char> png;
   cv::imencode(".png", image, png, {cv::IMWRITE_PNG_COMPRESSION, 1});
   const auto image_url = "data:image/png;base64," + utils::encodeBase64(png);
@@ -81,7 +83,7 @@ ToolResult NavigationRuntime::get_surroundings(const Json & arguments)
     {"costmap", source}, {"range_m", environment.range_m},
     {"image_width", image.cols}, {"image_height", image.rows},
     {"map_rect", {{"x", rect.x}, {"y", rect.y}, {"width", rect.width}, {"height", rect.height}}},
-    {"meters_per_pixel", environment.meters_per_pixel},
+    {"meters_per_pixel", environment.meters_per_pixel}, {"trail_point_count", trail.size()},
     {"frame_id", environment.frame_id}, {"pixel_origin", "top_left"},
     {"image_right", "map_positive_x"}, {"image_up", "map_positive_y"},
     {"image_left", "map_negative_x"},

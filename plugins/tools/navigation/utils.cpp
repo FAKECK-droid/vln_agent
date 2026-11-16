@@ -15,7 +15,7 @@ namespace
 constexpr int left = 48, top = 72, footer = 112;
 const cv::Vec3b free_color{250, 250, 250}, low_color{190, 235, 255};
 const cv::Vec3b high_color{60, 165, 245}, blocked_color{28, 32, 38};
-const cv::Vec3b unknown_color{165, 165, 165};
+const cv::Vec3b unknown_color{165, 165, 165}, trail_color{50, 160, 30};
 
 /** @brief 对一个平面点应用 2×3 仿射变换。 */
 cv::Point2d apply(const cv::Matx23d & matrix, double x, double y)
@@ -60,7 +60,8 @@ cv::Point2d pixelToMap(const Environment & environment, double x, double y)
 
 cv::Mat renderSurroundings(
   const nav2_msgs::msg::Costmap & costmap, const Pose2D & origin,
-  Environment & env, int pixels, const std::string & source)
+  Environment & env, int pixels, const std::string & source,
+  const std::deque<TrailPoint> & trail)
 {
   env.map_rect = {left, top, pixels, pixels};
   env.image_size = {pixels + 2 * left, pixels + top + footer};
@@ -132,6 +133,20 @@ cv::Mat renderSurroundings(
     }
   }
 
+  // 逐段裁剪，而不是过滤框外点后重连；离开画面再进入时不会产生捷径。
+  cv::Matx23d map_to_pixel;
+  cv::invertAffineTransform(env.pixel_to_map, map_to_pixel);
+  for (std::size_t i = 1; i < trail.size(); ++i) {
+    if (trail[i].segment_start) {continue;}
+    const auto a = apply(map_to_pixel, trail[i - 1].position.x, trail[i - 1].position.y);
+    const auto b = apply(map_to_pixel, trail[i].position.x, trail[i].position.y);
+    cv::Point start{cvRound(a.x - left), cvRound(a.y - top)};
+    cv::Point end{cvRound(b.x - left), cvRound(b.y - top)};
+    if (cv::clipLine(view.size(), start, end)) {
+      cv::line(view, start, end, cv::Scalar(trail_color), 2, cv::LINE_AA);
+    }
+  }
+
   cv::Mat image(env.image_size, CV_8UC3, cv::Scalar(255, 255, 255));
   view.copyTo(image(env.map_rect));
   const cv::Scalar ink(55, 60, 70), blue(215, 100, 20);
@@ -166,10 +181,11 @@ cv::Mat renderSurroundings(
   cv::line(image, {left + length, scale_y - 4}, {left + length, scale_y + 4}, ink, 1);
   cv::putText(image, number(scale_m) + " m | pixels: x right, y down",
     {left + length + 8, scale_y + 4}, cv::FONT_HERSHEY_SIMPLEX, 0.38, ink, 1, cv::LINE_AA);
-  const std::array<cv::Vec3b, 5> colors{free_color, low_color, high_color, blocked_color, unknown_color};
-  const std::array<std::string, 5> names{"FREE", "LOW COST", "HIGH COST", "BLOCKED", "UNKNOWN"};
-  for (int i = 0; i < 5; ++i) {
-    const int x = left + i * pixels / 5, y = top + pixels + 79;
+  const std::array<cv::Vec3b, 6> colors{
+    free_color, low_color, high_color, blocked_color, unknown_color, trail_color};
+  const std::array<std::string, 6> names{"FREE", "LOW COST", "HIGH COST", "BLOCKED", "UNKNOWN", "TRAIL"};
+  for (int i = 0; i < 6; ++i) {
+    const int x = left + i * pixels / 6, y = top + pixels + 79;
     cv::rectangle(image, {x, y - 9, 9, 9}, cv::Scalar(colors[i]), -1);
     cv::rectangle(image, {x, y - 9, 9, 9}, ink, 1);
     cv::putText(image, names[i], {x + 13, y}, cv::FONT_HERSHEY_SIMPLEX, 0.34, ink, 1, cv::LINE_AA);
