@@ -94,7 +94,7 @@ tool_manager:
 session_manager:
   base_url: "http://192.168.3.25:8317/v1"
   api_key: "sk-local-1gHIUqOELWgeLmW5AocUxtxGo7DWRlUBed1xu-35"
-  model: "gpt-6.1-terra"
+  model: "gpt-6.2-sol"
   store: true
   reasoning_effort: low
   max_output_tokens: 8192
