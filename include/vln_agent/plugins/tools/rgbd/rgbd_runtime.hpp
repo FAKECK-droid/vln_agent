@@ -88,6 +88,8 @@ private:
     GetImage::Response::ConstSharedPtr response, std::shared_ptr<Pair> & pair, double tf_wait_sec);
   /** @brief 向业务 images 和原生图片数组追加同一张彩色图。 */
   void appendCaptureImage(ToolResult & result, Pair & pair, double image_scale, const char * detail);
+  /** @brief 持有 mutex_ 时读取普通深度缓存中的有效 ID。 */
+  Json validPairIdsLocked() const;
   ToolResult projectDepth(const std::shared_ptr<Pair> & pair, const Json & arguments);
 
   rclcpp::Node & node_;                     ///< 生命周期由宿主节点管理。

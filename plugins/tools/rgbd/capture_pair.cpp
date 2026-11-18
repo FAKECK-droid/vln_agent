@@ -111,6 +111,7 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "RGB-D 资源已经关闭");}
     pairs_.push_back(std::move(pair));
     while (pairs_.size() > max_pairs_) {pairs_.pop_front();}
+    result.payload["data"]["valid_pair_ids"] = validPairIdsLocked();
   }
   return result;
 }

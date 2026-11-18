@@ -383,7 +383,7 @@ TEST_F(RgbdToolsTest, SequenceReturnsNativeImagesAndKeepsDepthForEveryReturnedFr
       }
       reply->latest_index = static_cast<std::int32_t>(reply->pairs.size() - 1);
     });
-  auto rgbd = group();
+  auto rgbd = group(2);
   rgbd["functions"].push_back({{"name", "capture_pair_sequence"},
     {"plugin", "vln_agent/CapturePairSequence"}, {"blocking", true}});
   ToolManager manager(host);
@@ -408,6 +408,9 @@ TEST_F(RgbdToolsTest, SequenceReturnsNativeImagesAndKeepsDepthForEveryReturnedFr
   EXPECT_EQ(result.at("data").at("latest_index"), 1);
   EXPECT_EQ(result.at("data").at("latest_is_new"), true);
   ASSERT_EQ(result.at("images").size(), 2u);
+  EXPECT_EQ(result.at("data").at("valid_pair_ids"), Json::array({
+      result.at("images").at(0).at("metadata").at("pair_id"),
+      result.at("images").at(1).at("metadata").at("pair_id")}));
   for (std::size_t i = 0; i < 2; ++i) {
     EXPECT_EQ(output.at(i + 1).at("type"), "input_image");
     const auto & metadata = result.at("images").at(i).at("metadata");
@@ -479,8 +482,11 @@ TEST_F(RgbdToolsTest, EvictsOldPairsAndSupportsConcurrentPointProjection)
 {
   createSource();
   ToolManager manager(host); manager.load(config.config(Json::array({group(2)})));
-  const auto old = payload(capture(manager)).at("data").at("pair_id"); capture(manager);
-  const auto id = payload(capture(manager)).at("data").at("pair_id");
+  const auto old = payload(capture(manager)).at("data").at("pair_id");
+  const auto middle = payload(capture(manager)).at("data").at("pair_id");
+  const auto current = payload(capture(manager)).at("data");
+  const auto & id = current.at("pair_id");
+  EXPECT_EQ(current.at("valid_pair_ids"), Json::array({middle, id}));
   EXPECT_EQ(query(manager, old).at("code"), "IMAGE_PAIR_NOT_FOUND");
   const Json args{{"pair_id", id}, {"target_frame", "rgbd_test_map"},
     {"use_segmentation", false}, {"instances", Json::array({instance(5, 4), instance(7, 5)})}};

@@ -52,6 +52,14 @@ RgbdRuntime::~RgbdRuntime()
   shutdown();
 }
 
+Json RgbdRuntime::validPairIdsLocked() const
+{
+  auto ids = Json::array();
+  ids.get_ref<Json::array_t &>().reserve(pairs_.size());
+  for (const auto & pair : pairs_) {ids.push_back(pair->id);}
+  return ids;
+}
+
 Json RgbdRuntime::camera_state()
 {
   Json state{{"status", "unavailable"}, {"latest_pair_available", nullptr},

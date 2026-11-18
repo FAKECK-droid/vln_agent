@@ -70,11 +70,11 @@ tool_manager:
         camera_info_topic: /camera/color/camera_info
         fixed_frame: map
         timeout_sec: 2.0
-        max_pairs: 8
+        max_pairs: 64
         segmentation:
           warmup_on_initialize: true
           engine_directory: /home/yan/ros2_ws/src/scout_mini_vln/segment_tools/models/tensorrt/engines
-          encoder_precision: tf32
+          encoder_precision: fp16
           decoder_precision: fp16
           cuda_graph: true
       functions:
