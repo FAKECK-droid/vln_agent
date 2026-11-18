@@ -34,7 +34,7 @@
   {
     "type": "function",
     "name": "capture_pair_sequence",
-    "description": "获取上次读取之后的历史 RGB-D 对，并包含查询时最新对。首次调用返回最新对并建立历史起点。彩色图从旧到新排列，data.latest_index 指向 images 中的最新图（从 0 开始，null 表示无可用最新图）。latest_is_new 为 false 时最新对与上次相同。has_more 为 true 时可再次调用继续读取；missing_count 是已被队列清除或淘汰的未读历史数。每张图的 metadata 给出像素尺寸；有 pair_id 时可用 depth_project 查询深度。",
+    "description": "获取上次读取之后的历史 RGB-D 对，并包含查询时最新对。首次调用返回最新对并建立历史起点。彩色图从旧到新排列，data.latest_index 指向 images 中的最新图（从 0 开始，null 表示无可用最新图）。latest_is_new 为 false 时最新对与上次相同。has_more 为 true 时可再次调用继续读取；missing_count 是已被队列清除或淘汰的未读历史数。每张图的 metadata 给出像素尺寸；有 pair_id 时可用 depth_project 查询深度或navigate_to_objects进行物体导航。",
     "async": true,
     "strict": true,
     "parameters": {
