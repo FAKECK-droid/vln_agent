@@ -83,6 +83,12 @@ tool_manager:
           blocking: false
           settings:
             image_scale: 0.8
+        - name: capture_pair_sequence
+          plugin: vln_agent/CapturePairSequence
+          blocking: true
+          settings:
+            image_scale: 0.5
+            max_batch_pairs: 5
         - name: depth_project
           plugin: vln_agent/DepthProject
           blocking: false

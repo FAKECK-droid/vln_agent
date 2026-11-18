@@ -75,6 +75,7 @@ add_library(vln_agent_tool_plugins SHARED
   plugins/tools/navigation/utils.cpp
   plugins/tools/rgbd/rgbd_runtime.cpp
   plugins/tools/rgbd/capture_pair.cpp
+  plugins/tools/rgbd/capture_pair_sequence.cpp
   plugins/tools/rgbd/depth_project.cpp
   plugins/tools/rgbd/depth_project_surround.cpp
   plugins/tools/rgbd/segmentation.cpp

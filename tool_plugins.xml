@@ -46,6 +46,10 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>保存 RGB-D 图像对，仅返回彩色图和图像对 ID。</description>
     </class>
+    <class name="vln_agent/CapturePairSequence" type="vln_agent::CapturePairSequence"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>批量获取历史与最新 RGB-D 对，按顺序返回彩色图。</description>
+    </class>
     <class name="vln_agent/DepthProject" type="vln_agent::DepthProject"
            base_class_type="vln_agent::ToolPluginBase">
       <description>按实例提示分割或读取正点深度，返回目标坐标系中的三维均值。</description>

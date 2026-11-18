@@ -390,11 +390,15 @@ TF 查询失败、时间回退、相邻采样位置跳变超过 2 米，或采�
 
 `depth_project_surround` 位于 `rgbd` 组，使用同组 `RgbdRuntime` 的环视缓存，返回语义与普通 `depth_project` 一致；无需配置跨组资源引用。
 
-`capture_pair`、`depth_project` 和 `depth_project_surround` 共享 `plugins/tools/rgbd` 中的图像、标定、TF 与分割资源。
+`capture_pair`、`capture_pair_sequence`、`depth_project` 和 `depth_project_surround` 共享 `plugins/tools/rgbd` 中的图像、标定、TF 与分割资源。
 
 `capture_pair` 的 `mode/detail` 对应 `LATEST_PAIR/QUEUE_PAIR/QUEUE_PAIR_AT_AGE`：latest 的 detail 为 0，index 为从 0 开始的历史索引，age 为距当前的毫秒数。工具保存原始彩色、对齐深度、CameraInfo 和深度采样时的相机变换，返回彩色图和 `data.pair_id`。`images[0].metadata.pair_id` 是同一工具缓存 ID，`source_pair_id` 记录取图服务的原始编号。
 
 彩色图按 `capture_pair.settings.image_scale` 缩放，缺省 1.0；输出宽高取整数，缩小使用面积重采样，放大使用线性插值。1.0 保留原压缩字节。点和框均使用返回图片实际的 `width/height`，左上角为原点，x 向右、y 向下；原始网格尺寸见 `original_width/original_height`。
+
+`capture_pair_sequence` 无参数，首次返回最新对并建立历史游标，随后批量读取未读历史并始终附上最新对。每次返回一条 `function_call_output`，第一个内容项是标准业务 JSON 文本，后续是按配对顺序排列的原生彩色图，和顶层 `images[]` 一一对应。`data.latest_index` 是最新图在 `images` 中的零基下标，`latest_is_new` 表示最新对是否变化。`has_more` 为 true 时可再次调用继续读取，`missing_count` 表示已从源队列淘汰或清空的未读历史数。
+
+图像的 `metadata.pair_id` 用于深度投影，按该图标注的宽高给出像素提示。没有采样位姿或标定的帧仍返回彩色图，并标记 `projectable: false`。默认配置将序列彩色图缩放到 0.5，每批最多 5 对（包括最新对），并受 RGB-D 缓存的 `max_pairs` 限制。序列帧以压缩形式共享普通取图 FIFO，首次 SAM 查询时再解码原始彩色。批量服务名缺省为组内 `service_name` 加 `_batch`，可在组 settings 中用 `batch_service_name` 覆盖。
 
 `depth_project` 在一次请求中处理同一 pair 的多个检测实例：
 

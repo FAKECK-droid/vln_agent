@@ -13,6 +13,7 @@
 #include <geometry_msgs/msg/transform_stamped.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <rgbd_image_queue/srv/get_image.hpp>
+#include <rgbd_image_queue/srv/get_image_batch.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 
 #include "vln_agent/plugins/tools/rgbd/utils.hpp"
@@ -39,6 +40,8 @@ public:
    * @param image_scale 返回彩色图的缩放因子，1.0 保持原尺寸。
    */
   ToolResult capture_pair(const Json & arguments, double image_scale);
+  /** @brief 批量读取未读历史和同一快照中的最新对，保留可查询的深度。 */
+  ToolResult capture_pair_sequence(double image_scale, std::uint32_t limit);
   /** @brief 只读取取图服务 STATUS，返回最新配对可用性与年龄，不传输图像。 */
   Json camera_state();
   /** @brief 使用实例掩码或正点深度，返回目标坐标系中的三维均值。 */
@@ -53,6 +56,7 @@ public:
 
 private:
   using GetImage = rgbd_image_queue::srv::GetImage;
+  using GetImageBatch = rgbd_image_queue::srv::GetImageBatch;
   struct Calibration
   {
     sensor_msgs::msg::CameraInfo::ConstSharedPtr info; ///< 固定的 K/D、尺寸和畸变模型。
@@ -66,7 +70,7 @@ private:
     sensor_msgs::msg::CameraInfo::ConstSharedPtr info;  ///< 捕获时使用的彩色相机标定。
     geometry_msgs::msg::TransformStamped fixed_from_camera;  ///< 深度采样时光学系到固定系的变换。
     std::shared_ptr<Calibration> calibration; ///< 同一标定共享射线表。
-    cv::Mat color;                         ///< 捕获时已解码的原始 BGR，供 SAM 编码。
+    cv::Mat color;                         ///< 原始 BGR；序列帧按需重新解码供 SAM 使用。
     cv::Size image_size;                   ///< 模型收到的彩色图实际像素尺寸。
     std::once_flag decode_once;             ///< 同一对深度只解码一次，允许并发查询。
     rgbd::DepthImage depth;                 ///< 首次查询后才占用解码后的像素内存。
@@ -79,11 +83,21 @@ private:
     std::array<cv::Rect, 8> image_rects;  ///< 拼图中实际图像区域，不含留黑、中心格和间隔。
   };
   ToolResult capturePair(const Json & arguments, std::shared_ptr<Pair> & pair);
+  /** @brief 检查标定与图像对齐，固化深度采样时的相机位姿。 */
+  ToolResult preparePair(
+    GetImage::Response::ConstSharedPtr response, std::shared_ptr<Pair> & pair, double tf_wait_sec);
+  /** @brief 向业务 images 和原生图片数组追加同一张彩色图。 */
+  void appendCaptureImage(ToolResult & result, Pair & pair, double image_scale, const char * detail);
   ToolResult projectDepth(const std::shared_ptr<Pair> & pair, const Json & arguments);
 
   rclcpp::Node & node_;                     ///< 生命周期由宿主节点管理。
   std::unique_ptr<ToolCallbacks> callbacks_;  ///< 同组插件共用的独占回调组与线程。
   rclcpp::Client<GetImage>::SharedPtr client_;  ///< 不通过 Session 或其他组件取图。
+  rclcpp::Client<GetImageBatch>::SharedPtr batch_client_;
+  std::mutex batch_mutex_;                  ///< 同一游标的读取和推进串行化。
+  std::string batch_stream_id_;
+  std::uint64_t batch_after_seq_{0};
+  std::uint64_t batch_latest_id_{0};
   rclcpp::Subscription<sensor_msgs::msg::CameraInfo>::SharedPtr info_subscription_;  ///< 仅保留最新标定。
   std::unique_ptr<tf2_ros::Buffer> tf_buffer_;  ///< 按采样时间查询相机位姿的有界 TF 缓存。
   std::unique_ptr<tf2_ros::TransformListener> tf_listener_;  ///< 复用资源回调线程，不另起线程。

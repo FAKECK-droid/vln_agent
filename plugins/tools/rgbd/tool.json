@@ -33,8 +33,21 @@
   },
   {
     "type": "function",
+    "name": "capture_pair_sequence",
+    "description": "获取上次读取之后的历史 RGB-D 对，并包含查询时最新对。首次调用返回最新对并建立历史起点。彩色图从旧到新排列，data.latest_index 指向 images 中的最新图（从 0 开始，null 表示无可用最新图）。latest_is_new 为 false 时最新对与上次相同。has_more 为 true 时可再次调用继续读取；missing_count 是已被队列清除或淘汰的未读历史数。每张图的 metadata 给出像素尺寸；有 pair_id 时可用 depth_project 查询深度。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {},
+      "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
     "name": "depth_project",
-    "description": "查询同一缓存 pair 的多个实例并返回目标坐标系中的可见表面三维均值（米）。use_segmentation=true 时用各实例独立的点和框调用 MobileSAM，对掩码内全部有效原始深度投影并求均值；false 时忽略框及负点，只对正点的有效深度求均值。所有提示使用 capture_pair 返回图的实际尺寸，无需自行缩放。结果 data.instances 保持输入顺序，逐项返回 index/ok/sample_count/x/y/z/depth_m 或 code/message，分割时附 mask_score。部分实例失败保留其余结果，全失败则顶层 ok=false。坐标使用采样时固定系位姿；其他 target_frame 使用当前 TF。均值表示可见表面，不等同于物体体积中心或停车点。",
+    "description": "查询同一缓存 pair 的多个实例并返回目标坐标系中的可见表面三维均值（米）。use_segmentation=true 时用各实例独立的点和框调用 MobileSAM，对掩码内全部有效原始深度投影并求均值；false 时忽略框及负点，只对正点的有效深度求均值。所有提示使用对应取图工具返回图的实际尺寸，无需自行缩放。结果 data.instances 保持输入顺序，逐项返回 index/ok/sample_count/x/y/z/depth_m 或 code/message，分割时附 mask_score。部分实例失败保留其余结果，全失败则顶层 ok=false。坐标使用采样时固定系位姿；其他 target_frame 使用当前 TF。均值表示可见表面，不等同于物体体积中心或停车点。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -42,7 +55,7 @@
       "properties": {
         "pair_id": {
           "type": "string",
-          "description": "capture_pair 返回的 data.pair_id。"
+          "description": "capture_pair 的 data.pair_id 或 capture_pair_sequence 对应图片的 metadata.pair_id。"
         },
         "target_frame": {
           "type": "string",

@@ -24,8 +24,11 @@ RgbdRuntime::RgbdRuntime(rclcpp::Node & node, const Json & settings)
   node_.get_parameter_or("use_sim_time", simulated, false);
   real_stamps_ = !simulated;
   callbacks_ = std::make_unique<ToolCallbacks>(node_);
+  const auto service_name = settings.at("service_name").get<std::string>();
   client_ = node_.create_client<GetImage>(
-    settings.at("service_name").get<std::string>(),
+    service_name, rmw_qos_profile_services_default, callbacks_->group());
+  batch_client_ = node_.create_client<GetImageBatch>(
+    settings.value("batch_service_name", service_name + "_batch"),
     rmw_qos_profile_services_default, callbacks_->group());
   rclcpp::SubscriptionOptions options;
   options.callback_group = callbacks_->group();
@@ -84,6 +87,7 @@ void RgbdRuntime::shutdown() noexcept
   }
   if (callbacks_) {callbacks_->shutdown();}
   if (client_) {client_->prune_pending_requests();}
+  if (batch_client_) {batch_client_->prune_pending_requests();}
   // 先停止标定回调，再释放缓存，防止关闭期间的最后一条回调重新写入标定。
   std::lock_guard<std::mutex> lock(mutex_);
   pairs_.clear();

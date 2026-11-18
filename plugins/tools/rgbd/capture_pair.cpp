@@ -40,8 +40,20 @@ ToolResult RgbdRuntime::capturePair(const Json & arguments, std::shared_ptr<Pair
   if (!response->success || !response->has_color || !response->has_depth) {
     return ToolResult::failure("IMAGE_PAIR_UNAVAILABLE", response->message);
   }
+  return preparePair(response, pair, timeout_sec_);
+}
+
+ToolResult RgbdRuntime::preparePair(
+  GetImage::Response::ConstSharedPtr response, std::shared_ptr<Pair> & pair, double tf_wait_sec)
+{
   pair = std::make_shared<Pair>();
   pair->images = response;
+  const auto & color = response->color;
+  const auto & depth = response->depth;
+  if (!color.data.empty()) {
+    pair->color = cv::imdecode(color.data, cv::IMREAD_COLOR | cv::IMREAD_IGNORE_ORIENTATION);
+  }
+  pair->image_size = pair->color.size();
   {
     std::lock_guard<std::mutex> lock(mutex_);
     pair->info = info_;
@@ -58,8 +70,6 @@ ToolResult RgbdRuntime::capturePair(const Json & arguments, std::shared_ptr<Pair
     return ToolResult::failure("CAMERA_INFO_UNAVAILABLE", "尚未收到有效的彩色 CameraInfo");
   }
   const auto & info = *pair->info;
-  const auto & color = response->color;
-  const auto & depth = response->depth;
   if (depth.header.frame_id != color.header.frame_id || color.header.frame_id != info.header.frame_id) {
     return ToolResult::failure("UNALIGNED_IMAGE_PAIR", "深度必须对齐到彩色光学系，并使用对应 CameraInfo");
   }
@@ -68,18 +78,16 @@ ToolResult RgbdRuntime::capturePair(const Json & arguments, std::shared_ptr<Pair
   {
     return ToolResult::failure("UNSUPPORTED_CAMERA_MODEL", "不支持的畸变模型: " + info.distortion_model);
   }
-  pair->color = cv::imdecode(color.data, cv::IMREAD_COLOR | cv::IMREAD_IGNORE_ORIENTATION);
   if (pair->color.empty() || pair->color.cols != int(info.width) || pair->color.rows != int(info.height)) {
     return ToolResult::failure("UNALIGNED_IMAGE_PAIR", "彩色图分辨率必须与 CameraInfo 一致");
   }
-  pair->image_size = pair->color.size();
   if (depth.header.stamp.sec == 0 && depth.header.stamp.nanosec == 0) {
     return ToolResult::failure("TF_UNAVAILABLE", "深度图缺少采样时间，无法保存采样时的相机位姿");
   }
   try {
     pair->fixed_from_camera = tf_buffer_->lookupTransform(
       fixed_frame_, info.header.frame_id, rclcpp::Time(depth.header.stamp),
-      rclcpp::Duration::from_seconds(timeout_sec_));
+      rclcpp::Duration::from_seconds(tf_wait_sec));
   } catch (const tf2::TransformException & error) {
     return ToolResult::failure("TF_UNAVAILABLE", error.what());
   }
@@ -96,35 +104,47 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
   std::shared_ptr<Pair> pair;
   auto captured = capturePair(arguments, pair);
   if (!captured.payload.at("ok").get<bool>()) {return captured;}
-  const auto & info = *pair->info;
-  const auto & response = pair->images;
-  const auto & color = pair->images->color;
-  const auto & depth = pair->images->depth;
+  auto result = ToolResult::success({{"pair_id", pair->id}});
+  appendCaptureImage(result, *pair, image_scale, "high");
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "RGB-D 资源已经关闭");}
+    pairs_.push_back(std::move(pair));
+    while (pairs_.size() > max_pairs_) {pairs_.pop_front();}
+  }
+  return result;
+}
+
+void RgbdRuntime::appendCaptureImage(
+  ToolResult & result, Pair & pair, double image_scale, const char * detail)
+{
+  const auto & response = pair.images;
+  const auto & color = response->color;
+  const auto & depth = response->depth;
+  const auto width = pair.color.cols;
+  const auto height = pair.color.rows;
   const bool png = color.format.find("png") != std::string::npos;
   std::vector<unsigned char> scaled_color;
   const auto * color_bytes = &color.data;
   if (image_scale != 1.0) {
-    pair->image_size = {std::max(1, int(std::lround(info.width * image_scale))),
-      std::max(1, int(std::lround(info.height * image_scale)))};
+    pair.image_size = {std::max(1, int(std::lround(width * image_scale))),
+      std::max(1, int(std::lround(height * image_scale)))};
     cv::Mat resized;
-    cv::resize(pair->color, resized, pair->image_size, 0, 0,
+    cv::resize(pair.color, resized, pair.image_size, 0, 0,
       image_scale < 1.0 ? cv::INTER_AREA : cv::INTER_LINEAR);
     cv::imencode(png ? ".png" : ".jpg", resized, scaled_color);
     color_bytes = &scaled_color;
   }
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "RGB-D 资源已经关闭");}
-    pairs_.push_back(pair);
-    while (pairs_.size() > max_pairs_) {pairs_.pop_front();}
-  }
-  Json metadata{{"frame_id", info.header.frame_id},
-    {"width", pair->image_size.width}, {"height", pair->image_size.height},
-    {"original_width", info.width}, {"original_height", info.height},
-    {"pair_id", pair->id}, {"source_pair_id", response->pair_id},
-    {"pixel_origin", "top_left"}, {"fixed_frame", fixed_frame_},
+  Json metadata{{"frame_id", color.header.frame_id},
+    {"width", pair.image_size.width}, {"height", pair.image_size.height},
+    {"original_width", width}, {"original_height", height},
+    {"source_pair_id", response->pair_id}, {"pixel_origin", "top_left"},
     {"queue_index", response->queue_index}, {"image_age_sec", response->image_age_sec},
     {"stamp_delta_sec", response->stamp_delta_sec}};
+  if (!pair.id.empty()) {
+    metadata["pair_id"] = pair.id;
+    metadata["fixed_frame"] = fixed_frame_;
+  }
   Json description{{"metadata", std::move(metadata)}};
   if (real_stamps_) {
     const auto utc = [](const builtin_interfaces::msg::Time & stamp) {
@@ -138,13 +158,12 @@ ToolResult RgbdRuntime::capture_pair(const Json & arguments, double image_scale)
       description["metadata"]["depth_time_stamp"] = utc(depth.header.stamp);
     }
   }
-  auto result = ToolResult::success({{"pair_id", pair->id}});
-  result.payload["images"] = Json::array({std::move(description)});
+  if (!result.payload.contains("images")) {result.payload["images"] = Json::array();}
+  result.payload["images"].push_back(std::move(description));
   const auto mime = png ? "image/png" : "image/jpeg";
   result.images.push_back({{"type", "input_image"},
     {"image_url", std::string("data:") + mime + ";base64," + utils::encodeBase64(*color_bytes)},
-    {"detail", "high"}});
-  return result;
+    {"detail", detail}});
 }
 
 void CapturePair::initialize(const ToolContext & context, const Json & settings)

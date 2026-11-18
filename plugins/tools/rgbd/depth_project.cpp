@@ -3,6 +3,7 @@
 #include "vln_agent/plugins/tools/rgbd/segmentation.hpp"
 #include <algorithm>
 #include <stdexcept>
+#include <opencv2/imgcodecs.hpp>
 #include <pluginlib/class_list_macros.hpp>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/buffer.h>
@@ -93,6 +94,10 @@ ToolResult RgbdRuntime::projectDepth(const std::shared_ptr<Pair> & pair, const J
   if (segmented) {
     segmentation_lock.lock();
     try {
+      if (pair->color.empty()) {
+        pair->color = cv::imdecode(
+          pair->images->color.data, cv::IMREAD_COLOR | cv::IMREAD_IGNORE_ORIENTATION);
+      }
       segmenter_->setImage(pair->id, pair->color);
       std::call_once(pair->calibration->rays_once, [&] {
         pair->calibration->rays = rgbd::projectionRays(*pair->info);

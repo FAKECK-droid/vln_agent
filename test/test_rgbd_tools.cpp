@@ -16,6 +16,7 @@
 #include <nav2_msgs/action/navigate_through_poses.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <rgbd_image_queue/srv/get_image.hpp>
+#include <rgbd_image_queue/srv/get_image_batch.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
 #include <tf2_ros/static_transform_broadcaster.h>
 
@@ -354,6 +355,74 @@ TEST_F(RgbdToolsTest, CapturesModesAndReturnsScaledImageWithOnePublicPairId)
   {
     EXPECT_TRUE(std::any_of(requests.begin(), requests.end(), [&](const auto & r) {return r.first == operation;}));
   }
+}
+
+TEST_F(RgbdToolsTest, SequenceReturnsNativeImagesAndKeepsDepthForEveryReturnedFrame)
+{
+  using Batch = rgbd_image_queue::srv::GetImageBatch;
+  createSource();
+  auto batch = source->create_service<Batch>(service_name + "_batch",
+    [this](const Batch::Request::SharedPtr request, Batch::Response::SharedPtr reply) {
+      reply->stream_id = "test-camera";
+      reply->history_enabled = true;
+      reply->snapshot_seq = request->stream_id.empty() ? 1 : 3;
+      reply->next_seq = reply->snapshot_seq;
+      const auto append = [&](std::uint64_t id) {
+          auto & entry = reply->pairs.emplace_back();
+          entry.pair_id = entry.history_seq = id;
+          entry.color.header = depth.header;
+          entry.color.format = color_format;
+          entry.color.data = color;
+          entry.depth = depth;
+        };
+      if (request->stream_id.empty()) {
+        append(1);
+      } else {
+        if (request->after_seq == 1) {append(2);}
+        append(3);
+      }
+      reply->latest_index = static_cast<std::int32_t>(reply->pairs.size() - 1);
+    });
+  auto rgbd = group();
+  rgbd["functions"].push_back({{"name", "capture_pair_sequence"},
+    {"plugin", "vln_agent/CapturePairSequence"}, {"blocking", true}});
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({rgbd})));
+  capture(manager);  // 等待测试标定及静态 TF。
+  const auto invoke_sequence = [&] {
+      return invoke(manager, "capture_pair_sequence", Json::object());
+    };
+  const auto first = payload(invoke_sequence());
+  ASSERT_TRUE(first.at("ok")) << first;
+  EXPECT_EQ(first.at("data").at("latest_index"), 0);
+  EXPECT_EQ(first.at("images").at(0).at("metadata").at("source_pair_id"), 1);
+
+  const auto handle = invoke_sequence();
+  const auto result = payload(handle);
+  ASSERT_TRUE(result.at("ok")) << result;
+  const auto & output = handle.result.get().at("output");
+  ASSERT_EQ(output.size(), 3u);
+  EXPECT_EQ(output.at(0).at("type"), "input_text");
+  EXPECT_EQ(result.at("source"), "robot");
+  EXPECT_TRUE(result.at("time_stamp").is_string());
+  EXPECT_EQ(result.at("data").at("latest_index"), 1);
+  EXPECT_EQ(result.at("data").at("latest_is_new"), true);
+  ASSERT_EQ(result.at("images").size(), 2u);
+  for (std::size_t i = 0; i < 2; ++i) {
+    EXPECT_EQ(output.at(i + 1).at("type"), "input_image");
+    const auto & metadata = result.at("images").at(i).at("metadata");
+    EXPECT_EQ(metadata.at("source_pair_id"), i + 2);
+    EXPECT_EQ(metadata.at("width"), 4);
+    EXPECT_EQ(metadata.at("height"), 3);
+    EXPECT_EQ(metadata.at("projectable"), true);
+    ASSERT_TRUE(metadata.contains("pair_id"));
+    const auto projected = query(manager, metadata.at("pair_id").get<std::string>(), 2, 1);
+    EXPECT_EQ(projected.at("ok"), true) << projected;
+  }
+  const auto repeated = payload(invoke_sequence());
+  EXPECT_EQ(repeated.at("images").size(), 1u);
+  EXPECT_EQ(repeated.at("data").at("latest_index"), 0);
+  EXPECT_EQ(repeated.at("data").at("latest_is_new"), false);
 }
 
 TEST_F(RgbdToolsTest, ProjectsPerInstanceMeansIgnoresNegativePointsAndKeepsPartialResults)
