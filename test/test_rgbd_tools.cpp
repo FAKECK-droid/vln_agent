@@ -13,11 +13,13 @@
 #include <ament_index_cpp/get_package_share_directory.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/action/spin.hpp>
 #include <nav2_msgs/action/navigate_through_poses.hpp>
 #include <rclcpp_action/rclcpp_action.hpp>
 #include <rgbd_image_queue/srv/get_image.hpp>
 #include <rgbd_image_queue/srv/get_image_batch.hpp>
 #include <sensor_msgs/msg/camera_info.hpp>
+#include <tf2/LinearMath/Quaternion.h>
 #include <tf2_ros/static_transform_broadcaster.h>
 
 namespace vln_agent::test
@@ -679,6 +681,52 @@ protected:
   }
 
 };
+
+TEST_F(ObjectNavigationTest, LookatTurnsTowardPixelWithNoValidDepthAndWaits)
+{
+  using Spin = nav2_msgs::action::Spin;
+  using Goal = rclcpp_action::ServerGoalHandle<Spin>;
+  createNavigation();
+  geometry_msgs::msg::TransformStamped camera;
+  camera.header.frame_id = "rgbd_test_map";
+  camera.child_frame_id = "rgbd_test_optical";
+  tf2::Quaternion optical;
+  optical.setRPY(-std::acos(-1.0) / 2, 0, -std::acos(-1.0) / 2);
+  camera.transform.rotation.x = optical.x();
+  camera.transform.rotation.y = optical.y();
+  camera.transform.rotation.z = optical.z();
+  camera.transform.rotation.w = optical.w();
+  broadcaster->sendTransform(camera);
+
+  const auto spin_name = single_name + "_spin";
+  std::promise<std::shared_ptr<Goal>> accepted;
+  auto pending = accepted.get_future();
+  const auto server = rclcpp_action::create_server<Spin>(source, spin_name,
+    [](const rclcpp_action::GoalUUID &, std::shared_ptr<const Spin::Goal>) {
+      return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+    }, [](const std::shared_ptr<Goal> &) {return rclcpp_action::CancelResponse::ACCEPT;},
+    [&accepted](std::shared_ptr<Goal> goal) {accepted.set_value(std::move(goal));});
+  const auto client = rclcpp_action::create_client<Spin>(host, spin_name);
+  ASSERT_TRUE(client->wait_for_action_server(3s));
+
+  auto navigation = navigationGroup();
+  navigation["settings"]["spin_action_name"] = spin_name;
+  navigation["functions"].push_back({{"name", "lookat"}, {"plugin", "vln_agent/Lookat"},
+      {"blocking", false}});
+  ToolManager manager(host);
+  manager.load(config.config(Json::array({navigation, group()})));
+  const auto id = payload(capture(manager)).at("data").at("pair_id");
+  EXPECT_EQ(query(manager, id, 0, 0).at("ok"), false);
+  const auto motion = invoke(manager, "lookat", {{"pair_id", id}, {"pixel_x", 0}, {"pixel_y", 0}});
+  ASSERT_EQ(pending.wait_for(3s), std::future_status::ready);
+  const auto goal = pending.get();
+  EXPECT_NEAR(goal->get_goal()->target_yaw, std::atan2(3.0, 4.0), 1e-6);
+  EXPECT_EQ(motion.result.wait_for(30ms), std::future_status::timeout);
+  goal->succeed(std::make_shared<Spin::Result>());
+  const auto result = payload(motion);
+  EXPECT_EQ(result.at("data").at("status"), "succeeded");
+  EXPECT_EQ(result.at("data").at("pair_id"), id);
+}
 
 TEST_F(ObjectNavigationTest, DefaultsToSurfaceAndUsesSingleActionWithSharedCancel)
 {

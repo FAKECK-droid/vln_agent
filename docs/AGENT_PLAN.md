@@ -301,6 +301,8 @@ string error
 | `navigate_to_objects` | `pair_id/use_segmentation/instances[]`，实例可含 `stand_off_m` | `data.task_id/status/action/poses/projection` |
 | `navigate_to_objects_surround` | `lookaround_id/use_segmentation/instances[]`，实例可含 `stand_off_m` | 同普通物体导航 |
 | `lookaround` | `{}` | 完成后的环视 JPEG、`data.lookaround_id/views` |
+| `move_relatively` | `distance_m/yaw_deg` | 动作终态及平移、转向完成情况 |
+| `lookat` | `pair_id/pixel_x/pixel_y` | 动作终态及相对转角 `data.yaw_deg` |
 
 坐标导航统一使用 `start_navigation({frame_id, poses})`。poses 必须为非空数组，一个位姿选择 NavigateToPose，多个位姿选择 NavigateThroughPoses。像素和物体工具也复用该入口。
 
@@ -312,7 +314,13 @@ string error
 
 例如启动参数 `{"frame_id":"map","poses":[{"x":1.0,"y":2.0,"yaw":0.0},{"x":3.0,"y":4.0,"yaw":1.57}]}`。接受后统一用返回的 `data.task_id` 调用 `get_navigation_feedback` 和 `cancel_navigation`，调用方无需传入 Action 类型。反馈除上述通用字段外还包含 `number_of_poses_remaining`。取消确认仅表示 `canceling`，最终 Action 结果才释放任务槽；成功、失败或取消后的 ID 返回 `TASK_NOT_FOUND`，行为树负责上报导航事件。
 
-`get_robot_state` 无需任务 ID。`data.motion` 为 `idle/navigate_to_pose/navigate_through_poses/lookaround`，表示本组管理的任务类型；不测量底盘速度。`data.task` 包含活动任务的 `task_id/status/action` 和已有最新反馈，无活动目标时为 null，已结束任务不保留。环视停顿和转向之间仍返回 lookaround。默认配置将 lookaround 设为非阻塞调度，其他工作线程可读取状态或代价地图，也可发送脱困目标。环视转向被 Nav2 中断后，原环视返回 LOOKAROUND_INTERRUPTED。
+`get_robot_state` 无需任务 ID。`data.motion` 为 `idle/navigate_to_pose/navigate_through_poses/lookaround/drive_on_heading/backup/spin/relative_motion`，表示本组管理的任务类型；不测量底盘速度。`data.task` 包含活动任务的 `task_id/status/action` 和已有最新反馈，无活动目标时为 null，已结束任务不保留。环视停顿和转向之间仍返回 lookaround。默认配置将 lookaround 设为非阻塞调度，其他工作线程可读取状态或代价地图，也可发送脱困目标。环视转向被 Nav2 中断后，原环视返回 LOOKAROUND_INTERRUPTED。
+
+`move_relatively({"distance_m":-0.3,"yaw_deg":45})` 先沿当前车头轴倒车 0.3 米，再左转 45 度。距离正数前进、负数倒车，角度正数左转、负数右转，0 跳过对应步骤。短距离动作复用 Nav2 的 `DriveOnHeading`、`BackUp` 和 `Spin`。
+
+`lookat` 接收普通取图或序列取图返回的 `pair_id`，像素坐标使用该张彩色图的实际尺寸。工具根据标定和采样时的相机朝向计算像素射线，再用最新相机朝向算出最短水平转角。射线只表示拍摄时的方向，移动后优先使用新图。像素无需有效深度。
+
+两个工具只在运动空闲时启动，运行期间独占运动任务槽。函数等待 Action 终态，同时允许查询状态和取消当前动作。状态中的 `action` 对应 `drive_on_heading/backup/spin`。Nav2 拒绝、失败或取消时，函数返回失败。
 
 位姿直接取本组 `map_frame → base_frame` 的最新 TF，仍使用公共 `pose`；`data.tf` 含 available、两个坐标系及 age_sec。找不到 TF 时省略 pose，任务状态仍成功返回；零时间戳的静态变换年龄为 null。年龄按 ROS 时钟计算，仿真时间不会伪装成 UTC。
 

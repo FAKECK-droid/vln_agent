@@ -25,6 +25,13 @@ NavigationRuntime::NavigationRuntime(rclcpp::Node & node, const Json & settings)
   through_poses_client_(rclcpp_action::create_client<ThroughPosesAction>(
       &node, settings.value("navigate_through_poses_action_name",
       std::string("/navigate_through_poses")), callbacks_->group())),
+  drive_client_(rclcpp_action::create_client<DriveAction>(
+      &node, settings.value("drive_on_heading_action_name", std::string("/drive_on_heading")),
+      callbacks_->group())),
+  backup_client_(rclcpp_action::create_client<BackUpAction>(
+      &node, settings.value("backup_action_name", std::string("/backup")), callbacks_->group())),
+  spin_client_(rclcpp_action::create_client<SpinAction>(
+      &node, settings.value("spin_action_name", std::string("/spin")), callbacks_->group())),
   shutdown_timeout_sec_(settings.value("shutdown_timeout_sec", 2.0))
 {
   if (shutdown_timeout_sec_ < 0) {
@@ -115,10 +122,11 @@ template<typename NavigationAction>
 ToolResult NavigationRuntime::sendActionGoal(
   const typename NavigationAction::Goal & goal,
   const typename rclcpp_action::Client<NavigationAction>::SharedPtr & client,
-  bool wait_for_result)
+  const char * action, bool wait_for_result)
 {
   using Handle = rclcpp_action::ClientGoalHandle<NavigationAction>;
   constexpr bool through_poses = std::is_same_v<NavigationAction, ThroughPosesAction>;
+  constexpr bool relative = !through_poses && !std::is_same_v<NavigationAction, Action>;
   if (!client->action_server_is_ready()) {
     return ToolResult::failure("NAVIGATION_UNAVAILABLE", "导航 Action 服务尚未就绪");
   }
@@ -127,8 +135,11 @@ ToolResult NavigationRuntime::sendActionGoal(
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
+    if (!relative && relative_motion_running_) {
+      return ToolResult::failure("NAVIGATION_BUSY", "正在执行相对移动或看向动作");
+    }
     task = std::make_shared<Task>();
-    task->through_poses = through_poses;
+    task->action = action;
     task->id = std::string(through_poses ? "nav_through_poses_" : "nav_") +
       std::to_string(++next_id_);
     task_ = task;
@@ -138,16 +149,21 @@ ToolResult NavigationRuntime::sendActionGoal(
   const auto weak = weak_from_this();
   const std::weak_ptr<Task> weak_task = task;
   typename rclcpp_action::Client<NavigationAction>::SendGoalOptions options;
-  options.goal_response_callback = [weak, weak_task](typename Handle::SharedPtr handle) {
+  options.goal_response_callback =
+    [weak, weak_task, weak_client = std::weak_ptr(client)](typename Handle::SharedPtr handle) {
       if (const auto self = weak.lock()) {
         {
           std::lock_guard<std::mutex> lock(self->mutex_);
           --self->pending_goals_;
           if (const auto task = weak_task.lock()) {
-            if constexpr (through_poses) {task->through_poses_goal = handle;}
-            else {task->goal = handle;}
             task->responded = true;
-            if (!handle) {task->status = "rejected";}
+            if (handle) {
+              task->cancel = [client = weak_client.lock(), handle](CancelCallback callback) {
+                  client->async_cancel_goal(handle, std::move(callback));
+                };
+            } else {
+              task->status = "rejected";
+            }
           }
         }
         self->condition_.notify_all();
@@ -159,27 +175,33 @@ ToolResult NavigationRuntime::sendActionGoal(
       if (const auto self = weak.lock()) {
         std::lock_guard<std::mutex> lock(self->mutex_);
         if (const auto task = weak_task.lock(); task && !terminal(task->status)) {
-          task->feedback = {
-            {"distance_remaining_m", feedback->distance_remaining},
-            {"navigation_time_sec", rclcpp::Duration(feedback->navigation_time).seconds()},
-            {"estimated_time_remaining_sec",
-              rclcpp::Duration(feedback->estimated_time_remaining).seconds()},
-            {"number_of_recoveries", feedback->number_of_recoveries}};
-          if constexpr (through_poses) {
-            task->feedback["number_of_poses_remaining"] = feedback->number_of_poses_remaining;
-          }
-          const auto & current = feedback->current_pose;
-          if (!current.header.frame_id.empty()) {
-            auto pose = utils::posePayload(current.header.frame_id,
-              current.pose.position.x, current.pose.position.y, tf2::getYaw(current.pose.orientation));
-            bool simulated = false;
-            self->node_.get_parameter_or("use_sim_time", simulated, false);
-            if (!simulated && (current.header.stamp.sec != 0 || current.header.stamp.nanosec != 0)) {
-              pose["time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
-                std::chrono::seconds(current.header.stamp.sec) +
-                std::chrono::nanoseconds(current.header.stamp.nanosec)));
+          if constexpr (std::is_same_v<NavigationAction, SpinAction>) {
+            task->feedback["angle_traveled_rad"] = feedback->angular_distance_traveled;
+          } else if constexpr (relative) {
+            task->feedback["distance_traveled_m"] = feedback->distance_traveled;
+          } else {
+            task->feedback = {
+              {"distance_remaining_m", feedback->distance_remaining},
+              {"navigation_time_sec", rclcpp::Duration(feedback->navigation_time).seconds()},
+              {"estimated_time_remaining_sec",
+                rclcpp::Duration(feedback->estimated_time_remaining).seconds()},
+              {"number_of_recoveries", feedback->number_of_recoveries}};
+            if constexpr (through_poses) {
+              task->feedback["number_of_poses_remaining"] = feedback->number_of_poses_remaining;
             }
-            task->pose = std::move(pose);
+            const auto & current = feedback->current_pose;
+            if (!current.header.frame_id.empty()) {
+              auto pose = utils::posePayload(current.header.frame_id,
+                current.pose.position.x, current.pose.position.y, tf2::getYaw(current.pose.orientation));
+              bool simulated = false;
+              self->node_.get_parameter_or("use_sim_time", simulated, false);
+              if (!simulated && (current.header.stamp.sec != 0 || current.header.stamp.nanosec != 0)) {
+                pose["time_stamp"] = utils::formatUtcTime(std::chrono::system_clock::time_point(
+                  std::chrono::seconds(current.header.stamp.sec) +
+                  std::chrono::nanoseconds(current.header.stamp.nanosec)));
+              }
+              task->pose = std::move(pose);
+            }
           }
         }
       }
@@ -194,8 +216,7 @@ ToolResult NavigationRuntime::sendActionGoal(
               case rclcpp_action::ResultCode::CANCELED: task->status = "canceled"; break;
               default: task->status = "failed"; break;
             }
-            task->goal.reset();
-            task->through_poses_goal.reset();
+            task->cancel = {};
             if (self->task_ == task) {self->task_.reset();}
           }
         }
@@ -227,9 +248,12 @@ ToolResult NavigationRuntime::sendActionGoal(
   }
   if (wait_for_result) {
     condition_.wait(lock, [&] {return closed_ || terminal(task->status);});
-    if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "环视转向期间资源关闭");}
+    if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "等待动作终态期间资源关闭");}
     if (task->status != "succeeded") {
-      return ToolResult::failure("LOOKAROUND_INTERRUPTED", "环视转向未完成: " + task->status);
+      auto result = ToolResult::failure(relative ? "MOTION_INTERRUPTED" : "LOOKAROUND_INTERRUPTED",
+          "动作未完成: " + task->status);
+      result.payload["data"] = snapshot(task).payload["data"];
+      return result;
     }
   }
   return snapshot(task);
@@ -237,12 +261,38 @@ ToolResult NavigationRuntime::sendActionGoal(
 
 ToolResult NavigationRuntime::sendGoal(const Action::Goal & goal, bool wait_for_result)
 {
-  return sendActionGoal<Action>(goal, client_, wait_for_result);
+  return sendActionGoal<Action>(goal, client_, "navigate_to_pose", wait_for_result);
 }
 
 ToolResult NavigationRuntime::sendGoal(const ThroughPosesAction::Goal & goal)
 {
-  return sendActionGoal<ThroughPosesAction>(goal, through_poses_client_);
+  return sendActionGoal<ThroughPosesAction>(goal, through_poses_client_, "navigate_through_poses");
+}
+
+ToolResult NavigationRuntime::driveRelative(double distance)
+{
+  constexpr float speed = 0.15F;
+  const auto time = rclcpp::Duration::from_seconds(std::abs(distance) / speed + 5.0);
+  if (distance < 0) {
+    BackUpAction::Goal goal;
+    goal.target.x = distance;
+    goal.speed = speed;
+    goal.time_allowance = time;
+    return sendActionGoal<BackUpAction>(goal, backup_client_, "backup", true);
+  }
+  DriveAction::Goal goal;
+  goal.target.x = distance;
+  goal.speed = speed;
+  goal.time_allowance = time;
+  return sendActionGoal<DriveAction>(goal, drive_client_, "drive_on_heading", true);
+}
+
+ToolResult NavigationRuntime::spinRelative(double yaw)
+{
+  SpinAction::Goal goal;
+  goal.target_yaw = static_cast<float>(yaw);
+  goal.time_allowance = rclcpp::Duration::from_seconds(10.0 + std::abs(yaw) / 0.4);
+  return sendActionGoal<SpinAction>(goal, spin_client_, "spin", true);
 }
 
 NavigationRuntime::~NavigationRuntime()
@@ -261,7 +311,7 @@ ToolResult NavigationRuntime::snapshot(const std::shared_ptr<Task> & task)
   Json payload = task->feedback;
   payload["task_id"] = task->id;
   payload["status"] = task->status;
-  payload["action"] = task->through_poses ? "navigate_through_poses" : "navigate_to_pose";
+  payload["action"] = task->action;
   auto result = ToolResult::success(std::move(payload));
   if (!task->pose.is_null()) {result.payload["pose"] = task->pose;}
   return result;
@@ -285,28 +335,20 @@ void NavigationRuntime::shutdown() noexcept
   global_costmap_client_->prune_pending_requests();
   local_costmap_client_->prune_pending_requests();
   tf_listener_.reset();
-  GoalHandle::SharedPtr goal;
-  ThroughPosesGoalHandle::SharedPtr through_poses_goal;
+  CancelGoal cancel;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (task_ && !terminal(task_->status)) {
-      goal = task_->goal;
-      through_poses_goal = task_->through_poses_goal;
+      cancel = std::move(task_->cancel);
     }
     task_.reset();
     environments_.clear();
     trail_.clear();
   }
-  if (goal) {
-    try {client_->async_cancel_goal(goal);}
+  if (cancel) {
+    try {cancel({});}
     catch (const std::exception & error) {
       RCLCPP_WARN(node_.get_logger(), "关闭导航资源时取消目标失败: %s", error.what());
-    }
-  }
-  if (through_poses_goal) {
-    try {through_poses_client_->async_cancel_goal(through_poses_goal);}
-    catch (const std::exception & error) {
-      RCLCPP_WARN(node_.get_logger(), "关闭导航资源时取消多点目标失败: %s", error.what());
     }
   }
 }

@@ -22,8 +22,9 @@ ToolResult NavigationRuntime::get_robot_state()
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
     if (task_) {
       data["task"] = snapshot(task_).payload.at("data");
-      data["task"]["action"] = task_->through_poses ? "navigate_through_poses" : "navigate_to_pose";
-      data["motion"] = data["task"]["action"];
+      data["motion"] = task_->action;
+    } else if (relative_motion_running_) {
+      data["motion"] = "relative_motion";
     }
     if (lookaround_running_) {data["motion"] = "lookaround";}
   }
