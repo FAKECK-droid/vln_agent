@@ -7,7 +7,7 @@ namespace vln_agent
 {
 class NavigationRuntime;
 
-/** @brief 按 task_id 自动选择 Action 并请求取消导航。 */
+/** @brief 按 task_id 取消对应导航 Action，等待最终结果。 */
 class CancelNavigation : public ToolPluginBase
 {
 public:

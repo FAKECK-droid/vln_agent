@@ -11,19 +11,21 @@ namespace vln_agent
 ToolResult NavigationRuntime::cancel_navigation(const Json & arguments)
 {
   const auto id = arguments.at("task_id").get<std::string>();
-  std::shared_ptr<Task> task;
-  CancelGoal cancel;
-  {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
-    if (!task_ || task_->id != id) {
-      return ToolResult::failure("TASK_NOT_FOUND", "未知或已消费的导航任务: " + id);
-    }
-    task = task_;
-    if (terminal(task->status) || task->status == "canceling") {return snapshot(task);}
-    cancel = task->cancel;
-    if (!cancel) {return ToolResult::failure("NAVIGATION_NOT_READY", "目标尚未被接受");}
+  std::unique_lock<std::mutex> lock(mutex_);
+  if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
+  if (!task_ || task_->id != id) {
+    return ToolResult::failure("TASK_NOT_FOUND", "未知或已消费的导航任务: " + id);
   }
+  const auto task = task_;
+  const auto wait_for_terminal = [&] {
+      condition_.wait(lock, [&] {return closed_ || terminal(task->status);});
+      if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "等待取消终态时资源关闭");}
+      return snapshot(task);
+    };
+  if (terminal(task->status) || task->status == "canceling") {return wait_for_terminal();}
+  const auto cancel = task->cancel;
+  if (!cancel) {return ToolResult::failure("NAVIGATION_NOT_READY", "目标尚未被接受");}
+  lock.unlock();
 
   using CancelResponse = action_msgs::srv::CancelGoal::Response;
   struct Reply {CancelResponse::SharedPtr response;};
@@ -48,21 +50,19 @@ ToolResult NavigationRuntime::cancel_navigation(const Json & arguments)
       };
     cancel(callback);
   } catch (const rclcpp_action::exceptions::UnknownGoalHandleError &) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (terminal(task->status)) {return snapshot(task);}
+    lock.lock();
+    if (closed_ || terminal(task->status)) {return wait_for_terminal();}
     throw;
   }
 
-  std::unique_lock<std::mutex> lock(mutex_);
-  condition_.wait(lock, [&] {return closed_ || reply->response != nullptr;});
-  if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "等待取消回复时资源关闭");}
-  if (terminal(task->status)) {return snapshot(task);}
-  if (reply->response->return_code != CancelResponse::ERROR_NONE ||
-    reply->response->goals_canceling.empty())
+  lock.lock();
+  condition_.wait(lock, [&] {return closed_ || terminal(task->status) || reply->response != nullptr;});
+  if (!closed_ && !terminal(task->status) && task->status != "canceling" &&
+    reply->response->return_code != CancelResponse::ERROR_GOAL_TERMINATED)
   {
     return ToolResult::failure("NAVIGATION_CANCEL_REJECTED", "导航取消请求被拒绝");
   }
-  return snapshot(task);
+  return wait_for_terminal();
 }
 
 void CancelNavigation::initialize(const ToolContext & context, const Json &)

@@ -293,7 +293,7 @@ string error
 | --- | --- | --- |
 | `start_navigation` | `frame_id`、非空 `poses: [{x,y,yaw}, ...]` | `data.task_id/status/action`，一个位姿走单点、多个位姿走多点 |
 | `get_navigation_feedback` | `task_id` | 当前导航状态及反馈，自动识别 Action，可带公共 `pose` |
-| `cancel_navigation` | `task_id` | 自动选择对应 Action，返回取消请求处理状态 |
+| `cancel_navigation` | `task_id` | 自动选择对应 Action，等待后返回旧任务终态 |
 | `get_robot_state` | `{}` | `pose`、`data.motion/task/tf/camera` |
 | `get_surroundings` | `costmap: local/global`、`range_m` | `data.environment_id`、`pose`、地图 PNG 与 `images[0].metadata` |
 | `navigate_to_pixel_start_navigation` | `environment_id/pixel_x/pixel_y/yaw` | `data.environment_id/task_id/status/action/goal` |
@@ -312,7 +312,7 @@ string error
 
 多点工具向 `/navigate_through_poses` 提交一个 NavigateThroughPoses 目标，不逐点调用单点导航。所有位姿使用同一 `frame_id` 和采样时间，按 `poses` 数组顺序传递；x/y 单位米，yaw 单位弧度，所有数值必须有限。每次请求显式设置 `behavior_tree`，缺省为 `/home/yan/ros2_ws/src/scout_mini_vln/vln_behavior_tree/behavior_trees/vln_navthroughgoals.xml`。该路径由 Nav2 服务端读取，开发机无需存在相同绝对路径；组设置可覆盖路径，但不允许空值回退至默认树。
 
-例如启动参数 `{"frame_id":"map","poses":[{"x":1.0,"y":2.0,"yaw":0.0},{"x":3.0,"y":4.0,"yaw":1.57}]}`。接受后统一用返回的 `data.task_id` 调用 `get_navigation_feedback` 和 `cancel_navigation`，调用方无需传入 Action 类型。反馈除上述通用字段外还包含 `number_of_poses_remaining`。取消确认仅表示 `canceling`，最终 Action 结果才释放任务槽；成功、失败或取消后的 ID 返回 `TASK_NOT_FOUND`，行为树负责上报导航事件。
+例如启动参数 `{"frame_id":"map","poses":[{"x":1.0,"y":2.0,"yaw":0.0},{"x":3.0,"y":4.0,"yaw":1.57}]}`。接受后统一用返回的 `data.task_id` 调用 `get_navigation_feedback` 和 `cancel_navigation`，调用方无需传入 Action 类型。反馈除上述通用字段外还包含 `number_of_poses_remaining`。取消被接受时，活动任务状态为 `canceling`。取消工具继续等到该 Action 的最终结果和任务释放，返回 `canceled` 或已经发生的实际终态。其他调用查到已释放的任务 ID 时返回 `TASK_NOT_FOUND`。
 
 `get_robot_state` 无需任务 ID。`data.motion` 为 `idle/navigate_to_pose/navigate_through_poses/lookaround/drive_on_heading/backup/spin/relative_motion`，表示本组管理的任务类型；不测量底盘速度。`data.task` 包含活动任务的 `task_id/status/action` 和已有最新反馈，无活动目标时为 null，已结束任务不保留。环视停顿和转向之间仍返回 lookaround。默认配置将 lookaround 设为非阻塞调度，其他工作线程可读取状态或代价地图，也可发送脱困目标。环视转向被 Nav2 中断后，原环视返回 LOOKAROUND_INTERRUPTED。
 

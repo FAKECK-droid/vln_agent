@@ -51,7 +51,7 @@ public:
   ToolResult lookaround(RgbdRuntime & rgbd, const Json & settings);
   /** @brief 读取活动任务反馈；任务结束后由结果回调释放。 */
   ToolResult get_feedback(const Json & arguments);
-  /** @brief 等待取消请求回复；只有最终 Action 结果才能将状态改为 canceled。 */
+  /** @brief 请求取消目标，等待该 Action 的最终结果后返回。 */
   ToolResult cancel_navigation(const Json & arguments);
   /**
    * @brief 获取代价地图并生成地图坐标系对齐的环境图。

@@ -100,10 +100,15 @@ protected:
         {{"x", 5.0}, {"y", -2.0}, {"yaw", -M_PI}}})}};
   }
 
+  ToolCallHandle submitTool(ToolManager & manager, const std::string & name, const Json & args)
+  {
+    return manager.submit(response(Json::array({
+        call(name, "call_" + std::to_string(++next_call), args)}))).at(0);
+  }
+
   Json invoke(ToolManager & manager, const std::string & name, const Json & args)
   {
-    return payload(manager.submit(response(Json::array({
-          call(name, "call_" + std::to_string(++next_call), args)}))).at(0));
+    return payload(submitTool(manager, name, args));
   }
 
   Json start(ToolManager & manager, const Json & args = arguments())
@@ -190,6 +195,7 @@ TEST_F(NavigateThroughPosesTest, ForwardsFeedbackAndConfirmsCancellationBeforeRe
   createServer();
   auto configured = group();
   configured["settings"]["navigate_through_poses_behavior_tree"] = "/test/vln_navthroughgoals.xml";
+  configured["functions"].back()["blocking"] = false;  // 允许测试取消进行中的查询和重入。
   ToolManager manager(client);
   manager.load(config.config(Json::array({configured})));
   const auto started = startReady(manager);
@@ -228,13 +234,17 @@ TEST_F(NavigateThroughPosesTest, ForwardsFeedbackAndConfirmsCancellationBeforeRe
     "NAVIGATION_CANCEL_REJECTED");
   EXPECT_EQ(feedback(manager, id).at("data").at("status"), "running");
   reject_cancel = false;
-  const auto canceled = invoke(manager, "cancel_navigation", {{"task_id", id}});
-  EXPECT_TRUE(canceled.at("ok").get<bool>());
-  EXPECT_EQ(canceled.at("data").at("status"), "canceling");
-  EXPECT_EQ(invoke(manager, "cancel_navigation", {{"task_id", id}}).
-    at("data").at("status"), "canceling");
-  ASSERT_TRUE(eventually([&] {return handle->is_canceling();}));
+  const auto cancel = submitTool(manager, "cancel_navigation", {{"task_id", id}});
+  ASSERT_TRUE(eventually([&] {
+      return feedback(manager, id).at("data").at("status") == "canceling";
+    }));
+  const auto repeated = submitTool(manager, "cancel_navigation", {{"task_id", id}});
+  ASSERT_TRUE(eventually([&] {return manager.getStatus().at("running_count") == 2;}));
+  EXPECT_EQ(repeated.result.wait_for(30ms), std::future_status::timeout);
+  ASSERT_TRUE(handle->is_canceling());
   handle->canceled(std::make_shared<Action::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
+  EXPECT_EQ(payload(repeated).at("data").at("status"), "canceled");
   expectReleased(manager, id);
   const auto next = start(manager);
   ASSERT_TRUE(next.at("ok").get<bool>());
@@ -282,9 +292,10 @@ TEST_F(NavigateThroughPosesTest, SelectsActionByPoseCountAndSharesFeedbackAndCan
   const auto single_id = single.at("data").at("task_id");
   EXPECT_EQ(single.at("data").at("action"), "navigate_to_pose");
   EXPECT_EQ(feedback(manager, single_id).at("data").at("action"), "navigate_to_pose");
-  ASSERT_TRUE(invoke(manager, "cancel_navigation", {{"task_id", single_id}}).at("ok"));
+  const auto cancel_single = submitTool(manager, "cancel_navigation", {{"task_id", single_id}});
   ASSERT_TRUE(eventually([&] {std::lock_guard<std::mutex> lock(mutex); return single_goal && single_goal->is_canceling();}));
   {std::lock_guard<std::mutex> lock(mutex); single_goal->canceled(std::make_shared<SingleAction::Result>());}
+  EXPECT_EQ(payload(cancel_single).at("data").at("status"), "canceled");
   expectReleased(manager, single_id);
 
   const auto multiple = start(manager);
@@ -292,10 +303,11 @@ TEST_F(NavigateThroughPosesTest, SelectsActionByPoseCountAndSharesFeedbackAndCan
   const auto multiple_id = multiple.at("data").at("task_id");
   EXPECT_EQ(multiple.at("data").at("action"), "navigate_through_poses");
   EXPECT_EQ(feedback(manager, multiple_id).at("data").at("action"), "navigate_through_poses");
-  ASSERT_TRUE(invoke(manager, "cancel_navigation", {{"task_id", multiple_id}}).at("ok"));
+  const auto cancel_multiple = submitTool(manager, "cancel_navigation", {{"task_id", multiple_id}});
   const auto handle = goal(0);
   ASSERT_TRUE(eventually([&] {return handle->is_canceling();}));
   handle->canceled(std::make_shared<Action::Result>());
+  EXPECT_EQ(payload(cancel_multiple).at("data").at("status"), "canceled");
   expectReleased(manager, multiple_id);
 }
 

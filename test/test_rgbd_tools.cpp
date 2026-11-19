@@ -728,12 +728,15 @@ TEST_F(ObjectNavigationTest, LookatTurnsTowardPixelWithNoValidDepthAndWaits)
   EXPECT_EQ(result.at("data").at("pair_id"), id);
 }
 
-TEST_F(ObjectNavigationTest, DefaultsToSurfaceAndUsesSingleActionWithSharedCancel)
+TEST_F(ObjectNavigationTest, StartsNextObjectNavigationOnlyAfterCanceledResult)
 {
   createNavigation();
   ToolManager manager(host);
+  auto navigation = navigationGroup();
+  navigation["functions"].front()["blocking"] = true;
+  navigation["functions"].back()["blocking"] = true;
   // 先装载 navigation，执行时才查询同组已装载的 RGB-D 资源。
-  manager.load(config.config(Json::array({navigationGroup(), group()})));
+  manager.load(config.config(Json::array({navigation, group()})));
   const auto id = payload(capture(manager)).at("data").at("pair_id");
   const auto result = navigate(manager, id, Json::array({instance(5, 4)}));
   ASSERT_TRUE(result.at("ok")) << result;
@@ -746,11 +749,24 @@ TEST_F(ObjectNavigationTest, DefaultsToSurfaceAndUsesSingleActionWithSharedCance
   EXPECT_NEAR(pose.pose.position.y, 21, 1e-9);
   EXPECT_DOUBLE_EQ(pose.pose.position.z, 0);
   EXPECT_NEAR(yaw(pose.pose), std::atan2(14, 3.2), 1e-9);
-  const auto canceled = payload(invoke(manager, "cancel_navigation",
-      {{"task_id", data.at("task_id")}}));
-  ASSERT_TRUE(canceled.at("ok"));
+  const auto handles = manager.submit(response(Json::array({
+      call("cancel_navigation", "cancel_previous", {{"task_id", data.at("task_id")}}),
+      call("navigate_to_objects", "navigate_next", {{"pair_id", id},
+          {"use_segmentation", false}, {"instances", Json::array({instance(7, 5)})}})})));
   ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
+  EXPECT_EQ(handles[0].result.wait_for(80ms), std::future_status::timeout);
+  EXPECT_EQ(handles[1].result.wait_for(30ms), std::future_status::timeout);
+  {
+    std::lock_guard<std::mutex> lock(goals_mutex);
+    EXPECT_EQ(singles.size(), 1u);
+  }
   goal->canceled(std::make_shared<Single::Result>());
+  EXPECT_EQ(payload(handles[0]).at("data").at("status"), "canceled");
+  const auto next = payload(handles[1]);
+  ASSERT_TRUE(next.at("ok")) << next;
+  const auto next_goal = single(1);
+  EXPECT_NEAR(next_goal->get_goal()->pose.pose.position.x, 8.8, 1e-9);
+  next_goal->succeed(std::make_shared<Single::Result>());
 }
 
 TEST_F(ObjectNavigationTest, OffsetsOrderedGoalsPointsIntermediateYawForwardAndFacesLastObject)
@@ -777,10 +793,11 @@ TEST_F(ObjectNavigationTest, OffsetsOrderedGoalsPointsIntermediateYawForwardAndF
   EXPECT_NEAR(request.poses[1].pose.position.y, by, 1e-9);
   EXPECT_NEAR(yaw(request.poses[1].pose), approach_b, 1e-9);
   EXPECT_EQ(request.poses[0].header.stamp, request.poses[1].header.stamp);
-  const auto canceled = payload(invoke(manager, "cancel_navigation",
-      {{"task_id", result.at("data").at("task_id")}}));
-  ASSERT_TRUE(canceled.at("ok")); ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
+  const auto cancel = invoke(manager, "cancel_navigation",
+      {{"task_id", result.at("data").at("task_id")}});
+  ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
   goal->canceled(std::make_shared<Through::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
 }
 
 TEST_F(ObjectNavigationTest, ZeroOffsetAndCoincidentFinalGoalsKeepApproachYaw)
@@ -996,11 +1013,11 @@ TEST_F(ObjectNavigationTest, SendsSingleGoalWhileLookaroundIsWaitingForATurn)
   EXPECT_DOUBLE_EQ(single(1)->get_goal()->pose.pose.position.x, 6);
   turn->abort(std::make_shared<Single::Result>());
   EXPECT_EQ(payload(observation).at("code"), "LOOKAROUND_INTERRUPTED");
-  const auto canceled = payload(invoke(manager, "cancel_navigation",
-      {{"task_id", replacement.at("data").at("task_id")}}));
-  ASSERT_TRUE(canceled.at("ok")) << canceled;
+  const auto cancel = invoke(manager, "cancel_navigation",
+      {{"task_id", replacement.at("data").at("task_id")}});
   ASSERT_TRUE(eventually([&] {return single(1)->is_canceling();}));
   single(1)->canceled(std::make_shared<Single::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
 }
 
 TEST_F(ObjectNavigationTest, SurroundProjectionUsesEachViewsCaptureTransform)
@@ -1065,11 +1082,10 @@ TEST_F(ObjectNavigationTest, SurroundObjectNavigationUsesCachedSingleTargetAndSh
   EXPECT_NEAR(goal->get_goal()->pose.pose.position.y, 21, 1e-9);
   EXPECT_NEAR(yaw(goal->get_goal()->pose.pose), std::atan2(14,3.2), 1e-9);
   EXPECT_EQ(surroundNavigate(manager, "missing", Json::array({target}), true).at("code"), "LOOKAROUND_NOT_FOUND");
-  const auto canceled = payload(invoke(manager, "cancel_navigation",
-      {{"task_id", data.at("task_id")}}));
-  EXPECT_EQ(canceled.at("data").at("status"), "canceling");
+  const auto cancel = invoke(manager, "cancel_navigation", {{"task_id", data.at("task_id")}});
   ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
   goal->canceled(std::make_shared<Single::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
   {std::lock_guard<std::mutex> lock(mutex); EXPECT_EQ(requests.size(), reads);}
 }
 
@@ -1106,11 +1122,10 @@ TEST_F(ObjectNavigationTest, SurroundObjectNavigationKeepsCrossViewInputOrderAnd
   EXPECT_NEAR(a.position.y,21-0.6*std::sin(first_approach),1e-9);
   EXPECT_NEAR(yaw(a),std::atan2(b.position.y-a.position.y,b.position.x-a.position.x),1e-9);
   EXPECT_NEAR(yaw(b),std::atan2(21-b.position.y,9.2-b.position.x),1e-9);
-  const auto canceled = payload(invoke(manager,"cancel_navigation",
-      {{"task_id",data.at("task_id")}}));
-  EXPECT_EQ(canceled.at("data").at("status"),"canceling");
+  const auto cancel = invoke(manager, "cancel_navigation", {{"task_id", data.at("task_id")}});
   ASSERT_TRUE(eventually([&] {return goal->is_canceling();}));
   goal->canceled(std::make_shared<Through::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
 }
 
 TEST_F(ObjectNavigationTest, SurroundObjectNavigationDoesNotSubmitPartialOrInvalidGoals)

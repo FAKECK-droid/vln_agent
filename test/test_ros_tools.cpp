@@ -425,10 +425,10 @@ TEST_F(RosToolsTest, RelativeMotionUsesSignedActionsAndWaitsForTerminalResult)
   EXPECT_EQ(motion.result.wait_for(30ms), std::future_status::timeout);
   const auto task = state(manager).at("data").at("task");
   ASSERT_EQ(task.at("action"), "spin");
-  const auto cancel = payload(invoke(manager, "cancel_navigation", {{"task_id", task.at("task_id")}}));
-  ASSERT_EQ(cancel.at("data").at("status"), "canceling");
+  const auto cancel = invoke(manager, "cancel_navigation", {{"task_id", task.at("task_id")}});
   ASSERT_TRUE(eventually([&] {return spin_goal->is_canceling();}));
   spin_goal->canceled(std::make_shared<Spin::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
   const auto result = payload(motion);
   EXPECT_EQ(result.at("code"), "MOTION_INTERRUPTED");
   EXPECT_EQ(result.at("data").at("status"), "canceled");
@@ -568,10 +568,10 @@ TEST_F(RosToolsTest, RobotStateTracksSingleAndMultiGoalFeedbackAndCancellation)
   EXPECT_EQ(current.at("data").at("task").at("action"), "navigate_to_pose");
   EXPECT_DOUBLE_EQ(current.at("data").at("task").at("distance_remaining_m"), 5);
   EXPECT_FALSE(current.contains("pose"));
-  ASSERT_TRUE(payload(invoke(manager, "cancel_navigation", {{"task_id", id}})).at("ok"));
-  EXPECT_EQ(state(manager).at("data").at("task").at("status"), "canceling");
+  const auto cancel = invoke(manager, "cancel_navigation", {{"task_id", id}});
   ASSERT_TRUE(eventually([&] {return single->is_canceling();}));
   single->canceled(std::make_shared<Action::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
   ASSERT_TRUE(eventually([&] {return state(manager).at("data").at("motion") == "idle";}));
 
   const auto multi = payload(invoke(manager, "start_navigation",
@@ -623,12 +623,11 @@ TEST_F(RosToolsTest, KeepsActiveFeedbackAndRestartsAfterCancelAndSuccessWithoutP
   EXPECT_DOUBLE_EQ(current.at("pose").at("y").get<double>(), 2.3);
   EXPECT_NEAR(current.at("pose").at("yaw").get<double>(), 0.5, 1e-6);
 
-  const auto cancel = payload(invoke(manager, "cancel_navigation", {{"task_id", id}}));
-  EXPECT_TRUE(cancel.at("ok").get<bool>());
-  EXPECT_EQ(cancel.at("data").at("status"), "canceling");
-  EXPECT_EQ(feedback(manager, id).at("data").at("status"), "canceling");
+  const auto cancel = invoke(manager, "cancel_navigation", {{"task_id", id}});
   ASSERT_TRUE(eventually([&] {return first_goal->is_canceling();}));
+  EXPECT_EQ(cancel.result.wait_for(30ms), std::future_status::timeout);
   first_goal->canceled(std::make_shared<Action::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
   Json next;
   ASSERT_TRUE(eventually([&] {
       next = start(manager);  // 直接启动；终态由事件处理，启动前无需读取反馈。
@@ -924,10 +923,10 @@ TEST_F(RosToolsTest, ThroughPixelsUsesOneSnapshotAndReusesMultiGoalFeedbackAndCa
   accepted->publish_feedback(feedback_sample);
   ASSERT_TRUE(eventually([&] {return throughFeedback(manager, id).at("data").contains("number_of_poses_remaining");}));
   EXPECT_EQ(throughFeedback(manager, id).at("data").at("number_of_poses_remaining"), 1);
-  const auto canceled = payload(invoke(manager, "cancel_navigation", {{"task_id", id}}));
-  EXPECT_EQ(canceled.at("data").at("status"), "canceling");
+  const auto cancel = invoke(manager, "cancel_navigation", {{"task_id", id}});
   ASSERT_TRUE(eventually([&] {return accepted->is_canceling();}));
   accepted->canceled(std::make_shared<ThroughAction::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
   EXPECT_TRUE(eventually([&] {return throughFeedback(manager, id).value("code", "") == "TASK_NOT_FOUND";}));
 }
 
@@ -1001,9 +1000,10 @@ TEST_F(RosToolsTest, OnePixelInBatchUsesSingleActionAndUnifiedCancellation)
   const auto id = started.at("data").at("task_id");
   EXPECT_EQ(feedback(manager, id).at("data").at("action"), "navigate_to_pose");
   const auto handle = goal(0);
-  ASSERT_TRUE(payload(invoke(manager, "cancel_navigation", {{"task_id", id}})).at("ok"));
+  const auto cancel = invoke(manager, "cancel_navigation", {{"task_id", id}});
   ASSERT_TRUE(eventually([&] {return handle->is_canceling();}));
   handle->canceled(std::make_shared<Action::Result>());
+  EXPECT_EQ(payload(cancel).at("data").at("status"), "canceled");
   EXPECT_TRUE(eventually([&] {return feedback(manager, id).value("code", "") == "TASK_NOT_FOUND";}));
 }
 

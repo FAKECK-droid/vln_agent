@@ -71,7 +71,7 @@
   {
     "type": "function",
     "name": "cancel_navigation",
-    "description": "按 task_id 请求取消导航或正在执行的相对动作。canceling 表示取消请求被接受，最终 Action 结果决定终态。",
+    "description": "按 task_id 取消导航或正在执行的相对动作。等待旧 Action 终态和任务释放后才返回。status=canceled 表示已取消；若已自然结束，返回实际终态。取消被拒绝时返回错误。",
     "async": true,
     "strict": true,
     "parameters": {
