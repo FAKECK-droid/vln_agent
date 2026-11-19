@@ -42,6 +42,8 @@ public:
   ToolResult capture_pair(const Json & arguments, double image_scale);
   /** @brief 批量读取未读历史和同一快照中的最新对，保留可查询的深度。 */
   ToolResult capture_pair_sequence(double image_scale, std::uint32_t limit);
+  /** @brief 计算相机从当前朝向对准已缓存像素射线的水平转角，不读取深度图。 */
+  ToolResult imageTurn(const Json & arguments, double & radians);
   /** @brief 只读取取图服务 STATUS，返回最新配对可用性与年龄，不传输图像。 */
   Json camera_state();
   /** @brief 使用实例掩码或正点深度，返回目标坐标系中的三维均值。 */

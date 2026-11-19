@@ -149,20 +149,20 @@ DepthMean meanPointDepth(const DepthImage & depth, const sensor_msgs::msg::Camer
   return {sum / double(values.size()), values.size()};
 }
 
+cv::Point2d pixelRay(const sensor_msgs::msg::CameraInfo & info, double u, double v)
+{
+  const std::vector<cv::Point2d> pixel{{u, v}};
+  const auto ray = undistort(info, cv::Mat(pixel)).at<cv::Vec2d>(0);
+  return {ray[0], ray[1]};
+}
+
 geometry_msgs::msg::Point backProject(
   const sensor_msgs::msg::CameraInfo & info, int u, int v, double depth)
 {
-  const cv::Mat camera(3, 3, CV_64F, const_cast<double *>(info.k.data()));
-  const std::vector<cv::Point2d> pixel{{static_cast<double>(u), static_cast<double>(v)}};
-  std::vector<cv::Point2d> ray;
-  if (info.distortion_model == "equidistant") {
-    cv::fisheye::undistortPoints(pixel, ray, camera, info.d);
-  } else {
-    cv::undistortPoints(pixel, ray, camera, info.d);
-  }
+  const auto ray = pixelRay(info, u, v);
   geometry_msgs::msg::Point point;
-  point.x = ray[0].x * depth;
-  point.y = ray[0].y * depth;
+  point.x = ray.x * depth;
+  point.y = ray.y * depth;
   point.z = depth;
   return point;
 }

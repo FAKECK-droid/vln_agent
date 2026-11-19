@@ -63,6 +63,14 @@ tool_manager:
             tile_size: 512
             gap_size: 12
             rgbd_resource: rgbd/rgbd
+        - name: move_relatively
+          plugin: vln_agent/MoveRelatively
+          blocking: false
+        - name: lookat
+          plugin: vln_agent/Lookat
+          blocking: false
+          settings:
+            rgbd_resource: rgbd/rgbd
     - id: rgbd
       definition: ../plugins/tools/rgbd/tool.json
       settings:

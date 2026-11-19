@@ -4,11 +4,15 @@
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
 
+#include <nav2_msgs/action/back_up.hpp>
+#include <nav2_msgs/action/drive_on_heading.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/action/spin.hpp>
 #include <nav2_msgs/action/navigate_through_poses.hpp>
 #include <nav2_msgs/srv/get_costmap.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -31,9 +35,7 @@ class NavigationRuntime : public SharedResource,
 {
 public:
   using Action = nav2_msgs::action::NavigateToPose;
-  using GoalHandle = rclcpp_action::ClientGoalHandle<Action>;
   using ThroughPosesAction = nav2_msgs::action::NavigateThroughPoses;
-  using ThroughPosesGoalHandle = rclcpp_action::ClientGoalHandle<ThroughPosesAction>;
 
   /** @brief 创建客户端，不等待服务端；所有函数复用同一外部节点。 */
   NavigationRuntime(rclcpp::Node & node, const Json & settings);
@@ -41,6 +43,10 @@ public:
 
   /** @brief poses 含一个位姿时启动单点导航，多个时启动有序多点导航。 */
   ToolResult start_navigation(const Json & arguments);
+  /** @brief 沿车头轴平移后原地转向，等待动作完成。 */
+  ToolResult move_relatively(const Json & arguments);
+  /** @brief 从指定彩色图片的像素得到方位，等待转向完成。 */
+  ToolResult lookat(RgbdRuntime & rgbd, const Json & arguments);
   /** @brief 完成八次采图和转向后直接返回环视图与 lookaround_id。 */
   ToolResult lookaround(RgbdRuntime & rgbd, const Json & settings);
   /** @brief 读取活动任务反馈；任务结束后由结果回调释放。 */
@@ -76,12 +82,17 @@ public:
   void shutdown() noexcept override;
 
 private:
+  using DriveAction = nav2_msgs::action::DriveOnHeading;
+  using BackUpAction = nav2_msgs::action::BackUp;
+  using SpinAction = nav2_msgs::action::Spin;
+  using CancelCallback = rclcpp_action::Client<Action>::CancelCallback;
+  using CancelGoal = std::function<void(CancelCallback)>;
+
   struct Task
   {
     std::string id;                         ///< 当前导航任务的内部标志。
-    GoalHandle::SharedPtr goal;             ///< 单点目标句柄，与多点句柄二选一。
-    ThroughPosesGoalHandle::SharedPtr through_poses_goal;  ///< 多点目标句柄。
-    bool through_poses{false};              ///< 反馈与取消按记录的 Action 类型分派。
+    std::string action;                     ///< 当前 ROS Action 类型。
+    CancelGoal cancel;                      ///< 目标接受后可用的取消函数。
     std::string status{"running"};          ///< 物理任务状态，不是函数调用状态。
     bool responded{false};                 ///< 是否已经收到目标接受或拒绝回复。
     Json feedback = Json::object();         ///< 最近一次反馈的业务字段。
@@ -95,12 +106,18 @@ private:
    */
   ToolResult sendGoal(const Action::Goal & goal, bool wait_for_result = false);
   ToolResult sendGoal(const ThroughPosesAction::Goal & goal);
-  /** @brief 两类 Action 共用目标确认、反馈及终态释放逻辑。 */
+  /** @brief 共用目标确认、反馈及终态释放逻辑。 */
   template<typename NavigationAction>
   ToolResult sendActionGoal(
     const typename NavigationAction::Goal & goal,
     const typename rclcpp_action::Client<NavigationAction>::SharedPtr & client,
-    bool wait_for_result = false);
+    const char * action, bool wait_for_result = false);
+  /** @brief 在平移和转向之间继续独占运动任务槽。 */
+  ToolResult withRelativeMotion(const std::function<ToolResult()> & motion);
+  /** @brief 通过 Nav2 行为沿底盘 x 轴平移。 */
+  ToolResult driveRelative(double distance);
+  /** @brief 通过 Nav2 行为按带符号弧度原地转向。 */
+  ToolResult spinRelative(double yaw);
   /** @brief 单点与多点像素工具共用验证、快照转换及接受后消费逻辑。 */
   ToolResult startPixelNavigation(const Json & arguments, bool through_pixels);
   ToolResult navigateToObjects(RgbdRuntime & rgbd, const Json & arguments, bool surround);
@@ -115,6 +132,9 @@ private:
   std::unique_ptr<ToolCallbacks> callbacks_;  ///< 独占回调组及其执行线程。
   rclcpp_action::Client<Action>::SharedPtr client_;  ///< 整组共用的单点导航客户端。
   rclcpp_action::Client<ThroughPosesAction>::SharedPtr through_poses_client_;  ///< 共用任务槽的多点客户端。
+  rclcpp_action::Client<DriveAction>::SharedPtr drive_client_;
+  rclcpp_action::Client<BackUpAction>::SharedPtr backup_client_;
+  rclcpp_action::Client<SpinAction>::SharedPtr spin_client_;
   rclcpp::Client<nav2_msgs::srv::GetCostmap>::SharedPtr global_costmap_client_;  ///< 整组共用的全局代价地图客户端。
   rclcpp::Client<nav2_msgs::srv::GetCostmap>::SharedPtr local_costmap_client_;   ///< 整组共用的局部代价地图客户端。
 
@@ -145,6 +165,7 @@ private:
   std::uint64_t next_id_{0};                ///< 本次资源内递增的任务编号。
   std::size_t pending_goals_{0};            ///< 尚未收到回复的目标请求数。
   bool lookaround_running_{false};         ///< 在整轮采图和转向期间保留运动任务槽。
+  bool relative_motion_running_{false};    ///< 短距离动作持有运动任务槽。
   bool closed_{false};                     ///< 关闭后唤醒等待并拒绝新操作。
   double shutdown_timeout_sec_;            ///< 关闭时等待未决目标回复的最长时间。
 };

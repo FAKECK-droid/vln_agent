@@ -9,7 +9,10 @@
 #include <mutex>
 
 #include <ament_index_cpp/get_package_share_directory.hpp>
+#include <nav2_msgs/action/back_up.hpp>
+#include <nav2_msgs/action/drive_on_heading.hpp>
 #include <nav2_msgs/action/navigate_to_pose.hpp>
+#include <nav2_msgs/action/spin.hpp>
 #include <nav2_msgs/action/navigate_through_poses.hpp>
 #include <nav2_msgs/srv/get_costmap.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -107,6 +110,21 @@ protected:
       })) {throw std::runtime_error("假多点导航服务没有收到目标");}
     std::lock_guard<std::mutex> lock(goals_mutex);
     return through_goals.at(index);
+  }
+
+  template<typename Motion>
+  auto holdMotion(const std::string & name,
+    std::promise<std::shared_ptr<rclcpp_action::ServerGoalHandle<Motion>>> & accepted)
+  {
+    using Goal = rclcpp_action::ServerGoalHandle<Motion>;
+    auto server = rclcpp_action::create_server<Motion>(server_node, name,
+      [](const rclcpp_action::GoalUUID &, std::shared_ptr<const typename Motion::Goal>) {
+        return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
+      }, [](const std::shared_ptr<Goal> &) {return rclcpp_action::CancelResponse::ACCEPT;},
+      [&accepted](std::shared_ptr<Goal> goal) {accepted.set_value(std::move(goal));});
+    const auto client = rclcpp_action::create_client<Motion>(client_node, name);
+    EXPECT_TRUE(client->wait_for_action_server(3s));
+    return server;
   }
 
   Json navigationGroup()
@@ -346,7 +364,7 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
   const std::vector<std::string> names{
     "start_navigation", "get_navigation_feedback", "cancel_navigation",
     "get_robot_state", "get_surroundings", "navigate_to_pixel_start_navigation", "navigate_through_pixels_start_navigation",
-    "navigate_to_objects", "navigate_to_objects_surround", "lookaround",
+    "navigate_to_objects", "navigate_to_objects_surround", "lookaround", "move_relatively", "lookat",
     "capture_pair", "capture_pair_sequence", "depth_project", "depth_project_surround"};
   ASSERT_EQ(tools.size(), names.size());
   for (std::size_t i = 0; i < names.size(); ++i) {EXPECT_EQ(tools.at(i).at("name"), names.at(i));}
@@ -356,6 +374,66 @@ TEST_F(RosToolsTest, LoadsInstalledDefaultConfigurationAndAllPlugins)
     EXPECT_FALSE(tool.contains("plugin"));
     EXPECT_FALSE(tool.contains("blocking"));
   }
+}
+
+TEST_F(RosToolsTest, RelativeMotionUsesSignedActionsAndWaitsForTerminalResult)
+{
+  using Drive = nav2_msgs::action::DriveOnHeading;
+  using BackUp = nav2_msgs::action::BackUp;
+  using Spin = nav2_msgs::action::Spin;
+  std::promise<std::shared_ptr<rclcpp_action::ServerGoalHandle<Drive>>> drive;
+  std::promise<std::shared_ptr<rclcpp_action::ServerGoalHandle<BackUp>>> back;
+  std::promise<std::shared_ptr<rclcpp_action::ServerGoalHandle<Spin>>> spin;
+  auto forward = drive.get_future();
+  auto reverse = back.get_future();
+  auto turn = spin.get_future();
+  const auto drive_server = holdMotion<Drive>(action_name + "_drive", drive);
+  const auto back_server = holdMotion<BackUp>(action_name + "_backup", back);
+  const auto spin_server = holdMotion<Spin>(action_name + "_spin", spin);
+  createServer();
+
+  auto group = stateGroup();
+  group["settings"]["drive_on_heading_action_name"] = action_name + "_drive";
+  group["settings"]["backup_action_name"] = action_name + "_backup";
+  group["settings"]["spin_action_name"] = action_name + "_spin";
+  group["functions"].push_back({{"name", "move_relatively"}, {"plugin", "vln_agent/MoveRelatively"},
+      {"blocking", false}});
+  ToolManager manager(client_node);
+  manager.load(config.config(Json::array({group})));
+
+  const auto forward_tool = invoke(manager, "move_relatively", {{"distance_m", 0.4}, {"yaw_deg", 0}});
+  ASSERT_EQ(forward.wait_for(3s), std::future_status::ready);
+  auto forward_goal = forward.get();
+  EXPECT_DOUBLE_EQ(forward_goal->get_goal()->target.x, 0.4);
+  EXPECT_EQ(forward_tool.result.wait_for(30ms), std::future_status::timeout);
+  forward_goal->succeed(std::make_shared<Drive::Result>());
+  EXPECT_EQ(payload(forward_tool).at("data").at("status"), "succeeded");
+
+  const auto motion = invoke(manager, "move_relatively", {{"distance_m", -0.3}, {"yaw_deg", -90}});
+  ASSERT_EQ(reverse.wait_for(3s), std::future_status::ready);
+  auto reverse_goal = reverse.get();
+  EXPECT_DOUBLE_EQ(reverse_goal->get_goal()->target.x, -0.3);
+  EXPECT_EQ(turn.wait_for(30ms), std::future_status::timeout);
+  const auto busy = payload(invoke(manager, "start_navigation",
+      {{"frame_id", "map"}, {"poses", Json::array({{{"x", 3}, {"y", 4}, {"yaw", 0}}})}}));
+  EXPECT_EQ(busy.at("code"), "NAVIGATION_BUSY");
+  reverse_goal->succeed(std::make_shared<BackUp::Result>());
+
+  ASSERT_EQ(turn.wait_for(3s), std::future_status::ready);
+  auto spin_goal = turn.get();
+  EXPECT_NEAR(spin_goal->get_goal()->target_yaw, -std::acos(-1.0) / 2, 1e-6);
+  EXPECT_EQ(motion.result.wait_for(30ms), std::future_status::timeout);
+  const auto task = state(manager).at("data").at("task");
+  ASSERT_EQ(task.at("action"), "spin");
+  const auto cancel = payload(invoke(manager, "cancel_navigation", {{"task_id", task.at("task_id")}}));
+  ASSERT_EQ(cancel.at("data").at("status"), "canceling");
+  ASSERT_TRUE(eventually([&] {return spin_goal->is_canceling();}));
+  spin_goal->canceled(std::make_shared<Spin::Result>());
+  const auto result = payload(motion);
+  EXPECT_EQ(result.at("code"), "MOTION_INTERRUPTED");
+  EXPECT_EQ(result.at("data").at("status"), "canceled");
+  EXPECT_EQ(result.at("data").at("translation_completed"), true);
+  EXPECT_EQ(result.at("data").at("rotation_completed"), false);
 }
 
 /** @brief 回归跨库装载后的工厂注册，覆盖两种组顺序与复合插件独立选用。 */

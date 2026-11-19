@@ -37,6 +37,8 @@ bool sameCalibration(const sensor_msgs::msg::CameraInfo & a,
   const sensor_msgs::msg::CameraInfo & b);
 /** @brief 原始网格的去畸变 (x/z,y/z) 射线表，同一标定只需构建一次。 */
 cv::Mat projectionRays(const sensor_msgs::msg::CameraInfo & info);
+/** @brief 返回单个原图像素的去畸变归一化射线 (x/z,y/z)。 */
+cv::Point2d pixelRay(const sensor_msgs::msg::CameraInfo & info, double u, double v);
 /** @brief 相机光学坐标系中的有效深度均值。 */
 struct DepthMean
 {

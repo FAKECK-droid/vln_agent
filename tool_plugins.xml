@@ -42,6 +42,14 @@
            base_class_type="vln_agent::ToolPluginBase">
       <description>使用环视拼图实例，复用物体导航停靠位姿及单点、多点 Action。</description>
     </class>
+    <class name="vln_agent/MoveRelatively" type="vln_agent::MoveRelatively"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>沿车头轴短距离平移并原地转向，等待动作结束。</description>
+    </class>
+    <class name="vln_agent/Lookat" type="vln_agent::Lookat"
+           base_class_type="vln_agent::ToolPluginBase">
+      <description>按相机像素的水平方位原地转向，等待动作结束。</description>
+    </class>
     <class name="vln_agent/CapturePair" type="vln_agent::CapturePair"
            base_class_type="vln_agent::ToolPluginBase">
       <description>保存 RGB-D 图像对，仅返回彩色图和图像对 ID。</description>

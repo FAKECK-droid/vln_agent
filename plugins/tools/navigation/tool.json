@@ -51,7 +51,7 @@
   {
     "type": "function",
     "name": "get_navigation_feedback",
-    "description": "按 task_id 获取当前导航状态与最新反馈，自动识别单点或多点 Action。data.action 标明类型，多点反馈可含 number_of_poses_remaining；可用位姿位于 pose。已结束或被替换的任务返回 TASK_NOT_FOUND。",
+    "description": "按 task_id 获取当前导航或相对动作状态与最新反馈。data.action 标明类型，多点反馈可含 number_of_poses_remaining；可用位姿位于 pose。已结束或被替换的任务返回 TASK_NOT_FOUND。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -71,7 +71,7 @@
   {
     "type": "function",
     "name": "cancel_navigation",
-    "description": "按 task_id 请求取消导航，自动选择单点或多点 Action。canceling 表示取消请求被接受，最终 Action 结果决定终态。",
+    "description": "按 task_id 请求取消导航或正在执行的相对动作。canceling 表示取消请求被接受，最终 Action 结果决定终态。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -91,7 +91,7 @@
   {
     "type": "function",
     "name": "get_robot_state",
-    "description": "查询当前机器人位姿、活动任务 ID、Action 类型与最新反馈，以及 TF 和相机最新图像对的年龄。无需 task_id，不触发运动或采图；TF/相机不可用时单独标明。motion 表示本工具组管理的任务，idle 不代表底盘速度测量。",
+    "description": "查询当前机器人位姿、导航或相对动作的活动任务 ID、Action 类型与最新反馈，以及 TF 和相机最新图像对的年龄。无需 task_id，不触发运动或采图；TF/相机不可用时单独标明。motion 表示本工具组管理的任务，idle 不代表底盘速度测量。",
     "async": true,
     "strict": true,
     "parameters": {
@@ -465,6 +465,67 @@
       "type": "object",
       "properties": {},
       "required": [],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "move_relatively",
+    "description": "小车空闲时执行短距离相对动作并等待结束。按当前车头方向先平移，再原地转向。0 表示跳过对应动作，受阻时报告失败。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "distance_m": {
+          "type": "number",
+          "minimum": -5,
+          "maximum": 5,
+          "description": "平移米数。正数前进，负数倒车，0 不平移。"
+        },
+        "yaw_deg": {
+          "type": "number",
+          "minimum": -360,
+          "maximum": 360,
+          "description": "相对转角，单位度。正数左转，负数右转，0 不转。"
+        }
+      },
+      "required": [
+        "distance_m",
+        "yaw_deg"
+      ],
+      "additionalProperties": false
+    }
+  },
+  {
+    "type": "function",
+    "name": "lookat",
+    "description": "小车空闲时原地转向，让相机朝向指定彩色图像素的水平方位，并等待结束。使用尽量新的取图结果；像素没有有效深度也可用。底盘只调整水平朝向。",
+    "async": true,
+    "strict": true,
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "pair_id": {
+          "type": "string",
+          "description": "capture_pair 的 data.pair_id 或 capture_pair_sequence 对应图的 metadata.pair_id。"
+        },
+        "pixel_x": {
+          "type": "number",
+          "minimum": 0,
+          "description": "返回图片中的 x 坐标，向右为正。"
+        },
+        "pixel_y": {
+          "type": "number",
+          "minimum": 0,
+          "description": "返回图片中的 y 坐标，向下为正。"
+        }
+      },
+      "required": [
+        "pair_id",
+        "pixel_x",
+        "pixel_y"
+      ],
       "additionalProperties": false
     }
   }

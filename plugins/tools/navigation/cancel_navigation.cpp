@@ -12,8 +12,7 @@ ToolResult NavigationRuntime::cancel_navigation(const Json & arguments)
 {
   const auto id = arguments.at("task_id").get<std::string>();
   std::shared_ptr<Task> task;
-  GoalHandle::SharedPtr goal;
-  ThroughPosesGoalHandle::SharedPtr through_poses_goal;
+  CancelGoal cancel;
   {
     std::lock_guard<std::mutex> lock(mutex_);
     if (closed_) {return ToolResult::failure("TOOL_MANAGER_CLOSED", "导航资源已经关闭");}
@@ -22,9 +21,8 @@ ToolResult NavigationRuntime::cancel_navigation(const Json & arguments)
     }
     task = task_;
     if (terminal(task->status) || task->status == "canceling") {return snapshot(task);}
-    goal = task->goal;
-    through_poses_goal = task->through_poses_goal;
-    if (!goal && !through_poses_goal) {return ToolResult::failure("NAVIGATION_NOT_READY", "目标尚未被接受");}
+    cancel = task->cancel;
+    if (!cancel) {return ToolResult::failure("NAVIGATION_NOT_READY", "目标尚未被接受");}
   }
 
   using CancelResponse = action_msgs::srv::CancelGoal::Response;
@@ -48,8 +46,7 @@ ToolResult NavigationRuntime::cancel_navigation(const Json & arguments)
           self->condition_.notify_all();
         }
       };
-    if (task->through_poses) {through_poses_client_->async_cancel_goal(through_poses_goal, callback);}
-    else {client_->async_cancel_goal(goal, callback);}
+    cancel(callback);
   } catch (const rclcpp_action::exceptions::UnknownGoalHandleError &) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (terminal(task->status)) {return snapshot(task);}
