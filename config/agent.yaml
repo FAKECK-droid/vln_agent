@@ -70,7 +70,7 @@ tool_manager:
         camera_info_topic: /camera/color/camera_info
         fixed_frame: map
         timeout_sec: 2.0
-        max_pairs: 64
+        max_pairs: 100
         segmentation:
           warmup_on_initialize: true
           engine_directory: /home/yan/ros2_ws/src/scout_mini_vln/segment_tools/models/tensorrt/engines
