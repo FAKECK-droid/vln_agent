@@ -453,11 +453,31 @@ TEST(SessionManager, HttpStreamsAndReplaysNativeMultimodalToolResults)
   SessionManager session(files.sessionConfig(server.url(),
     {{"transport_plugin", "vln_agent/ResponsesHttpTransport"}, {"model", "vision-model"},
       {"reasoning_effort", "high"}, {"stream_output", true}, {"context", {{"mode", "local"}}}}));
-  session.setTools(Json::array({{{"type", "function"}, {"name", "capture_pair"}, {"async", true}}}));
+  const auto depth_parameters = Json::parse(R"({
+    "type": "object",
+    "properties": {
+      "box": {
+        "type": ["object", "null"],
+        "properties": {"x_min": {"type": "integer"}},
+        "required": ["x_min"],
+        "additionalProperties": false
+      }
+    },
+    "required": ["box"],
+    "additionalProperties": false
+  })");
+  session.setTools(Json::array({
+      {{"type", "function"}, {"name", "capture_pair"}, {"async", true}},
+      {{"type", "function"}, {"name", "depth_project"}, {"parameters", depth_parameters}}}));
   session.addInputs(message("导航开始", "system"));
   session.request();
-  waitFor([&] {return !session.getStreamSnapshot().at("content").empty();});
-  EXPECT_EQ(session.getStreamSnapshot().at("content")[0].at("text"), "看到门");
+  waitFor([&] {
+    return !session.getStreamSnapshot().at("content").empty() ||
+           session.getRequestStatus().at("retry_required").get<bool>();
+  });
+  const auto content = session.getStreamSnapshot().at("content");
+  ASSERT_FALSE(content.empty()) << session.getRequestStatus().at("last_error").dump();
+  EXPECT_EQ(content[0].at("text"), "看到门");
   EXPECT_TRUE(session.takeResponse().is_null());
   server.release(0);
   EXPECT_EQ(take(session), first);
@@ -483,6 +503,7 @@ TEST(SessionManager, HttpStreamsAndReplaysNativeMultimodalToolResults)
       EXPECT_FALSE(req.contains(field));
     }
     EXPECT_FALSE(req.at("tools")[0].contains("async"));
+    EXPECT_EQ(req.at("tools")[1].at("parameters"), depth_parameters);
   }
   EXPECT_EQ(requests[1].at("input").back(), image);
   EXPECT_EQ(requests[1].at("input").at(requests[1].at("input").size() - 2), first.at("output").back());
@@ -592,12 +613,17 @@ TEST(SessionManager, LocalHistoryRetriesOnlyFreshInputsAndNeverCommitsPartialOut
 TEST(SessionManager, CompactionCommitsOnlySuccessfulCloudSummaryAndPreservesToolContext)
 {
   const auto original = message("系统规则", "system");
-  const auto old = message(std::string(1450, 'x'));
+  const auto old = message(std::string(5000, 'x'));
+  auto initial = completed("r0");
+  initial.erase("usage");
   auto recent = completed("recent", "发现门口");
+  recent["usage"] = {{"input_tokens", 1350}, {"output_tokens", 13}, {"total_tokens", 1363}};
   recent["output"].push_back({{"type", "function_call"}, {"call_id", "c1"},
       {"name", "camera"}, {"arguments", "{}"}});
   WsFixture server([&](auto & peer, const Json &, std::size_t index) {
-      if (index == 2) {
+      if (index == 0) {
+        peer.send({{"type", "response.completed"}, {"response", initial}});
+      } else if (index == 2) {
         peer.send({{"type", "response.completed"}, {"response", completed("bad", "not-json")}});
       } else if (index == 3) {
         peer.send({{"type", "response.completed"}, {"response",
@@ -614,10 +640,13 @@ TEST(SessionManager, CompactionCommitsOnlySuccessfulCloudSummaryAndPreservesTool
         {"keep_recent_items", 2}, {"summary_max_output_tokens", 128}}}}));
   session.addInputs(Json::array({original, old}));
   session.request();
-  EXPECT_EQ(take(session).at("id"), "r0");
+  EXPECT_EQ(take(session), initial);
+  EXPECT_TRUE(session.getContextStatus().at("usage").is_null());
   session.addInputs(message("在门口停下"));
   session.request();
-  EXPECT_EQ(take(session).at("id"), "recent");
+  EXPECT_EQ(take(session), recent);
+  const auto context_status = session.getContextStatus();
+  EXPECT_EQ(context_status.at("usage").at("total_tokens"), context_status.at("compact_threshold"));
 
   auto metadata = utils::businessPayload("robot");
   metadata["images"] = Json::array({Json::object()});
@@ -648,7 +677,7 @@ TEST(SessionManager, CompactionCommitsOnlySuccessfulCloudSummaryAndPreservesTool
   const auto & input = requests[4].at("input");
   EXPECT_EQ(input.front(), original);
   EXPECT_TRUE(input.dump().find("目标是经过门口") != std::string::npos);
-  EXPECT_TRUE(input.dump().find(std::string(1450, 'x')) == std::string::npos);
+  EXPECT_TRUE(input.dump().find(std::string(5000, 'x')) == std::string::npos);
   EXPECT_EQ(input.at(input.size() - 3), output);
   EXPECT_EQ(input.back(), message("仍然继续"));
   EXPECT_EQ(session.getContextStatus().at("compaction_count"), 1);

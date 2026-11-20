@@ -521,7 +521,6 @@ session_manager:
     budget_tokens: 64000
     compact_ratio: 0.8
     keep_recent_items: 8
-    max_request_bytes: 33554432
     summary_max_output_tokens: 1500
 ```
 
@@ -529,10 +528,10 @@ DeepSeek 的 Responses API 支持将 `reasoning_effort` 设为 `low`、`high` �
 
 ### 5.3 本地摘要压缩
 
-1. 发送前估算输入 token 和 JSON 字节数。token 预算先扣除 `max_output_tokens`，达到 `compact_ratio` 或达到字节上限的 80% 时，尝试对旧历史发起摘要。
+1. 下一轮发送前，读取最近一次成功业务响应的 `usage.total_tokens`。达到 `floor((budget_tokens - max_output_tokens) × compact_ratio)` 时尝试压缩旧历史。首次发送或上一轮没有用量时，直接发送。
 2. 保留开头的系统消息、最近 `keep_recent_items` 项以及未配对的工具调用。压缩只选择可闭合的旧前缀，`function_call` 和它的结果一起保留或一起压缩。
-3. 同一传输按顺序发送独立摘要请求，携带旧历史文字和已有摘要，不声明工具。旧图二进制与推理项仅从摘要输入中排除。云端返回 `{"summary":"..."}` 后，本地检查格式和大小，用短摘要原子替换已选历史前缀。
-4. 摘要请求超时为 30 秒。失败时保留原历史和待发输入，`request()` 可显式重试。成功后继续发送原导航轮，摘要响应走内部状态而不进入业务结果槽。如果受保护的上下文仍超过硬预算，报告 `CONTEXT_BUDGET_EXCEEDED`。
+3. 同一传输按顺序发送独立摘要请求，携带旧历史文字和已有摘要，不声明工具。旧图二进制与推理项仅从摘要输入中排除。云端返回 `{"summary":"..."}` 后，本地检查格式，用短摘要原子替换已选历史前缀。
+4. 摘要请求超时为 30 秒。失败时保留原历史和待发输入，`request()` 可显式重试。成功后继续发送原导航轮，摘要响应走内部状态而不进入业务结果槽。单轮新增输入的长度由模型服务在接收时校验。
 
 ### 5.4 查询与恢复
 

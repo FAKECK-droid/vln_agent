@@ -43,39 +43,6 @@ bool historySummary(const Json & item)
   return part.is_object() && part.value("text", std::string()).rfind(marker, 0) == 0;
 }
 
-/** @brief 估算 JSON 字节数而不复制大块图像；单独估算图像 token。 */
-ContextSize measureValue(const Json & value, bool count_tokens)
-{
-  ContextSize result{0, 2};
-  if (value.is_array() || value.is_object()) {
-    const bool image = isType(value, "input_image");
-    for (auto it = value.cbegin(); it != value.cend(); ++it) {
-      if (value.is_object()) {
-        result.bytes += it.key().size() + 3;
-        if (count_tokens && !image) {result.tokens += (it.key().size() + 1) / 2 + 1;}
-      }
-      const auto child = measureValue(*it, count_tokens && !image);
-      result.tokens += child.tokens;
-      result.bytes += child.bytes + 1;
-    }
-    if (image && count_tokens) {result.tokens = 1024;}
-  } else if (value.is_string()) {
-    const auto & s = value.get_ref<const std::string &>();
-    result.bytes += s.size();
-    if (count_tokens || s.rfind("data:", 0) != 0) {
-      for (const unsigned char c : s) {
-        if (c == '"' || c == '\\') {++result.bytes;}
-        else if (c < 0x20) {result.bytes += 5;}
-      }
-    }
-    if (count_tokens) {result.tokens = (s.size() + 1) / 2 + 1;}
-  } else {
-    result.bytes = value.dump().size();
-    if (count_tokens) {result.tokens = result.bytes / 2 + 1;}
-  }
-  return result;
-}
-
 Json textEvidence(const Json & item)
 {
   Json result = Json::object();
@@ -93,8 +60,6 @@ Json textEvidence(const Json & item)
   return result;
 }
 }  // namespace
-
-ContextSize measure(const Json & value) {return measureValue(value, true);}
 
 ContextRange compactRange(const Json & history, std::size_t recent_items)
 {
@@ -152,16 +117,6 @@ void installSummary(Json & history, ContextRange range, const Json & output)
     throw std::invalid_argument("摘要必须包含非空的 summary");
   }
   auto item = message("user", "历史摘要（仅供参考）：\n" + summary);
-  const auto size = measure(item);
-  ContextSize previous;
-  for (auto i = range.first; i < range.last; ++i) {
-    const auto used = measure(history.at(i));
-    previous.tokens += used.tokens;
-    previous.bytes += used.bytes;
-  }
-  if (size.tokens >= previous.tokens && size.bytes >= previous.bytes) {
-    throw std::invalid_argument("摘要没有缩小历史");
-  }
   auto & items = history.get_ref<Json::array_t &>();
   // 先完成摘要校验，再修改历史；替换首项并删除剩余项无需分配新空间。
   items.at(range.first) = std::move(item);

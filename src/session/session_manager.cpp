@@ -29,7 +29,7 @@ struct SessionConfig
   Json fields;
   Clock::duration interval, timeout;
   bool stream_output, local_history, forward_tool_async;
-  std::uint64_t budget, threshold, input_limit, max_bytes, recent_items, summary_tokens;
+  std::uint64_t budget, threshold, recent_items, summary_tokens;
 };
 
 /** @brief 读取独立配置段，不解释工具、提示词文件或业务输入。 */
@@ -48,8 +48,6 @@ SessionConfig readConfig(const std::string & path)
     throw std::invalid_argument("context.mode 必须为 server 或 local");
   }
   config.local_history = mode == "local";
-  config.max_bytes = context ? context["max_request_bytes"].as<std::uint64_t>(32 * 1024 * 1024) :
-    32 * 1024 * 1024;
   config.recent_items = context ? context["keep_recent_items"].as<std::uint64_t>(8) : 8;
   config.summary_tokens = context ? context["summary_max_output_tokens"].as<std::uint64_t>(1500) : 1500;
   config.budget = context ? context["budget_tokens"].as<std::uint64_t>(128000) : 128000;
@@ -62,12 +60,12 @@ SessionConfig readConfig(const std::string & path)
   }
   if (config.local_history &&
     (static_cast<std::uint64_t>(max_output) >= config.budget ||
-    config.summary_tokens == 0 || config.summary_tokens >= config.budget || config.max_bytes == 0))
+    config.summary_tokens == 0 || config.summary_tokens >= config.budget))
   {
     throw std::invalid_argument("本地会话必须为输出和摘要预留预算");
   }
-  config.input_limit = config.local_history ? config.budget - max_output : config.budget;
-  config.threshold = static_cast<std::uint64_t>(std::floor(config.input_limit * ratio));
+  const auto input_budget = config.local_history ? config.budget - max_output : config.budget;
+  config.threshold = static_cast<std::uint64_t>(std::floor(input_budget * ratio));
   if (config.threshold == 0) {
     throw std::invalid_argument("压缩阈值必须大于零");
   }
@@ -154,39 +152,22 @@ struct SessionManager::Impl
   /** @brief 摘要和导航轮共用调度；摘要期间保留待发输入。 */
   void prepareRequest()
   {
-    if (config.local_history) {
-      std::uint64_t tokens = 16, bytes = 64;
-      for (const auto * value : {&config.fields, &tools, &local_context, &pending_input}) {
-        const auto cost = session::measure(*value);
-        tokens += cost.tokens;
-        bytes += cost.bytes;
-      }
-      const bool over_limit = tokens >= config.input_limit || bytes >= config.max_bytes;
-      const bool should_compact = over_limit || tokens >= config.threshold ||
-        bytes >= config.max_bytes - config.max_bytes / 5;
-      if (should_compact && !compacted_for_send) {
-        const auto range = session::compactRange(local_context, config.recent_items);
-        if (!range.empty()) {
-          Json summary = {
-            {"model", config.fields.at("model")},
-            {"max_output_tokens", config.summary_tokens},
-            {"input", session::summaryInput(local_context, range)}};
-          if (const auto effort = config.fields.find("reasoning"); effort != config.fields.end()) {
-            summary["reasoning"] = *effort;
-          }
-          if (config.fields.contains("store")) {summary["store"] = false;}
-          const auto cost = session::measure(summary);
-          if (cost.tokens + config.summary_tokens >= config.budget || cost.bytes >= config.max_bytes) {
-            fail("CONTEXT_BUDGET_EXCEEDED", "待总结历史超过摘要请求预算");
-            return;
-          }
-          summary_range = range;
-          current_request = std::move(summary);
-          return;
+    const auto total_tokens = usage.find("total_tokens");
+    if (config.local_history && !compacted_for_send && total_tokens != usage.end() &&
+      total_tokens->is_number_integer() && total_tokens->get<double>() >= config.threshold)
+    {
+      const auto range = session::compactRange(local_context, config.recent_items);
+      if (!range.empty()) {
+        Json summary = {
+          {"model", config.fields.at("model")},
+          {"max_output_tokens", config.summary_tokens},
+          {"input", session::summaryInput(local_context, range)}};
+        if (const auto effort = config.fields.find("reasoning"); effort != config.fields.end()) {
+          summary["reasoning"] = *effort;
         }
-      }
-      if (over_limit) {
-        fail("CONTEXT_BUDGET_EXCEEDED", "受到保护的上下文或待发输入超过会话预算");
+        if (config.fields.contains("store")) {summary["store"] = false;}
+        summary_range = range;
+        current_request = std::move(summary);
         return;
       }
     }
