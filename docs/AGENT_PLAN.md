@@ -494,18 +494,24 @@ warmup_on_initialize 在默认 agent.yaml 中开启。RGB-D 共享资源首次�
 
 ### 5.2 配置与上下文
 
-默认使用 `provider: openai`、`transport_plugin: vln_agent/ResponsesWsTransport` 和 `context.mode: server`。服务端模式使用 `previous_response_id` 续接，请求携带原生 `context_management`，限额按 `budget_tokens × compact_ratio` 设置。
+使用 `base_url` 和 `model` 指定模型端点，`transport_plugin` 选择 WS 或 HTTP。两种传输都支持以下上下文模式。
 
-DeepSeek 使用 HTTP 和本地模式，例如：
+| `context.mode` | 适用条件 |
+| --- | --- |
+| `server`（默认） | 服务端支持按 `previous_response_id` 续接和 `context_management` 压缩。请求启用 `store`，压缩阈值为 `budget_tokens × compact_ratio`。 |
+| `local` | 客户端每轮回传有效历史和新增输入。超过阈值时通过云端摘要来压缩本地历史。 |
+
+`reasoning_effort` 原样写入 `reasoning.effort`，省略时使用模型服务的默认值。本地模式的摘要请求共用此设置。`parallel_tool_calls`、`prompt_cache_key`、`include` 和本地模式的 `store` 按服务能力选填。例如，支持加密推理回放的服务可在本地模式下配置 `store: false` 和 `include: [reasoning.encrypted_content]`。只有 `forward_tool_async: true` 时才发送自定义工具字段 `async`。
+
+以下配置使用 DeepSeek 作为 HTTP 本地模式的示例。
 
 ```yaml
 session_manager:
   transport_plugin: vln_agent/ResponsesHttpTransport
-  provider: deepseek
   base_url: https://api.deepseek.com
   api_key: "<your key>"
   model: deepseek-flash
-  reasoning_effort: none
+  reasoning_effort: low
   max_output_tokens: 4096
   max_request_hz: 1.0
   request_timeout_sec: 60
@@ -519,7 +525,7 @@ session_manager:
     summary_max_output_tokens: 1500
 ```
 
-本地模式每轮提交当前有效原生历史和本轮新增输入。DeepSeek 配置省去服务端链、云端压缩和其他 OpenAI 专用字段。图像输入和工具结果图片使用 `deepseek-flash`。代理按配置使用与目标服务一致的 Responses 基地址。 [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/)
+DeepSeek 的 Responses API 支持将 `reasoning_effort` 设为 `low`、`high` 或 `max`，`none` 关闭思考。`deepseek-flash` 支持图像输入和工具结果图片。 [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/) · [DeepSeek 思考模式](https://api-docs.deepseek.com/guides/thinking_mode/)
 
 ### 5.3 本地摘要压缩
 

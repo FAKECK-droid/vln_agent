@@ -110,7 +110,7 @@ session_manager:
   api_key: "sk-local-1gHIUqOELWgeLmW5AocUxtxGo7DWRlUBed1xu-35"
   model: "gpt-6.2-sol"
   transport_plugin: vln_agent/ResponsesWsTransport
-  provider: openai
+  forward_tool_async: true
   reasoning_effort: low
   max_output_tokens: 8192
   parallel_tool_calls: true

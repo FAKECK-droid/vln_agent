@@ -8,6 +8,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 #include <pluginlib/class_loader.hpp>
 #include <yaml-cpp/yaml.h>
@@ -27,7 +28,7 @@ struct SessionConfig
   std::string base_url, api_key, transport;
   Json fields;
   Clock::duration interval, timeout;
-  bool stream_output, local_history, deepseek;
+  bool stream_output, local_history, forward_tool_async;
   std::uint64_t budget, threshold, input_limit, max_bytes, recent_items, summary_tokens;
 };
 
@@ -41,16 +42,10 @@ SessionConfig readConfig(const std::string & path)
   const auto hz = yaml["max_request_hz"].as<double>(1.0);
   const auto timeout = yaml["request_timeout_sec"].as<double>(0.0);
   config.transport = yaml["transport_plugin"].as<std::string>("vln_agent/ResponsesWsTransport");
-  const auto provider = yaml["provider"].as<std::string>("openai");
-  if (provider != "openai" && provider != "deepseek") {
-    throw std::invalid_argument("provider 必须为 openai 或 deepseek");
-  }
-  config.deepseek = provider == "deepseek";
   const auto context = yaml["context"];
-  const auto default_mode = config.deepseek ? "local" : "server";
-  const auto mode = context ? context["mode"].as<std::string>(default_mode) : default_mode;
-  if ((mode != "server" && mode != "local") || (config.deepseek && mode != "local")) {
-    throw std::invalid_argument("context.mode 必须为 server 或 local，DeepSeek 使用 local");
+  const auto mode = context ? context["mode"].as<std::string>("server") : "server";
+  if (mode != "server" && mode != "local") {
+    throw std::invalid_argument("context.mode 必须为 server 或 local");
   }
   config.local_history = mode == "local";
   config.max_bytes = context ? context["max_request_bytes"].as<std::uint64_t>(32 * 1024 * 1024) :
@@ -79,23 +74,29 @@ SessionConfig readConfig(const std::string & path)
   config.interval = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(1 / hz));
   config.timeout = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(timeout));
   config.stream_output = yaml["stream_output"].as<bool>(false);
+  config.forward_tool_async = yaml["forward_tool_async"].as<bool>(false);
   config.fields = {
-    {"model", yaml["model"].as<std::string>()},
-    {"reasoning", {{"effort", yaml["reasoning_effort"].as<std::string>(
-          config.deepseek ? "none" : "low")}}},
-    {"max_output_tokens", max_output}};
-  if (!config.deepseek) {
-    config.fields["store"] = !config.local_history;
-    if (config.local_history) {
-      config.fields["include"] = Json::array({"reasoning.encrypted_content"});
+    {"model", yaml["model"].as<std::string>()}, {"max_output_tokens", max_output}};
+  if (const auto effort = yaml["reasoning_effort"]) {
+    config.fields["reasoning"] = {{"effort", effort.as<std::string>()}};
+  }
+  if (const auto parallel = yaml["parallel_tool_calls"]) {
+    config.fields["parallel_tool_calls"] = parallel.as<bool>();
+  }
+  if (const auto cache_key = yaml["prompt_cache_key"]) {
+    config.fields["prompt_cache_key"] = cache_key.as<std::string>();
+  }
+  if (const auto include = yaml["include"]) {
+    config.fields["include"] = include.as<std::vector<std::string>>();
+  }
+  if (config.local_history) {
+    if (const auto store = yaml["store"]) {
+      config.fields["store"] = store.as<bool>();
     }
-    config.fields["parallel_tool_calls"] = yaml["parallel_tool_calls"].as<bool>(true);
-    config.fields["prompt_cache_key"] = yaml["prompt_cache_key"].as<std::string>("scout-mini-vln");
-    config.fields["text"] = {{"format", {{"type", "text"}}}};
-    if (!config.local_history) {
-      config.fields["context_management"] = Json::array({
-          {{"type", "compaction"}, {"compact_threshold", config.threshold}}});
-    }
+  } else {
+    config.fields["store"] = true;
+    config.fields["context_management"] = Json::array({
+        {{"type", "compaction"}, {"compact_threshold", config.threshold}}});
   }
   return config;
 }
@@ -136,7 +137,7 @@ struct SessionManager::Impl
   {
     Json request = config.fields;
     request["tools"] = tools;
-    if (config.deepseek) {
+    if (!config.forward_tool_async) {
       for (auto & tool : request["tools"]) {tool.erase("async");}
     }
     if (config.local_history) {
@@ -168,11 +169,12 @@ struct SessionManager::Impl
         if (!range.empty()) {
           Json summary = {
             {"model", config.fields.at("model")},
-            {"reasoning", config.deepseek ? Json{{"effort", "none"}} :
-              config.fields.at("reasoning")},
             {"max_output_tokens", config.summary_tokens},
             {"input", session::summaryInput(local_context, range)}};
-          if (!config.deepseek) {summary["store"] = false;}
+          if (const auto effort = config.fields.find("reasoning"); effort != config.fields.end()) {
+            summary["reasoning"] = *effort;
+          }
+          if (config.fields.contains("store")) {summary["store"] = false;}
           const auto cost = session::measure(summary);
           if (cost.tokens + config.summary_tokens >= config.budget || cost.bytes >= config.max_bytes) {
             fail("CONTEXT_BUDGET_EXCEEDED", "待总结历史超过摘要请求预算");

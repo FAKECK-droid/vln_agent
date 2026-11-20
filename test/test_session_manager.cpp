@@ -31,7 +31,8 @@ TEST(SessionManager, BuildsNativeRequestsWithoutImplicitInitialization)
       peer.send(Json{{"type", "response.completed"}, {"response", completed("r1")}});
     });
   FixtureFiles files;
-  SessionManager session(files.sessionConfig(server.url()));
+  SessionManager session(files.sessionConfig(server.url(),
+    {{"parallel_tool_calls", false}, {"prompt_cache_key", "fixture"}, {"forward_tool_async", true}}));
   ready(session);
   EXPECT_EQ(session.getContextStatus().at("mode"), "server");
   EXPECT_EQ(session.getContextStatus().at("history_item_count"), 0);
@@ -41,7 +42,7 @@ TEST(SessionManager, BuildsNativeRequestsWithoutImplicitInitialization)
   EXPECT_EQ(session.getRequestStatus().at("request_elapsed_ms"), 0);
   EXPECT_EQ(session.getRequestStatus().at("rate_limit_remaining_ms"), 0);
   EXPECT_FALSE(session.getRequestStatus().at("retry_required").get<bool>());
-  session.setTools(Json::array({{{"type", "function"}, {"name", "example"}}}));
+  session.setTools(Json::array({{{"type", "function"}, {"name", "example"}, {"async", true}}}));
   session.request();
   session.addInputs(message("系统规则", "system"));
   session.addInputs(Json::array_t{message("用户"), message("小车状态")});
@@ -60,8 +61,10 @@ TEST(SessionManager, BuildsNativeRequestsWithoutImplicitInitialization)
   EXPECT_EQ(request.at("type"), "response.create");
   EXPECT_EQ(request.at("model"), "gpt-6-luna");
   EXPECT_EQ(request.at("store"), true);
-  EXPECT_EQ(request.at("parallel_tool_calls"), true);
-  EXPECT_EQ(request.at("text"), (Json{{"format", {{"type", "text"}}}}));
+  EXPECT_EQ(request.at("parallel_tool_calls"), false);
+  EXPECT_EQ(request.at("prompt_cache_key"), "fixture");
+  EXPECT_EQ(request.at("tools")[0].at("async"), true);
+  EXPECT_FALSE(request.contains("reasoning"));
   EXPECT_EQ(request.at("context_management").at(0).at("compact_threshold"), 8000);
   EXPECT_EQ(request.at("input"),
     Json::array({message("系统规则", "system"), message("用户"), message("小车状态"), tool_output}));
@@ -448,8 +451,8 @@ TEST(SessionManager, HttpStreamsAndReplaysNativeMultimodalToolResults)
     }, options);
   FixtureFiles files;
   SessionManager session(files.sessionConfig(server.url(),
-    {{"transport_plugin", "vln_agent/ResponsesHttpTransport"}, {"provider", "deepseek"},
-      {"model", "deepseek-flash"}, {"stream_output", true}, {"context", {{"mode", "local"}}}}));
+    {{"transport_plugin", "vln_agent/ResponsesHttpTransport"}, {"model", "vision-model"},
+      {"reasoning_effort", "high"}, {"stream_output", true}, {"context", {{"mode", "local"}}}}));
   session.setTools(Json::array({{{"type", "function"}, {"name", "capture_pair"}, {"async", true}}}));
   session.addInputs(message("导航开始", "system"));
   session.request();
@@ -472,7 +475,11 @@ TEST(SessionManager, HttpStreamsAndReplaysNativeMultimodalToolResults)
   EXPECT_EQ(server.authorizations().front(), "Bearer loopback-fixture");
   for (const auto & req : requests) {
     EXPECT_EQ(req.at("stream"), true);
-    for (const auto * field : {"type", "previous_response_id", "context_management", "store", "prompt_cache_key"}) {
+    EXPECT_EQ(req.at("model"), "vision-model");
+    EXPECT_EQ(req.at("reasoning").at("effort"), "high");
+    for (const auto * field : {"type", "previous_response_id", "context_management", "store",
+        "prompt_cache_key", "include", "parallel_tool_calls"})
+    {
       EXPECT_FALSE(req.contains(field));
     }
     EXPECT_FALSE(req.at("tools")[0].contains("async"));
@@ -493,7 +500,8 @@ TEST(SessionManager, LocalHistoryReplaysNativeOutputsToolsAndImagesWithoutStored
     });
   FixtureFiles files;
   SessionManager session(files.sessionConfig(server.url(),
-    {{"context", {{"mode", "local"}}}}));
+    {{"context", {{"mode", "local"}}}, {"store", false},
+      {"include", Json::array({"reasoning.encrypted_content"})}}));
   const Json image{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}};
   auto business = utils::businessPayload("user");
   business["instruction"] = "检查图像";
@@ -533,6 +541,7 @@ TEST(SessionManager, LocalHistoryReplaysNativeOutputsToolsAndImagesWithoutStored
   EXPECT_EQ(requests[2].at("input"), history);
   for (const auto & request : requests) {
     EXPECT_EQ(request.at("store"), false);
+    EXPECT_EQ(request.at("include"), Json::array({"reasoning.encrypted_content"}));
     EXPECT_FALSE(request.contains("previous_response_id"));
     EXPECT_FALSE(request.contains("context_management"));
   }
@@ -600,7 +609,7 @@ TEST(SessionManager, CompactionCommitsOnlySuccessfulCloudSummaryAndPreservesTool
     });
   FixtureFiles files;
   SessionManager session(files.sessionConfig(server.url(),
-    {{"max_output_tokens", 128},
+    {{"max_output_tokens", 128}, {"reasoning_effort", "high"},
       {"context", {{"mode", "local"}, {"budget_tokens", 2400}, {"compact_ratio", 0.6},
         {"keep_recent_items", 2}, {"summary_max_output_tokens", 128}}}}));
   session.addInputs(Json::array({original, old}));
@@ -630,6 +639,8 @@ TEST(SessionManager, CompactionCommitsOnlySuccessfulCloudSummaryAndPreservesTool
   const auto requests = server.requests();
   ASSERT_EQ(requests.size(), 5u);
   for (int i : {2, 3}) {
+    EXPECT_EQ(requests[i].at("reasoning").at("effort"), "high");
+    EXPECT_FALSE(requests[i].contains("store"));
     EXPECT_FALSE(requests[i].contains("tools"));
     EXPECT_FALSE(requests[i].contains("previous_response_id"));
     EXPECT_TRUE(requests[i].at("input").dump().find("data:image") == std::string::npos);
