@@ -12,6 +12,7 @@ find_package(yaml-cpp REQUIRED)
 find_package(Threads REQUIRED)
 find_package(Boost REQUIRED)
 find_package(OpenSSL REQUIRED)
+find_package(CURL REQUIRED)
 find_package(nav2_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(action_msgs REQUIRED)
@@ -41,10 +42,18 @@ target_link_libraries(vln_agent_utils PRIVATE vln_agent_base64)
 
 add_library(vln_agent_session SHARED
   src/session/session_manager.cpp
-  src/session/responses_ws_transport.cpp)
+  src/session/local_context.cpp)
 target_link_libraries(vln_agent_session PUBLIC vln_agent_utils Threads::Threads)
-target_link_libraries(vln_agent_session PRIVATE Boost::boost OpenSSL::SSL OpenSSL::Crypto)
-target_compile_definitions(vln_agent_session PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
+ament_target_dependencies(vln_agent_session PUBLIC pluginlib)
+
+add_library(vln_agent_session_transport_plugins SHARED
+  src/session/responses_ws_transport.cpp
+  src/session/responses_http_transport.cpp)
+target_link_libraries(vln_agent_session_transport_plugins PUBLIC vln_agent_utils Threads::Threads)
+target_link_libraries(vln_agent_session_transport_plugins PRIVATE
+  Boost::boost OpenSSL::SSL OpenSSL::Crypto CURL::libcurl)
+ament_target_dependencies(vln_agent_session_transport_plugins PUBLIC pluginlib)
+target_compile_definitions(vln_agent_session_transport_plugins PRIVATE BOOST_ERROR_CODE_HEADER_ONLY)
 
 add_library(vln_agent_tools SHARED
   src/tools/tool_manager.cpp
@@ -121,10 +130,11 @@ add_executable(vln_agent_node src/vln_agent.cpp)
 target_link_libraries(vln_agent_node vln_agent_interaction vln_agent_events)
 ament_target_dependencies(vln_agent_node rclcpp ament_index_cpp)
 
-foreach(target vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_tool_plugins vln_agent_events vln_agent_node)
+foreach(target vln_agent_utils vln_agent_session vln_agent_session_transport_plugins vln_agent_tools vln_agent_interaction vln_agent_ros_topic_interface vln_agent_tool_plugins vln_agent_events vln_agent_node)
   target_compile_options(${target} PRIVATE -Wall -Wextra -Wpedantic)
 endforeach()
 pluginlib_export_plugin_description_file(vln_agent tool_plugins.xml)
+pluginlib_export_plugin_description_file(vln_agent transport_plugins.xml)
 pluginlib_export_plugin_description_file(vln_agent user_interface_plugins.xml)
 
 install(TARGETS vln_agent_utils vln_agent_session vln_agent_tools vln_agent_interaction vln_agent_events
@@ -132,7 +142,7 @@ install(TARGETS vln_agent_utils vln_agent_session vln_agent_tools vln_agent_inte
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
-install(TARGETS vln_agent_tool_plugins vln_agent_ros_topic_interface
+install(TARGETS vln_agent_tool_plugins vln_agent_ros_topic_interface vln_agent_session_transport_plugins
   ARCHIVE DESTINATION lib
   LIBRARY DESTINATION lib
   RUNTIME DESTINATION bin)
@@ -231,7 +241,7 @@ if(BUILD_TESTING)
   ament_add_gtest(test_session_manager test/test_session_manager.cpp TIMEOUT 45)
   target_link_libraries(test_session_manager vln_agent_ws_fixture)
   ament_add_gtest(test_ws_transport test/test_ws_transport.cpp TIMEOUT 45)
-  target_link_libraries(test_ws_transport vln_agent_ws_fixture)
+  target_link_libraries(test_ws_transport vln_agent_ws_fixture vln_agent_session_transport_plugins)
 
   foreach(target test_tool_manager test_ros_tools test_session_manager test_ws_transport test_user_interaction_manager)
     target_compile_definitions(${target} PRIVATE

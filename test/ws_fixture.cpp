@@ -130,6 +130,45 @@ struct WsFixture::Impl
         beast::http::write(stream.next_layer(), rejected);
         return;
       }
+      if (options.http_sse) {
+        if (upgrade.method() != beast::http::verb::post) {
+          throw std::runtime_error("HTTP fixture requires POST");
+        }
+        const auto request = Json::parse(upgrade.body());
+        std::size_t index;
+        {
+          std::lock_guard<std::mutex> lock(mutex);
+          ++connection_count;
+          index = request_values.size();
+          request_values.push_back(request);
+          start_values.push_back(std::chrono::steady_clock::now());
+        }
+        auto & wire = stream.next_layer();
+        beast::http::response<beast::http::empty_body> response{beast::http::status::ok, 11};
+        response.set(beast::http::field::content_type, "text/event-stream");
+        response.chunked(true);
+        response.keep_alive(false);
+        beast::http::response_serializer<beast::http::empty_body> serializer(response);
+        beast::http::write_header(wire, serializer);
+        Peer peer{
+          [&](const std::string & text, bool fragment) {
+            auto value = Json::parse(text);
+            const auto type = value.at("type").get<std::string>();
+            if (type == "response.output_text.delta") {value.erase("type");}
+            const auto event = ": ping\r\n\r\nevent: " + type + "\r\ndata: " +
+              value.dump() + "\r\n\r\n";
+            const auto split = fragment ? event.size() / 2 : event.size();
+            net::write(wire, beast::http::make_chunk(net::buffer(event.data(), split)));
+            if (fragment) {
+              net::write(wire, beast::http::make_chunk(
+                  net::buffer(event.data() + split, event.size() - split)));
+            }
+          },
+          [native_socket] {::shutdown(native_socket, SHUT_RDWR);}};
+        handler(peer, request, index);
+        net::write(wire, beast::http::make_chunk_last());
+        return;
+      }
       stream.accept(upgrade);
       {
         std::lock_guard<std::mutex> lock(mutex);

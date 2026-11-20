@@ -6,13 +6,14 @@
 #include <condition_variable>
 #include <cstdint>
 #include <mutex>
-#include <set>
 #include <stdexcept>
 #include <thread>
 
+#include <pluginlib/class_loader.hpp>
 #include <yaml-cpp/yaml.h>
 
-#include "vln_agent/session/responses_ws_transport.hpp"
+#include "vln_agent/session/responses_transport.hpp"
+#include "local_context.hpp"
 
 namespace vln_agent
 {
@@ -23,11 +24,11 @@ using Clock = std::chrono::steady_clock;
 /** @brief 会话固定配置；仅 fields 中的字段进入模型请求。 */
 struct SessionConfig
 {
-  std::string base_url, api_key;
+  std::string base_url, api_key, transport;
   Json fields;
   Clock::duration interval, timeout;
-  bool stream_output, local_history;
-  std::uint64_t budget, threshold;
+  bool stream_output, local_history, deepseek;
+  std::uint64_t budget, threshold, input_limit, max_bytes, recent_items, summary_tokens;
 };
 
 /** @brief 读取独立配置段，不解释工具、提示词文件或业务输入。 */
@@ -39,9 +40,23 @@ SessionConfig readConfig(const std::string & path)
   config.api_key = yaml["api_key"].as<std::string>();
   const auto hz = yaml["max_request_hz"].as<double>(1.0);
   const auto timeout = yaml["request_timeout_sec"].as<double>(0.0);
+  config.transport = yaml["transport_plugin"].as<std::string>("vln_agent/ResponsesWsTransport");
+  const auto provider = yaml["provider"].as<std::string>("openai");
+  if (provider != "openai" && provider != "deepseek") {
+    throw std::invalid_argument("provider 必须为 openai 或 deepseek");
+  }
+  config.deepseek = provider == "deepseek";
   const auto context = yaml["context"];
-  config.local_history = context ? context["local_history"].as<bool>(false) : false;
-  const auto server_compaction = context ? context["server_compaction"].as<bool>(true) : true;
+  const auto default_mode = config.deepseek ? "local" : "server";
+  const auto mode = context ? context["mode"].as<std::string>(default_mode) : default_mode;
+  if ((mode != "server" && mode != "local") || (config.deepseek && mode != "local")) {
+    throw std::invalid_argument("context.mode 必须为 server 或 local，DeepSeek 使用 local");
+  }
+  config.local_history = mode == "local";
+  config.max_bytes = context ? context["max_request_bytes"].as<std::uint64_t>(32 * 1024 * 1024) :
+    32 * 1024 * 1024;
+  config.recent_items = context ? context["keep_recent_items"].as<std::uint64_t>(8) : 8;
+  config.summary_tokens = context ? context["summary_max_output_tokens"].as<std::uint64_t>(1500) : 1500;
   config.budget = context ? context["budget_tokens"].as<std::uint64_t>(128000) : 128000;
   const auto ratio = context ? context["compact_ratio"].as<double>(0.8) : 0.8;
   const auto max_output = yaml["max_output_tokens"].as<int>(8192);
@@ -50,7 +65,14 @@ SessionConfig readConfig(const std::string & path)
   {
     throw std::invalid_argument("会话频率、超时、输出上限或上下文预算不合法");
   }
-  config.threshold = static_cast<std::uint64_t>(std::floor(config.budget * ratio));
+  if (config.local_history &&
+    (static_cast<std::uint64_t>(max_output) >= config.budget ||
+    config.summary_tokens == 0 || config.summary_tokens >= config.budget || config.max_bytes == 0))
+  {
+    throw std::invalid_argument("本地会话必须为输出和摘要预留预算");
+  }
+  config.input_limit = config.local_history ? config.budget - max_output : config.budget;
+  config.threshold = static_cast<std::uint64_t>(std::floor(config.input_limit * ratio));
   if (config.threshold == 0) {
     throw std::invalid_argument("压缩阈值必须大于零");
   }
@@ -58,17 +80,23 @@ SessionConfig readConfig(const std::string & path)
   config.timeout = std::chrono::duration_cast<Clock::duration>(std::chrono::duration<double>(timeout));
   config.stream_output = yaml["stream_output"].as<bool>(false);
   config.fields = {
-    {"type", "response.create"}, {"model", yaml["model"].as<std::string>()},
-    {"store", yaml["store"].as<bool>(true)},
-    {"reasoning", {{"effort", yaml["reasoning_effort"].as<std::string>("low")}}},
-    {"max_output_tokens", max_output},
-    {"parallel_tool_calls", yaml["parallel_tool_calls"].as<bool>(true)},
-    {"prompt_cache_key", yaml["prompt_cache_key"].as<std::string>("scout-mini-vln")},
-    {"text", {{"format", {{"type", "text"}}}}},
-    {"context_management", Json::array({
-          {{"type", "compaction"}, {"compact_threshold", config.threshold}}})}};
-  if (config.local_history) {config.fields["store"] = false;}
-  if (!server_compaction) {config.fields.erase("context_management");}
+    {"model", yaml["model"].as<std::string>()},
+    {"reasoning", {{"effort", yaml["reasoning_effort"].as<std::string>(
+          config.deepseek ? "none" : "low")}}},
+    {"max_output_tokens", max_output}};
+  if (!config.deepseek) {
+    config.fields["store"] = !config.local_history;
+    if (config.local_history) {
+      config.fields["include"] = Json::array({"reasoning.encrypted_content"});
+    }
+    config.fields["parallel_tool_calls"] = yaml["parallel_tool_calls"].as<bool>(true);
+    config.fields["prompt_cache_key"] = yaml["prompt_cache_key"].as<std::string>("scout-mini-vln");
+    config.fields["text"] = {{"format", {{"type", "text"}}}};
+    if (!config.local_history) {
+      config.fields["context_management"] = Json::array({
+          {{"type", "compaction"}, {"compact_threshold", config.threshold}}});
+    }
+  }
   return config;
 }
 }  // namespace
@@ -76,7 +104,10 @@ SessionConfig readConfig(const std::string & path)
 /** @brief 队列与网络互相独立；会话锁不跨越 send、interrupt、close 或 join。 */
 struct SessionManager::Impl
 {
-  explicit Impl(const std::string & path) : config(readConfig(path))
+  explicit Impl(const std::string & path)
+  : config(readConfig(path)),
+    loader("vln_agent", "vln_agent::ResponsesTransport"),
+    transport(loader.createSharedInstance(config.transport))
   {
     if (config.stream_output) {
       stream = {{"response_id", ""}, {"state", "idle"}, {"content", Json::array()}};
@@ -87,7 +118,7 @@ struct SessionManager::Impl
 
   void start()
   {
-    transport.connect(config.base_url, config.api_key,
+    transport->connect(config.base_url, config.api_key,
       [this](const Json & event) {onEvent(event);},
       [this](const Json & state) {onState(state);});
     scheduler = std::thread([this] {schedule();});
@@ -105,14 +136,62 @@ struct SessionManager::Impl
   {
     Json request = config.fields;
     request["tools"] = tools;
-    request["input"] = std::move(pending_input);
-    pending_input = Json::array();
+    if (config.deepseek) {
+      for (auto & tool : request["tools"]) {tool.erase("async");}
+    }
     if (config.local_history) {
-      utils::prependArray(request["input"], local_context);
-    } else if (!latest_response_id.empty()) {
-      request["previous_response_id"] = latest_response_id;
+      auto input = local_context;
+      utils::appendInputs(input, pending_input);
+      request["input"] = std::move(input);
+    } else {
+      request["input"] = pending_input;
+      if (!latest_response_id.empty()) {request["previous_response_id"] = latest_response_id;}
     }
     return request;
+  }
+
+  /** @brief 摘要和导航轮共用调度；摘要期间保留待发输入。 */
+  void prepareRequest()
+  {
+    if (config.local_history) {
+      std::uint64_t tokens = 16, bytes = 64;
+      for (const auto * value : {&config.fields, &tools, &local_context, &pending_input}) {
+        const auto cost = session::measure(*value);
+        tokens += cost.tokens;
+        bytes += cost.bytes;
+      }
+      const bool over_limit = tokens >= config.input_limit || bytes >= config.max_bytes;
+      const bool should_compact = over_limit || tokens >= config.threshold ||
+        bytes >= config.max_bytes - config.max_bytes / 5;
+      if (should_compact && !compacted_for_send) {
+        const auto range = session::compactRange(local_context, config.recent_items);
+        if (!range.empty()) {
+          Json summary = {
+            {"model", config.fields.at("model")},
+            {"reasoning", config.deepseek ? Json{{"effort", "none"}} :
+              config.fields.at("reasoning")},
+            {"max_output_tokens", config.summary_tokens},
+            {"input", session::summaryInput(local_context, range)}};
+          if (!config.deepseek) {summary["store"] = false;}
+          const auto cost = session::measure(summary);
+          if (cost.tokens + config.summary_tokens >= config.budget || cost.bytes >= config.max_bytes) {
+            fail("CONTEXT_BUDGET_EXCEEDED", "待总结历史超过摘要请求预算");
+            return;
+          }
+          summary_range = range;
+          current_request = std::move(summary);
+          return;
+        }
+      }
+      if (over_limit) {
+        fail("CONTEXT_BUDGET_EXCEEDED", "受到保护的上下文或待发输入超过会话预算");
+        return;
+      }
+    }
+    current_request = buildRequest();
+    current_delta = std::move(pending_input);
+    pending_input = Json::array();
+    compacted_for_send = false;
   }
 
   /** @brief 在会话锁内记录会话错误，保留当前与待发输入。 */
@@ -123,10 +202,7 @@ struct SessionManager::Impl
     in_flight = false;
     last_finished = Clock::now();
     send_requested = false;
-    compaction_items.clear();
-    if (config.stream_output) {
-      stream["state"] = "error";
-    }
+    if (config.stream_output && summary_range.empty()) {stream["state"] = "error";}
   }
 
   /** @brief 通道失效时中止当前轮，重连成功只恢复可用性，不登记重发意图。 */
@@ -142,23 +218,10 @@ struct SessionManager::Impl
         in_flight = false;
         last_finished = Clock::now();
         send_requested = false;
-        if (config.stream_output) {
-          stream["state"] = "interrupted";
-        }
+        if (config.stream_output && summary_range.empty()) {stream["state"] = "interrupted";}
       }
     }
     condition.notify_all();
-  }
-
-  /** @brief 按本轮项目标志去重压缩记录，保留原始加密项而不解读内容。 */
-  void observeCompaction(const Json & item, std::size_t index)
-  {
-    if (item.value("type", std::string()) == "compaction") {
-      const auto key = item.value("id", "index_" + std::to_string(index));
-      if (compaction_items.insert(key).second) {
-        ++compaction_count;
-      }
-    }
   }
 
   /** @brief 仅更新显示文本，不拼接工具参数或重建业务结果。 */
@@ -201,72 +264,75 @@ struct SessionManager::Impl
     }
   }
 
-  /** @brief 处理正常连接上的模型事件；网络异常不会通过此入口伪造。 */
+  /** @brief 验证终态后提交会话轮次，摘要不会进入导航结果槽。 */
+  void finish(const Json & response)
+  {
+    const auto id = response.at("id").get<std::string>();
+    if (!active_response_id.empty() && id != active_response_id) {return;}
+    const auto & output = response.at("output");
+    if (id.empty() || response.at("status") != "completed" || !output.is_array()) {
+      throw std::invalid_argument("完成事件缺少完整 response");
+    }
+
+    if (!summary_range.empty()) {
+      session::installSummary(local_context, summary_range, output);
+      summary_range = {};
+      compacted_for_send = true;
+      send_requested = true;
+      active_response_id = latest_response_id;
+      ++compaction_count;
+    } else {
+      if (config.stream_output) {finishText(response);}
+      if (config.local_history) {
+        // current_request 已通过输入校验；完成响应校验后才整体提交。
+        auto & input = current_request.at("input");
+        utils::appendInputs(input, output);
+        local_context = std::move(input);
+      } else {
+        compaction_count += std::count_if(output.begin(), output.end(), [](const Json & item) {
+            return item.value("type", std::string()) == "compaction";
+          });
+      }
+      latest_response_id = id;
+      active_response_id = id;
+      usage = response.value("usage", Json());
+      response_slot = response;
+    }
+    current_delta = Json::array();
+    current_request = nullptr;
+    last_finished = Clock::now();
+    in_flight = false;
+  }
+
   void onEvent(const Json & event)
   {
     {
       std::lock_guard<std::mutex> lock(mutex);
-      if (closed || !in_flight) {
-        return;
-      }
+      if (closed || !in_flight) {return;}
+      const bool display = config.stream_output && summary_range.empty();
       try {
         const auto type = event.at("type").get<std::string>();
         if (type == "response.created" || type == "response.in_progress") {
           active_response_id = event.at("response").at("id").get<std::string>();
-          if (config.stream_output) {
-            stream["response_id"] = active_response_id;
-          }
+          if (display) {stream["response_id"] = active_response_id;}
         } else if (type == "response.output_text.delta" || type == "response.refusal.delta") {
-          if (config.stream_output) {
-            appendText(event);
-          }
-        } else if (type == "response.output_item.done") {
-          observeCompaction(event.at("item"), event.at("output_index").get<std::size_t>());
+          if (display) {appendText(event);}
         } else if (type == "response.completed") {
-          const auto & response = event.at("response");
-          const auto id = response.at("id").get<std::string>();
-          if (!active_response_id.empty() && id != active_response_id) {
-            return;
-          }
-          if (id.empty() || response.at("status") != "completed" || !response.at("output").is_array()) {
-            throw std::invalid_argument("完成事件缺少完整 response");
-          }
-          const auto & output = response.at("output");
-          for (std::size_t i = 0; i < output.size(); ++i) {
-            observeCompaction(output[i], i);
-          }
-          if (config.stream_output) {
-            finishText(response);
-          }
-          if (config.local_history) {
-            // 只提交完整成功轮次；下一轮重放原生输出，包括工具调用和加密推理项。
-            local_context = std::move(current_request.at("input"));
-            utils::appendInputs(local_context, output);
-            auto & items = local_context.get_ref<Json::array_t &>();
-            const auto compact = std::find_if(items.rbegin(), items.rend(), [](const Json & item) {
-                return item.value("type", std::string()) == "compaction";
-              });
-            if (compact != items.rend()) {items.erase(items.begin(), compact.base() - 1);}
-          }
-          latest_response_id = id;
-          active_response_id = id;
-          last_finished = Clock::now();
-          usage = response.value("usage", Json());
-          response_slot = response;
-          compaction_items.clear();
-          current_request = nullptr;
-          in_flight = false;
+          finish(event.at("response"));
         } else if (type == "error" || type == "response.failed" || type == "response.incomplete") {
           const auto & source = type == "error" ? event : event.at("response");
-          const auto error = source.value("error", Json());
-          const auto code = error.is_object() ?
-            error.value("code", type) : type;
-          const auto message = error.is_object() ?
-            error.value("message", std::string("模型请求失败")) : std::string("模型请求未完整完成");
-          fail(code, message, event);
+          const auto nested = source.find("error");
+          const auto & error = nested != source.end() && nested->is_object() ? *nested : source;
+          const auto code = error.find("code");
+          const auto message = error.find("message");
+          const std::string error_code =
+            code != error.end() && code->is_string() ? code->get<std::string>() : type;
+          const std::string error_message = message != error.end() && message->is_string() ?
+            message->get<std::string>() : "模型请求未完整完成";
+          fail(summary_range.empty() ? error_code : "CONTEXT_SUMMARY_FAILED", error_message, event);
         }
       } catch (const std::exception & error) {
-        fail("INVALID_RESPONSE", error.what(), event);
+        fail(summary_range.empty() ? "INVALID_RESPONSE" : "CONTEXT_SUMMARY_FAILED", error.what(), event);
       }
     }
     condition.notify_all();
@@ -278,14 +344,15 @@ struct SessionManager::Impl
     std::unique_lock<std::mutex> lock(mutex);
     while (!closed) {
       const auto now = Clock::now();
-      if (in_flight && config.timeout != Clock::duration::zero() &&
-        now >= last_started + config.timeout)
+      const auto timeout = summary_range.empty() ? config.timeout : std::chrono::seconds(30);
+      if (in_flight && timeout != Clock::duration::zero() && now >= last_started + timeout)
       {
-        fail("REQUEST_TIMEOUT", "等待模型响应超时");
+        fail(summary_range.empty() ? "REQUEST_TIMEOUT" : "CONTEXT_SUMMARY_TIMEOUT",
+          "等待模型响应超时");
         // 在换连接完成前关闭发送入口，隔离旧轮的迟到事件。
         available = false;
         lock.unlock();
-        transport.interrupt();
+        transport->interrupt();
         lock.lock();
         continue;
       }
@@ -293,26 +360,36 @@ struct SessionManager::Impl
         !in_flight && response_slot.is_null() && last_error.is_null() && available;
       const auto allowed_at = ever_started ? last_started + config.interval : now;
       if (eligible && now >= allowed_at) {
-        current_request = buildRequest();
         send_requested = false;
+        try {
+          prepareRequest();
+        } catch (const std::exception & error) {
+          fail("INVALID_REQUEST", error.what());
+        }
+        if (!last_error.is_null()) {continue;}
         in_flight = true;
         last_started = now;
         last_finished = {};
         ever_started = true;
         active_response_id.clear();
-        compaction_items.clear();
-        if (config.stream_output) {
+        if (config.stream_output && summary_range.empty()) {
           stream = {{"response_id", ""}, {"state", "generating"}, {"content", Json::array()}};
         }
         auto frame = current_request;
         lock.unlock();
-        transport.send(std::move(frame));
+        try {
+          transport->send(std::move(frame));
+        } catch (const std::exception & error) {
+          lock.lock();
+          fail("TRANSPORT_SEND_FAILED", error.what());
+          continue;
+        }
         lock.lock();
         continue;
       }
       auto wake = Clock::time_point::max();
-      if (in_flight && config.timeout != Clock::duration::zero()) {
-        wake = last_started + config.timeout;
+      if (in_flight && timeout != Clock::duration::zero()) {
+        wake = last_started + timeout;
       }
       if (eligible) {
         wake = std::min(wake, allowed_at);
@@ -331,7 +408,7 @@ struct SessionManager::Impl
     if (!last_error.is_null()) {return "error";}
     if (!response_slot.is_null()) {return "response_ready";}
     if (!available) {return "waiting_transport";}
-    if (in_flight) {return "generating";}
+    if (in_flight) {return summary_range.empty() ? "generating" : "compacting";}
     if (send_requested && ever_started && Clock::now() < last_started + config.interval) {
       return "waiting_interval";
     }
@@ -353,13 +430,15 @@ struct SessionManager::Impl
       send_requested = false;
     }
     condition.notify_all();
-    transport.close();
+    transport->close();
     if (scheduler.joinable()) {
       scheduler.join();
     }
     std::lock_guard<std::mutex> lock(mutex);
     current_request = nullptr;
     pending_input = Json::array();
+    current_delta = Json::array();
+    summary_range = {};
     local_context = Json::array();
     response_slot = nullptr;
     in_flight = false;
@@ -367,7 +446,6 @@ struct SessionManager::Impl
     usage = nullptr;
     latest_response_id.clear();
     active_response_id.clear();
-    compaction_items.clear();
     if (config.stream_output) {
       stream = {{"response_id", ""}, {"state", "closed"}, {"content", Json::array()}};
     }
@@ -381,15 +459,18 @@ struct SessionManager::Impl
   Json current_request;                    ///< 当前已发送快照，失败后保留用于显式恢复。
   Json pending_input = Json::array();       ///< 持续追加的下一轮输入，不是请求队列。
   Json response_slot;                      ///< 唯一完整结果槽。
-  Json local_context = Json::array();       ///< 本地模式的有效上下文；压缩后释放被替代前缀。
+  Json local_context = Json::array();       ///< 本地模式成功提交的有效上下文。
+  Json current_delta = Json::array();       ///< 当前业务轮的新输入，重试时独立恢复。
+  session::ContextRange summary_range;      ///< 非空表示当前请求为摘要。
+  bool compacted_for_send{false};            ///< 同一轮业务发送前最多进行一次摘要。
   Json last_error, usage, stream;           ///< 会话错误、最近用量和可选显示。
   std::string latest_response_id, active_response_id;
-  std::set<std::string> compaction_items;   ///< 本轮已观察到的压缩项，避免流式/终态双计数。
   std::uint64_t compaction_count{0};
   bool closed{false}, available{false}, in_flight{false}, send_requested{false};
   bool ever_started{false}, context_invalid{false};
   Clock::time_point last_started{}, last_finished{};  ///< 本轮起止时刻，用于稳定的耗时查询。
-  ResponsesWsTransport transport;          ///< 网络状态机完全留在传输层。
+  pluginlib::ClassLoader<ResponsesTransport> loader;
+  std::shared_ptr<ResponsesTransport> transport;
   std::thread scheduler;
 };
 
@@ -451,13 +532,10 @@ void SessionManager::request()
     if (impl_->context_invalid) {
       return;
     }
-    if (!impl_->in_flight && !impl_->current_request.is_null()) {
-      auto & input = impl_->current_request.at("input");
-      if (impl_->config.local_history) {
-        // 当前请求已经包含已提交上下文；仅把失败轮的新输入放回待发缓冲。
-        input.erase(input.begin(), input.begin() + impl_->local_context.size());
-      }
-      utils::prependArray(impl_->pending_input, input);
+    if (!impl_->in_flight && (!impl_->current_request.is_null() || !impl_->last_error.is_null())) {
+      utils::prependArray(impl_->pending_input, impl_->current_delta);
+      impl_->current_delta = Json::array();
+      impl_->summary_range = {};
       impl_->current_request = nullptr;
       impl_->last_error = nullptr;
     }
@@ -496,7 +574,8 @@ Json SessionManager::getRequestStatus() const
       std::max<std::int64_t>(0, std::chrono::ceil<std::chrono::milliseconds>(
         impl_->last_started + impl_->config.interval - now).count()) : 0;
     const bool retry_required =
-      !impl_->closed && !impl_->in_flight && !impl_->current_request.is_null();
+      !impl_->closed && !impl_->in_flight &&
+      (!impl_->current_request.is_null() || !impl_->last_error.is_null());
     status = {
       {"current_response_id", impl_->active_response_id},
       {"retry_required", retry_required},
@@ -510,7 +589,7 @@ Json SessionManager::getRequestStatus() const
       {"request_interrupted", !impl_->in_flight && !impl_->current_request.is_null()},
       {"last_error", impl_->last_error}};
   }
-  status["transport"] = impl_->transport.getStatus();
+  status["transport"] = impl_->transport->getStatus();
   return status;
 }
 
@@ -522,6 +601,7 @@ Json SessionManager::getContextStatus() const
     {"mode", impl_->config.local_history ? "local" : "server"},
     {"history_item_count", impl_->local_context.size()},
     {"budget_tokens", impl_->config.budget}, {"compact_threshold", impl_->config.threshold},
+    {"compaction_in_flight", impl_->in_flight && !impl_->summary_range.empty()},
     {"usage", impl_->usage}, {"compaction_count", impl_->compaction_count}};
 }
 

@@ -1,5 +1,7 @@
 #include "vln_agent/session/responses_ws_transport.hpp"
 
+#include <pluginlib/class_list_macros.hpp>
+
 #include <boost/asio/connect.hpp>
 #include <boost/asio/ip/tcp.hpp>
 #include <boost/asio/ssl.hpp>
@@ -372,6 +374,7 @@ void ResponsesWsTransport::connect(
 
 void ResponsesWsTransport::send(Json event)
 {
+  event["type"] = "response.create";
   std::lock_guard<std::mutex> lock(impl_->lifecycle_mutex);
   if (impl_->stopping.load()) {
     return;
@@ -423,3 +426,5 @@ void ResponsesWsTransport::close()
 }
 
 }  // namespace vln_agent
+
+PLUGINLIB_EXPORT_CLASS(vln_agent::ResponsesWsTransport, vln_agent::ResponsesTransport)

@@ -2,13 +2,13 @@
 
 ## 1. 程序组成
 
-`vln_agent_node` 通过 Responses WebSocket 接收模型消息和函数调用，将小车动作交给工具插件执行。用户交互渠道和机器人事件分别接入独立组件，由 `VLNAgent` 主循环串接。
+`vln_agent_node` 通过 Responses WebSocket 或 HTTP SSE 接收模型消息和函数调用，将小车动作交给工具插件执行。用户交互渠道和机器人事件分别接入独立组件，由 `VLNAgent` 主循环串接。
 
 | 组件 | 工作内容 |
 | --- | --- |
 | `VLNAgent` | 初始化组件，轮询事件、完整响应、工具结果和用户输入 |
 | `SessionManager` | 组装请求、限频、保存当前会话上下文和完整响应 |
-| `ResponsesWsTransport` | WS/WSS 连接、认证、收发、超时探活和重连 |
+| `ResponsesTransport` | 统一收发、状态、中断和关闭接口，由 WS 或 HTTP SSE 插件实现 |
 | `ToolManager` | 装载工具插件、派发调用、交付逐调用结果，并提供 ToolCall 服务 |
 | `SharedResources` | 按名称和类型保存工具组共享对象 |
 | `EventManager` | 接收机器事件，批量交付原生输入 |
@@ -18,7 +18,7 @@
 
 ```text
 用户渠道 ── UserInteractionManager ─┐
-机器人事件 ── EventManager ────────┼─ VLNAgent ─ SessionManager ─ ResponsesWsTransport
+机器人事件 ── EventManager ────────┼─ VLNAgent ─ SessionManager ─ ResponsesTransport (WS / HTTP SSE)
 工具结果 ── ToolManager ──────────┘      │
                                         └─ 完整 response ─ ToolManager ─ 工具插件
 ```
@@ -479,151 +479,66 @@ warmup_on_initialize 在默认 agent.yaml 中开启。RGB-D 共享资源首次�
 
 ## 5. SessionManager
 
-公共接口见 [session_manager.hpp](../include/vln_agent/session/session_manager.hpp)。
+会话只调度一条在途请求。Agent 通过 `setTools()`、`addInputs()` 和 `request()` 登记工具与新输入，通过 `takeResponse()` 取完整模型响应。系统提示词仍由 Agent 作为首个 `system` 输入提交。限频、超时、待发输入和完成槽统一由会话管理。
 
-### 5.1 接入与发送流程
+### 5.1 传输插件
 
-构造函数读取 `session_manager` 配置并启动网络和调度线程。初始化内容由调用方添加：
+`ResponsesTransport` 是两个插件共用的虚接口，提供 `connect()`、`send()`、`getStatus()`、`interrupt()` 和 `close()`。会话通过 pluginlib 装载 `transport_plugin`，提交原生 Responses 请求体。传输回调提供连接状态和原生 Responses 事件；会话从完整终态提交响应，文本增量用于显示。
 
-```cpp
-vln_agent::SessionManager session(config_path);
-session.setTools(tool_definitions);
-session.addInputs(initial_inputs);
-session.request();
-
-auto response = session.takeResponse();
-```
-
-| 方法 | 行为 |
+| 插件 | 传输 |
 | --- | --- |
-| `setTools(Json)` | 替换下次请求使用的工具数组 |
-| `addInputs(const Json &)` | 追加一个原生对象，或按元素追加数组 |
-| `addInputs(const Json::array_t &)` | 整批追加原生对象数组 |
-| `request()` | 登记发送意图，重复调用合并 |
-| `takeResponse()` | 取走完整响应；无结果时为 `null` |
-| `shutdown()` | 停止调度、连接并释放会话数据 |
+| `vln_agent/ResponsesWsTransport` | WS/WSS 帧添加 `type: response.create`，连接断开后重连 |
+| `vln_agent/ResponsesHttpTransport` | `POST /responses`，`stream: true`，增量解析 SSE；支持 HTTP 错误和完整 JSON 响应 |
 
-会话维护一份当前请求、一份待发输入和一个完整响应槽。模型生成期间，新输入继续追加至待发数组。连接可用、待发输入非空、达到限频间隔，且当前轮与结果槽已交付时，调度线程组装下一次请求。
+两种插件都在自己的网络线程收发。会话超时会中断在途请求并隔离迟到事件。网络恢复后，失败轮由调用方通过 `request()` 显式重试。凭据只进入认证头。
 
-限频以相邻两次发送起点计算。`takeResponse()` 取走完整响应后，结果槽与流式文本一起释放；失败请求保留完整请求，供显式重试。
+### 5.2 配置与上下文
 
-### 5.2 请求配置
+默认使用 `provider: openai`、`transport_plugin: vln_agent/ResponsesWsTransport` 和 `context.mode: server`。服务端模式使用 `previous_response_id` 续接，请求携带原生 `context_management`，限额按 `budget_tokens × compact_ratio` 设置。
+
+DeepSeek 使用 HTTP 和本地模式，例如：
 
 ```yaml
 session_manager:
-  base_url: http://127.0.0.1:8317/v1
-  api_key: YOUR_API_KEY
-  model: gpt-6.1-terra
-  store: true
-  reasoning_effort: low
-  max_output_tokens: 8192
-  parallel_tool_calls: true
-  prompt_cache_key: scout-mini-vln
-  max_request_hz: 5.0
-  request_timeout_sec: 0
+  transport_plugin: vln_agent/ResponsesHttpTransport
+  provider: deepseek
+  base_url: https://api.deepseek.com
+  api_key: "<your key>"
+  model: deepseek-flash
+  reasoning_effort: none
+  max_output_tokens: 4096
+  max_request_hz: 1.0
+  request_timeout_sec: 60
   stream_output: true
   context:
-    local_history: false
-    server_compaction: true
-    budget_tokens: 128000
+    mode: local
+    budget_tokens: 64000
     compact_ratio: 0.8
+    keep_recent_items: 8
+    max_request_bytes: 33554432
+    summary_max_output_tokens: 1500
 ```
 
-每次发送 `type: "response.create"`，填入模型配置、当时的 `tools` 和本轮 `input`，文本格式为 `text.format.type: "text"`。`request_timeout_sec=0` 表示持续等待模型结果。`stream_output` 控制显示文本快照，完整响应仍由 `takeResponse()` 交付。
+本地模式每轮提交当前有效原生历史和本轮新增输入。DeepSeek 配置省去服务端链、云端压缩和其他 OpenAI 专用字段。图像输入和工具结果图片使用 `deepseek-flash`。代理按配置使用与目标服务一致的 Responses 基地址。 [DeepSeek Responses API](https://api-docs.deepseek.com/guides/responses_api/)
 
-### 5.3 上下文与压缩
+### 5.3 本地摘要压缩
 
-| 模式 | 配置 | 下一轮请求 |
-| --- | --- | --- |
-| 服务端链 | `local_history: false` | 使用最近完成的 `previous_response_id` 和新增输入 |
-| 本地有效上下文 | `local_history: true` | `store: false`，重放有效输入与原生模型输出 |
+1. 发送前估算输入 token 和 JSON 字节数。token 预算先扣除 `max_output_tokens`，达到 `compact_ratio` 或达到字节上限的 80% 时，尝试对旧历史发起摘要。
+2. 保留开头的系统消息、最近 `keep_recent_items` 项以及未配对的工具调用。压缩只选择可闭合的旧前缀，`function_call` 和它的结果一起保留或一起压缩。
+3. 同一传输按顺序发送独立摘要请求，携带旧历史文字和已有摘要，不声明工具。旧图二进制与推理项仅从摘要输入中排除。云端返回 `{"summary":"..."}` 后，本地检查格式和大小，用短摘要原子替换已选历史前缀。
+4. 摘要请求超时为 30 秒。失败时保留原历史和待发输入，`request()` 可显式重试。成功后继续发送原导航轮，摘要响应走内部状态而不进入业务结果槽。如果受保护的上下文仍超过硬预算，报告 `CONTEXT_BUDGET_EXCEEDED`。
 
-本地模式在成功轮次提交 `current_request.input + response.output`，作为后续请求的上下文。收到 `compaction` 项后，保留最新压缩项及之后的内容，释放被替代的前缀。失败轮的新输入留作重试。
+### 5.4 查询与恢复
 
-`compact_threshold = floor(budget_tokens × compact_ratio)`。开启 `server_compaction` 时，请求带上相应的 `context_management`；服务端执行压缩，返回的用量和压缩项用于会话状态。`budget_tokens` 是阈值计算的预算基数。
-
-系统提示词由 Agent 在首次 `input` 中作为 `role: "system"` 消息提交，后续通过所选上下文模式续接。提示词文件的读取由 Agent 完成。
-
-### 5.4 查询结果与错误
-
-| 方法 | 返回内容 |
+| 接口 | 结果 |
 | --- | --- |
-| `getTools()` | 下次请求的工具定义数组副本 |
-| `getPendingInputs()` | 待发输入数组副本 |
-| `getCurrentRequest()` | 在途或失败、中断后保留的完整请求副本；无当前请求时为 `null` |
-| `getRequestStatus()` | 请求状态、计时、输入计数、重试标志、会话错误与 `transport` |
-| `getContextStatus()` | 上下文模式、链头、有效项数、预算、usage 和压缩计数 |
-| `getStreamSnapshot()` | 当前显示文本对象；关闭显示时为 `null` |
+| `getTools()` / `getPendingInputs()` | 工具定义或尚未发送的原生输入 |
+| `getCurrentRequest()` | 在途或失败的 Responses 请求体，空闲时为 null |
+| `getRequestStatus()` | 调度、超时、重试标志、最近会话错误和 `transport` 快照 |
+| `getContextStatus()` | 上下文模式、最新业务响应 ID、有效项数、预算、最近用量和压缩进度 |
+| `getStreamSnapshot()` | 当前业务轮的文本增量与状态 |
 
-请求状态字段：
-
-```json
-{
-  "current_response_id": "resp_1",
-  "retry_required": false,
-  "can_retry": false,
-  "request_elapsed_ms": 500,
-  "rate_limit_remaining_ms": 0,
-  "state": "generating",
-  "send_requested": false,
-  "pending_input_count": 1,
-  "current_input_count": 2,
-  "in_flight": true,
-  "response_ready": false,
-  "request_interrupted": false,
-  "last_error": null,
-  "transport": {
-    "state": "connected",
-    "connected": true,
-    "connection_id": 1,
-    "reconnect_attempts": 0,
-    "last_error": null
-  }
-}
-```
-
-会话状态为 `idle/waiting_interval/waiting_transport/generating/response_ready/error/closed`。请求结束后 `request_elapsed_ms` 固定为该轮耗时。
-
-上下文状态字段为 `latest_response_id`、`mode`（`server/local`）、`history_item_count`、`budget_tokens`、`compact_threshold`、`usage`、`compaction_count`。`usage` 保留服务端返回的结构。
-
-会话错误形如 `{"code":"REQUEST_TIMEOUT","message":"...","event":null}`。模型失败或不完整结果保留原始错误事件；完整响应结构和事件解析异常使用 `INVALID_RESPONSE`。传输错误位于 `transport.last_error`，包含 `stage/message`。
-
-失败或中断后，`retry_required` 表示当前请求待处理；`can_retry` 为真时，调用 `request()` 将失败输入放回待发数组前部并登记重试。服务端链出现 `previous_response_not_found` 时，当前链标记为失效，`can_retry` 为假。
-
-流式显示示例：
-
-```json
-{
-  "response_id": "resp_1",
-  "state": "generating",
-  "content": [
-    {
-      "output_index": 0,
-      "content_index": 0,
-      "type": "output_text",
-      "text": "我正在查看"
-    }
-  ]
-}
-```
-
-每项 `text` 是该位置当前的完整累计文本。流式结束后以完整响应校准显示内容；调用 `takeResponse()` 后快照回到空的 `idle` 状态。
-
-### 5.5 ResponsesWsTransport
-
-传输层将 HTTP/HTTPS 基址转换为 WS/WSS Responses 地址，认证位于 Authorization 头。WSS 使用系统信任链和主机名验证。连接状态由 `connected()`、`getStatus()` 查询。
-
-网络默认参数来自 `WsTransportOptions`：
-
-| 参数 | 缺省值 |
-| --- | --- |
-| `connect_timeout` | 10000 ms |
-| `write_timeout` | 10000 ms |
-| `idle_timeout` | 60000 ms |
-| `reconnect_delay` | 250 ms |
-| `max_reconnect_delay` | 5000 ms |
-
-网络故障进入重连退避，重连后恢复连接可用性。业务请求的重新提交由会话调用方登记。模型超时会调用 `interrupt()` 换连接，使旧轮迟到数据与下一轮连接分开；`close()` 结束网络线程。
+失败轮独立保存新增输入。重试时，将新增输入恢复到较晚到达的待发输入之前。只有完整成功的业务轮才提交上下文。响应仍按原生 `output[]` 交给工具管理器。
 
 ## 6. UserInteractionManager
 

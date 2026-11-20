@@ -89,7 +89,10 @@ TEST(SessionManager, BuffersNextInputsAndToolsUntilCompleteResultIsTaken)
   session.request();
   waitFor([&] {return session.getRequestStatus().at("current_response_id") == "r1";});
   auto current = session.getCurrentRequest();
-  EXPECT_EQ(current, server.requests().at(0));
+  auto frame = server.requests().at(0);
+  EXPECT_EQ(frame.at("type"), "response.create");
+  frame.erase("type");
+  EXPECT_EQ(current, frame);
   EXPECT_EQ(current.at("input"), Json::array({message("first")}));
   session.setTools(Json::array({{{"name", "new"}}}));
   session.addInputs(Json::array_t{message("second"), message("third")});
@@ -158,12 +161,20 @@ TEST(SessionManager, RateLimitWakesWithoutFurtherExternalCalls)
 
 TEST(SessionManager, ModelErrorsKeepInputsAndRequireExplicitRetry)
 {
-  for (const std::string type : {"error", "response.failed", "response.incomplete"}) {
+  for (const std::string event : {"error", "response.failed", "response.incomplete", "http_error"}) {
+    SCOPED_TRACE(event);
+    WsServerOptions options;
+    options.http_sse = event == "http_error";
+    const std::string type = options.http_sse ? "error" : event;
     const Json error{{"code", "model_error"}, {"message", "测试失败"}};
     WsFixture server([&](auto & peer, const Json &, std::size_t index) {
         if (index == 1) {
           server.waitRelease(1);
-          if (type == "error") {
+          if (options.http_sse) {
+            auto streamed_error = error;
+            streamed_error["type"] = "error";
+            peer.send(streamed_error);
+          } else if (type == "error") {
             peer.send(Json{{"type", type}, {"error", error}});
           } else {
             peer.send(Json{{"type", type}, {"response",
@@ -174,9 +185,11 @@ TEST(SessionManager, ModelErrorsKeepInputsAndRequireExplicitRetry)
           peer.send(Json{{"type", "response.completed"},
               {"response", completed("r" + std::to_string(index + 1))}});
         }
-      });
+      }, options);
     FixtureFiles files;
-    SessionManager session(files.sessionConfig(server.url()));
+    const char * transport = options.http_sse ?
+      "vln_agent/ResponsesHttpTransport" : "vln_agent/ResponsesWsTransport";
+    SessionManager session(files.sessionConfig(server.url(), {{"transport_plugin", transport}}));
     session.addInputs(message("init", "system"));
     session.request();
     take(session);
@@ -198,6 +211,7 @@ TEST(SessionManager, ModelErrorsKeepInputsAndRequireExplicitRetry)
     EXPECT_EQ(session.getCurrentRequest().at("input"), Json::array({message("failed")}));
     EXPECT_EQ(session.getPendingInputs(), Json::array({message("later")}));
     EXPECT_EQ(status.at("last_error").at("event").at("type"), type);
+    EXPECT_EQ(status.at("last_error").at("code"), "model_error");
     EXPECT_TRUE(status.at("transport").at("last_error").is_null());
     session.request();
     EXPECT_EQ(take(session).at("id"), "r3");
@@ -274,33 +288,41 @@ TEST(SessionManager, ReconnectKeepsConfirmedChainAndDoesNotReplayInterruptedRequ
 
 TEST(SessionManager, TimeoutDiscardsLateEventsAndRetriesPreservedInputs)
 {
-  WsFixture server([&](auto & peer, const Json &, std::size_t index) {
-      if (index == 1) {
-        peer.send(Json{{"type", "response.created"}, {"response", {{"id", "late"}}}});
-        server.waitRelease(1);
-        peer.send(Json{{"type", "response.completed"}, {"response", completed("late")}});
-      } else {
-        peer.send(Json{{"type", "response.completed"},
-            {"response", completed("r" + std::to_string(index + 1))}});
-      }
-    });
-  FixtureFiles files;
-  SessionManager session(files.sessionConfig(server.url(), {{"request_timeout_sec", 0.1}}));
-  session.addInputs(message("init")); session.request(); take(session);
-  session.addInputs(message("timeout")); session.request();
-  waitFor([&] {return server.requests().size() == 2;});
-  session.addInputs(message("new")); session.request();
-  waitFor([&] {return session.getRequestStatus().at("state") == "error";});
-  EXPECT_EQ(session.getRequestStatus().at("last_error").at("code"), "REQUEST_TIMEOUT");
-  server.release(1);
-  ready(session);
-  EXPECT_EQ(session.getContextStatus().at("latest_response_id"), "r1");
-  EXPECT_TRUE(session.takeResponse().is_null());
-  EXPECT_EQ(server.requests().size(), 2u);
-  session.request();
-  EXPECT_EQ(take(session).at("id"), "r3");
-  EXPECT_EQ(server.requests().at(2).at("input"), Json::array({message("timeout"), message("new")}));
-  EXPECT_EQ(server.requests().at(2).at("previous_response_id"), "r1");
+  for (const bool http_sse : {false, true}) {
+    SCOPED_TRACE(http_sse ? "HTTP SSE" : "WebSocket");
+    WsServerOptions options;
+    options.http_sse = http_sse;
+    WsFixture server([&](auto & peer, const Json &, std::size_t index) {
+        if (index == 1) {
+          peer.send(Json{{"type", "response.created"}, {"response", {{"id", "late"}}}});
+          server.waitRelease(1);
+          peer.send(Json{{"type", "response.completed"}, {"response", completed("late")}});
+        } else {
+          peer.send(Json{{"type", "response.completed"},
+              {"response", completed("r" + std::to_string(index + 1))}});
+        }
+      }, options);
+    FixtureFiles files;
+    const char * transport = http_sse ?
+      "vln_agent/ResponsesHttpTransport" : "vln_agent/ResponsesWsTransport";
+    SessionManager session(files.sessionConfig(server.url(),
+      {{"transport_plugin", transport}, {"request_timeout_sec", 0.1}}));
+    session.addInputs(message("init")); session.request(); take(session);
+    session.addInputs(message("timeout")); session.request();
+    waitFor([&] {return server.requests().size() == 2;});
+    session.addInputs(message("new")); session.request();
+    waitFor([&] {return session.getRequestStatus().at("state") == "error";});
+    EXPECT_EQ(session.getRequestStatus().at("last_error").at("code"), "REQUEST_TIMEOUT");
+    server.release(1);
+    ready(session);
+    EXPECT_EQ(session.getContextStatus().at("latest_response_id"), "r1");
+    EXPECT_TRUE(session.takeResponse().is_null());
+    EXPECT_EQ(server.requests().size(), 2u);
+    session.request();
+    EXPECT_EQ(take(session).at("id"), "r3");
+    EXPECT_EQ(server.requests().at(2).at("input"), Json::array({message("timeout"), message("new")}));
+    EXPECT_EQ(server.requests().at(2).at("previous_response_id"), "r1");
+  }
 }
 
 TEST(SessionManager, UnlimitedWaitCanBeClosedAndAllThreadsAreJoined)
@@ -407,6 +429,58 @@ TEST(SessionManager, InstancesAndConcurrentInputBatchesStayIndependent)
 }
 
 
+TEST(SessionManager, HttpStreamsAndReplaysNativeMultimodalToolResults)
+{
+  WsServerOptions options;
+  options.http_sse = true;
+  auto first = completed("http1", "看到门");
+  first["output"].push_back({{"type", "function_call"}, {"call_id", "c-http"},
+      {"name", "capture_pair"}, {"arguments", "{}"}});
+  WsFixture server([&](auto & peer, const Json &, std::size_t index) {
+      if (index == 0) {
+        peer.send({{"type", "response.created"}, {"response", {{"id", "http1"}}}});
+        peer.send({{"type", "response.output_text.delta"}, {"output_index", 1},
+            {"content_index", 0}, {"delta", "看到门"}}, true);
+        server.waitRelease(0);
+      }
+      peer.send({{"type", "response.completed"}, {"response",
+          index == 0 ? first : completed("http2")}}, true);
+    }, options);
+  FixtureFiles files;
+  SessionManager session(files.sessionConfig(server.url(),
+    {{"transport_plugin", "vln_agent/ResponsesHttpTransport"}, {"provider", "deepseek"},
+      {"model", "deepseek-flash"}, {"stream_output", true}, {"context", {{"mode", "local"}}}}));
+  session.setTools(Json::array({{{"type", "function"}, {"name", "capture_pair"}, {"async", true}}}));
+  session.addInputs(message("导航开始", "system"));
+  session.request();
+  waitFor([&] {return !session.getStreamSnapshot().at("content").empty();});
+  EXPECT_EQ(session.getStreamSnapshot().at("content")[0].at("text"), "看到门");
+  EXPECT_TRUE(session.takeResponse().is_null());
+  server.release(0);
+  EXPECT_EQ(take(session), first);
+
+  auto body = utils::businessPayload("robot");
+  body["images"] = Json::array({Json::object()});
+  const auto image = utils::functionCallOutput("c-http", body,
+      {{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}}});
+  session.addInputs(image);
+  session.request();
+  EXPECT_EQ(take(session).at("id"), "http2");
+  const auto requests = server.requests();
+  ASSERT_EQ(requests.size(), 2u);
+  EXPECT_EQ(server.paths(), (std::vector<std::string>{"/v1/responses", "/v1/responses"}));
+  EXPECT_EQ(server.authorizations().front(), "Bearer loopback-fixture");
+  for (const auto & req : requests) {
+    EXPECT_EQ(req.at("stream"), true);
+    for (const auto * field : {"type", "previous_response_id", "context_management", "store", "prompt_cache_key"}) {
+      EXPECT_FALSE(req.contains(field));
+    }
+    EXPECT_FALSE(req.at("tools")[0].contains("async"));
+  }
+  EXPECT_EQ(requests[1].at("input").back(), image);
+  EXPECT_EQ(requests[1].at("input").at(requests[1].at("input").size() - 2), first.at("output").back());
+}
+
 TEST(SessionManager, LocalHistoryReplaysNativeOutputsToolsAndImagesWithoutStoredIds)
 {
   auto first = completed("r1");
@@ -419,7 +493,7 @@ TEST(SessionManager, LocalHistoryReplaysNativeOutputsToolsAndImagesWithoutStored
     });
   FixtureFiles files;
   SessionManager session(files.sessionConfig(server.url(),
-    {{"store", true}, {"context", {{"local_history", true}, {"server_compaction", false}}}}));
+    {{"context", {{"mode", "local"}}}}));
   const Json image{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}};
   auto business = utils::businessPayload("user");
   business["instruction"] = "检查图像";
@@ -486,7 +560,7 @@ TEST(SessionManager, LocalHistoryRetriesOnlyFreshInputsAndNeverCommitsPartialOut
       });
     FixtureFiles files;
     SessionManager session(files.sessionConfig(server.url(),
-      {{"context", {{"local_history", true}}}}));
+      {{"context", {{"mode", "local"}}}}));
     session.addInputs(message("init", "system")); session.request(); take(session);
     Json history = Json::array({message("init", "system")});
     utils::appendInputs(history, completed("r1").at("output"));
@@ -506,34 +580,67 @@ TEST(SessionManager, LocalHistoryRetriesOnlyFreshInputsAndNeverCommitsPartialOut
   }
 }
 
-TEST(SessionManager, LocalHistoryReleasesPrefixReplacedByLatestCompaction)
+TEST(SessionManager, CompactionCommitsOnlySuccessfulCloudSummaryAndPreservesToolContext)
 {
-  const Json first_compact{{"type", "compaction"}, {"id", "cp1"},
-    {"encrypted_content", "first-opaque-context"}};
-  const Json last_compact{{"type", "compaction"}, {"id", "cp2"},
-    {"encrypted_content", "latest-opaque-context"}};
-  auto response = completed("r1");
-  const auto after = response["output"][1];
-  response["output"] = Json::array({first_compact, last_compact, after});
+  const auto original = message("系统规则", "system");
+  const auto old = message(std::string(1450, 'x'));
+  auto recent = completed("recent", "发现门口");
+  recent["output"].push_back({{"type", "function_call"}, {"call_id", "c1"},
+      {"name", "camera"}, {"arguments", "{}"}});
   WsFixture server([&](auto & peer, const Json &, std::size_t index) {
-      if (index == 0) {
-        peer.send(Json{{"type", "response.output_item.done"},
-          {"output_index", 1}, {"item", last_compact}});
+      if (index == 2) {
+        peer.send({{"type", "response.completed"}, {"response", completed("bad", "not-json")}});
+      } else if (index == 3) {
+        peer.send({{"type", "response.completed"}, {"response",
+            completed("summary", R"({"summary":"目标是经过门口"})")}});
+      } else {
+        peer.send({{"type", "response.completed"}, {"response",
+            index == 1 ? recent : completed("r" + std::to_string(index))}});
       }
-      peer.send(Json{{"type", "response.completed"},
-        {"response", index == 0 ? response : completed("r2")}});
     });
   FixtureFiles files;
   SessionManager session(files.sessionConfig(server.url(),
-    {{"context", {{"local_history", true}, {"budget_tokens", 10000}, {"compact_ratio", 0.8}}}}));
-  session.addInputs(message("前缀系统提示词", "system")); session.request(); take(session);
-  EXPECT_EQ(session.getContextStatus().at("history_item_count"), 2);
-  EXPECT_EQ(session.getContextStatus().at("compaction_count"), 2);
-  session.addInputs(message("继续")); session.request(); take(session);
+    {{"max_output_tokens", 128},
+      {"context", {{"mode", "local"}, {"budget_tokens", 2400}, {"compact_ratio", 0.6},
+        {"keep_recent_items", 2}, {"summary_max_output_tokens", 128}}}}));
+  session.addInputs(Json::array({original, old}));
+  session.request();
+  EXPECT_EQ(take(session).at("id"), "r0");
+  session.addInputs(message("在门口停下"));
+  session.request();
+  EXPECT_EQ(take(session).at("id"), "recent");
+
+  auto metadata = utils::businessPayload("robot");
+  metadata["images"] = Json::array({Json::object()});
+  const auto output = utils::functionCallOutput("c1", metadata,
+      {{{"type", "input_image"}, {"image_url", "data:image/jpeg;base64,AA=="}}});
+  const auto prior = session.getContextStatus().at("history_item_count");
+  session.addInputs(output);
+  session.addInputs(message(std::string(440, 'y')));
+  session.request();
+  waitFor([&] {return session.getRequestStatus().at("state") == "error";});
+  EXPECT_EQ(session.getRequestStatus().at("last_error").at("code"), "CONTEXT_SUMMARY_FAILED");
+  EXPECT_EQ(session.getContextStatus().at("history_item_count"), prior);
+  EXPECT_EQ(session.getContextStatus().at("compaction_count"), 0);
+  EXPECT_TRUE(session.takeResponse().is_null());
+
+  session.addInputs(message("仍然继续"));
+  session.request();
+  EXPECT_EQ(take(session).at("id"), "r4");
   const auto requests = server.requests();
-  EXPECT_EQ(requests[0].at("context_management")[0].at("compact_threshold"), 8000);
-  EXPECT_EQ(requests[1].at("input"), Json::array({last_compact, after, message("继续")}));
-  EXPECT_FALSE(requests[1].contains("previous_response_id"));
+  ASSERT_EQ(requests.size(), 5u);
+  for (int i : {2, 3}) {
+    EXPECT_FALSE(requests[i].contains("tools"));
+    EXPECT_FALSE(requests[i].contains("previous_response_id"));
+    EXPECT_TRUE(requests[i].at("input").dump().find("data:image") == std::string::npos);
+  }
+  const auto & input = requests[4].at("input");
+  EXPECT_EQ(input.front(), original);
+  EXPECT_TRUE(input.dump().find("目标是经过门口") != std::string::npos);
+  EXPECT_TRUE(input.dump().find(std::string(1450, 'x')) == std::string::npos);
+  EXPECT_EQ(input.at(input.size() - 3), output);
+  EXPECT_EQ(input.back(), message("仍然继续"));
+  EXPECT_EQ(session.getContextStatus().at("compaction_count"), 1);
 }
 
 TEST(SessionManager, LocalHistorySurvivesReconnectWithoutServerStoredContext)
@@ -549,7 +656,7 @@ TEST(SessionManager, LocalHistorySurvivesReconnectWithoutServerStoredContext)
     });
   FixtureFiles files;
   SessionManager session(files.sessionConfig(server.url(),
-    {{"context", {{"local_history", true}, {"server_compaction", false}}}}));
+    {{"context", {{"mode", "local"}}}}));
   session.addInputs(message("init", "system")); session.request(); take(session);
   session.addInputs(message("interrupted")); session.request();
   waitFor([&] {return server.requests().size() == 2;});

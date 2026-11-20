@@ -1,0 +1,10 @@
+<library path="vln_agent_session_transport_plugins">
+  <class name="vln_agent/ResponsesWsTransport" type="vln_agent::ResponsesWsTransport"
+         base_class_type="vln_agent::ResponsesTransport">
+    <description>Persistent Responses WebSocket transport.</description>
+  </class>
+  <class name="vln_agent/ResponsesHttpTransport" type="vln_agent::ResponsesHttpTransport"
+         base_class_type="vln_agent::ResponsesTransport">
+    <description>Responses HTTP POST and SSE transport.</description>
+  </class>
+</library>

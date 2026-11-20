@@ -5,7 +5,7 @@
 #include <memory>
 #include <string>
 
-#include "vln_agent/utils/json.hpp"
+#include "vln_agent/session/responses_transport.hpp"
 
 namespace vln_agent
 {
@@ -21,14 +21,11 @@ struct WsTransportOptions
 };
 
 /** @brief 独立的持久 WS/WSS 通道；网络故障自动重连，业务帧不自动重发。 */
-class ResponsesWsTransport
+class ResponsesWsTransport : public ResponsesTransport
 {
 public:
-  using EventHandler = std::function<void(const Json & event)>;
-  using StateHandler = std::function<void(const Json & state)>;
-
   explicit ResponsesWsTransport(WsTransportOptions options = {});
-  ~ResponsesWsTransport();
+  ~ResponsesWsTransport() override;
 
   /**
    * @brief 启动网络线程；认证只放在 Authorization 头，不写入状态快照。
@@ -36,20 +33,20 @@ public:
    */
   void connect(
     const std::string & base_url, const std::string & api_key,
-    EventHandler on_event, StateHandler on_state);
+    EventHandler on_event, StateHandler on_state) override;
   /** @brief 提交一帧；通道不可用或提交期间换代时丢弃该帧并通知状态，不排队重发。 */
-  void send(Json event);
+  void send(Json request) override;
   /** @brief 当前是否已经完成 WS 握手。 */
   bool connected() const;
   /** @brief 返回连接状态、连接代号和最近网络错误，不含密钥。 */
-  Json getStatus() const;
+  Json getStatus() const override;
   /**
    * @brief 放弃当前连接并由底层重新连接，隔离已超时请求的迟到事件。
    * @note 不修改模型上下文、不补发请求，也不把主动中断记录为网络错误。
    */
-  void interrupt();
+  void interrupt() override;
   /** @brief 停止重连、取消网络等待并回收网络线程；可重复调用。 */
-  void close();
+  void close() override;
 
 private:
   struct Impl;

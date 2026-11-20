@@ -28,6 +28,7 @@ struct WsServerOptions
   bool tls{false};
   bool reject_upgrade{false};
   bool stall_handshake{false};
+  bool http_sse{false};
   std::string certificate, private_key;
 };
 

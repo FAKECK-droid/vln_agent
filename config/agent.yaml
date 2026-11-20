@@ -109,7 +109,8 @@ session_manager:
   base_url: "http://192.168.3.25:8317/v1"
   api_key: "sk-local-1gHIUqOELWgeLmW5AocUxtxGo7DWRlUBed1xu-35"
   model: "gpt-6.2-sol"
-  store: true
+  transport_plugin: vln_agent/ResponsesWsTransport
+  provider: openai
   reasoning_effort: low
   max_output_tokens: 8192
   parallel_tool_calls: true
@@ -118,6 +119,7 @@ session_manager:
   request_timeout_sec: 0
   stream_output: true
   context:
+    mode: server
     budget_tokens: 256000
     compact_ratio: 0.8
 

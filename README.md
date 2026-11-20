@@ -1,6 +1,6 @@
 # vln_agent
 
-面向 ROS 2 Humble 的视觉语言导航 Agent。程序通过 Responses WebSocket 与模型交互，将导航、环境观察、图像获取和深度查询封装成工具，并通过 ROS 话题接收用户输入和机器人事件。
+面向 ROS 2 Humble 的视觉语言导航 Agent。程序通过 Responses WebSocket 或 HTTP SSE 与模型交互，将导航、环境观察、图像获取和深度查询封装成工具，并通过 ROS 话题接收用户输入和机器人事件。
 
 核心能力：
 
@@ -17,7 +17,7 @@
 ## 环境与依赖
 
 - Ubuntu 22.04、ROS 2 Humble。
-- ROS 2 Nav2、pluginlib、TF2、OpenCV、Boost、OpenSSL、yaml-cpp。
+- ROS 2 Nav2、pluginlib、TF2、OpenCV、Boost、OpenSSL、libcurl、yaml-cpp。
 - 同工作空间中的 `rgbd_image_queue`。
 - 环视采集与拼图深度投影由导航工具内部完成，复用 RGB-D 共享资源。
 
@@ -55,7 +55,7 @@ ros2 run vln_agent vln_agent_node --ros-args \
   -p system_prompt_path:=/path/to/system_prompt.md
 ```
 
-`initial_instruction` 可指定首条用户指令，`loop_hz` 控制主循环频率。模型服务需提供 Responses WebSocket 接口；导航和图像工具按配置连接对应 ROS 服务。
+`initial_instruction` 可指定首条用户指令，`loop_hz` 控制主循环频率。模型服务需提供与配置匹配的 Responses WebSocket 或 HTTP 接口；导航和图像工具按配置连接对应 ROS 服务。
 
 ## 项目文档
 
