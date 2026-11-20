@@ -8,6 +8,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <thread>
+#include <unordered_set>
 #include <vector>
 
 #include <pluginlib/class_loader.hpp>
@@ -171,6 +172,13 @@ struct SessionManager::Impl
         return;
       }
     }
+    if (!config.forward_tool_async) {
+      auto & items = pending_input.get_ref<Json::array_t &>();
+      // 先续接上一轮工具，再提交等待期间收到的其他输入。
+      std::stable_partition(items.begin(), items.end(), [](const Json & item) {
+          return item.value("type", std::string()) == "function_call_output";
+        });
+    }
     current_request = buildRequest();
     current_delta = std::move(pending_input);
     pending_input = Json::array();
@@ -265,6 +273,14 @@ struct SessionManager::Impl
       active_response_id = latest_response_id;
       ++compaction_count;
     } else {
+      std::unordered_set<std::string> tool_calls;
+      if (!config.forward_tool_async) {
+        for (const auto & item : output) {
+          if (item.value("type", std::string()) == "function_call") {
+            tool_calls.insert(item.at("call_id").get<std::string>());
+          }
+        }
+      }
       if (config.stream_output) {finishText(response);}
       if (config.local_history) {
         // current_request 已通过输入校验；完成响应校验后才整体提交。
@@ -279,6 +295,7 @@ struct SessionManager::Impl
       latest_response_id = id;
       active_response_id = id;
       usage = response.value("usage", Json());
+      awaiting_tool_outputs = std::move(tool_calls);
       response_slot = response;
     }
     current_delta = Json::array();
@@ -340,7 +357,8 @@ struct SessionManager::Impl
         continue;
       }
       const bool eligible = send_requested && !pending_input.empty() &&
-        !in_flight && response_slot.is_null() && last_error.is_null() && available;
+        !in_flight && response_slot.is_null() && last_error.is_null() && available &&
+        awaiting_tool_outputs.empty();
       const auto allowed_at = ever_started ? last_started + config.interval : now;
       if (eligible && now >= allowed_at) {
         send_requested = false;
@@ -392,10 +410,24 @@ struct SessionManager::Impl
     if (!response_slot.is_null()) {return "response_ready";}
     if (!available) {return "waiting_transport";}
     if (in_flight) {return summary_range.empty() ? "generating" : "compacting";}
+    if (!awaiting_tool_outputs.empty()) {return "waiting_tool_outputs";}
     if (send_requested && ever_started && Clock::now() < last_started + config.interval) {
       return "waiting_interval";
     }
     return "idle";
+  }
+
+  /** @brief 新输入追加成功后，按 call_id 解除对下一轮请求的等待。 */
+  void acceptToolOutputs(std::size_t first)
+  {
+    if (awaiting_tool_outputs.empty()) {return;}
+    const auto & items = pending_input.get_ref<const Json::array_t &>();
+    for (auto it = items.begin() + first; it != items.end(); ++it) {
+      if (it->value("type", std::string()) == "function_call_output") {
+        awaiting_tool_outputs.erase(it->at("call_id").get_ref<const std::string &>());
+      }
+    }
+    if (awaiting_tool_outputs.empty()) {condition.notify_all();}
   }
 
   void shutdown()
@@ -420,6 +452,7 @@ struct SessionManager::Impl
     std::lock_guard<std::mutex> lock(mutex);
     current_request = nullptr;
     pending_input = Json::array();
+    awaiting_tool_outputs.clear();
     current_delta = Json::array();
     summary_range = {};
     local_context = Json::array();
@@ -441,6 +474,7 @@ struct SessionManager::Impl
   Json tools = Json::array();              ///< 下次发送时复制到请求。
   Json current_request;                    ///< 当前已发送快照，失败后保留用于显式恢复。
   Json pending_input = Json::array();       ///< 持续追加的下一轮输入，不是请求队列。
+  std::unordered_set<std::string> awaiting_tool_outputs;  ///< 同步模式尚未收到结果的调用。
   Json response_slot;                      ///< 唯一完整结果槽。
   Json local_context = Json::array();       ///< 本地模式成功提交的有效上下文。
   Json current_delta = Json::array();       ///< 当前业务轮的新输入，重试时独立恢复。
@@ -497,14 +531,18 @@ void SessionManager::addInputs(const Json & input)
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->ensureOpen();
+  const auto first = impl_->pending_input.size();
   utils::appendInputs(impl_->pending_input, input);
+  impl_->acceptToolOutputs(first);
 }
 
 void SessionManager::addInputs(const Json::array_t & input_items)
 {
   std::lock_guard<std::mutex> lock(impl_->mutex);
   impl_->ensureOpen();
+  const auto first = impl_->pending_input.size();
   utils::appendInputs(impl_->pending_input, input_items);
+  impl_->acceptToolOutputs(first);
 }
 
 void SessionManager::request()

@@ -509,6 +509,61 @@ TEST(SessionManager, HttpStreamsAndReplaysNativeMultimodalToolResults)
   EXPECT_EQ(requests[1].at("input").at(requests[1].at("input").size() - 2), first.at("output").back());
 }
 
+TEST(SessionManager, ToolAsyncConfigControlsWhenContinuationIsSent)
+{
+  auto first = completed("calls");
+  for (const auto * id : {"c1", "c2"}) {
+    first["output"].push_back({{"type", "function_call"}, {"call_id", id},
+        {"name", "inspect"}, {"arguments", "{}"}});
+  }
+  const auto partial = utils::functionCallOutput("c1", utils::businessPayload("robot"), {});
+  const auto final = utils::functionCallOutput("c2", utils::businessPayload("robot"), {});
+  const auto user_input = message("工具运行时收到的用户输入");
+  for (const bool async : {false, true}) {
+    SCOPED_TRACE(async);
+    WsServerOptions options;
+    options.http_sse = true;
+    WsFixture server([&](auto & peer, const Json &, std::size_t index) {
+        if (index == 0) {server.waitRelease(0);}
+        peer.send({{"type", "response.completed"}, {"response",
+            index == 0 ? first : completed("next" + std::to_string(index))}});
+      }, options);
+    FixtureFiles files;
+    SessionManager session(files.sessionConfig(server.url(),
+      {{"transport_plugin", "vln_agent/ResponsesHttpTransport"}, {"forward_tool_async", async},
+        {"context", {{"mode", "local"}}}}));
+
+    session.addInputs(message("开始"));
+    session.request();
+    waitFor([&] {return server.requests().size() == 1;});
+    session.addInputs(user_input);
+    session.request();
+    server.release(0);
+    ASSERT_EQ(take(session), first);
+
+    if (async) {
+      EXPECT_EQ(take(session).at("id"), "next1");
+      EXPECT_EQ(server.requests().at(1).at("input").back(), user_input);
+      session.addInputs(Json::array_t{partial, final});
+      session.request();
+      EXPECT_EQ(take(session).at("id"), "next2");
+      const auto input = server.requests().at(2).at("input");
+      EXPECT_EQ(input.at(input.size() - 2), partial);
+      EXPECT_EQ(input.back(), final);
+    } else {
+      session.addInputs(partial);
+      EXPECT_EQ(session.getRequestStatus().at("state"), "waiting_tool_outputs");
+      EXPECT_EQ(server.requests().size(), 1u);
+      session.addInputs(Json::array_t{final});
+      EXPECT_EQ(take(session).at("id"), "next1");
+      const auto input = server.requests().at(1).at("input");
+      EXPECT_EQ(input.at(input.size() - 3), partial);
+      EXPECT_EQ(input.at(input.size() - 2), final);
+      EXPECT_EQ(input.back(), user_input);
+    }
+  }
+}
+
 TEST(SessionManager, LocalHistoryReplaysNativeOutputsToolsAndImagesWithoutStoredIds)
 {
   auto first = completed("r1");

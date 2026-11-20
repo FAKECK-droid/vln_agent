@@ -501,13 +501,19 @@ warmup_on_initialize 在默认 agent.yaml 中开启。RGB-D 共享资源首次�
 | `server`（默认） | 服务端支持按 `previous_response_id` 续接和 `context_management` 压缩。请求启用 `store`，压缩阈值为 `budget_tokens × compact_ratio`。 |
 | `local` | 客户端每轮回传有效历史和新增输入。超过阈值时通过云端摘要来压缩本地历史。 |
 
-`reasoning_effort` 原样写入 `reasoning.effort`，省略时使用模型服务的默认值。本地模式的摘要请求共用此设置。`parallel_tool_calls`、`prompt_cache_key`、`include` 和本地模式的 `store` 按服务能力选填。例如，支持加密推理回放的服务可在本地模式下配置 `store: false` 和 `include: [reasoning.encrypted_content]`。只有 `forward_tool_async: true` 时才发送自定义工具字段 `async`。
+`reasoning_effort` 原样写入 `reasoning.effort`，省略时使用模型服务的默认值。本地模式的摘要请求共用此设置。`parallel_tool_calls`、`prompt_cache_key`、`include` 和本地模式的 `store` 按服务能力选填。例如，支持加密推理回放的服务可在本地模式下配置 `store: false` 和 `include: [reasoning.encrypted_content]`。
+
+`forward_tool_async` 决定工具结果何时提交。
+
+- `true` 保留工具定义的 `async` 字段。服务支持异步调用时，工具结果可随之后的请求回传。
+- `false`（缺省）省略 `async` 字段。会话等上一轮全部 `call_id` 的工具结果到齐，先发送这些结果，再附上等待期间收到的消息和事件。工具照常由 Agent 并发调度。
 
 以下配置使用 DeepSeek 作为 HTTP 本地模式的示例。
 
 ```yaml
 session_manager:
   transport_plugin: vln_agent/ResponsesHttpTransport
+  forward_tool_async: false
   base_url: https://api.deepseek.com
   api_key: "<your key>"
   model: deepseek-flash
@@ -539,7 +545,7 @@ DeepSeek 的 Responses API 支持将 `reasoning_effort` 设为 `low`、`high` �
 | --- | --- |
 | `getTools()` / `getPendingInputs()` | 工具定义或尚未发送的原生输入 |
 | `getCurrentRequest()` | 在途或失败的 Responses 请求体，空闲时为 null |
-| `getRequestStatus()` | 调度、超时、重试标志、最近会话错误和 `transport` 快照 |
+| `getRequestStatus()` | 调度、超时、重试标志、最近会话错误和 `transport` 快照。同步调用等待结果期间状态为 `waiting_tool_outputs`。 |
 | `getContextStatus()` | 上下文模式、最新业务响应 ID、有效项数、预算、最近用量和压缩进度 |
 | `getStreamSnapshot()` | 当前业务轮的文本增量与状态 |
 
